@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ uses the platform splash API instead of the older
+         window background, so give it the same WildBit mark and palette. -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowSplashScreenBackground">@color/wildbit_splash</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/bit_splash</item>
+    </style>
+</resources>

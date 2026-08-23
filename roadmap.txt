@@ -1,0 +1,112 @@
+Roadmap
+0. Decisione architetturale — completata
+Nessun filtro pixelatore come soluzione finale.
+Nessun embedding di OsmAnd-core.
+OSM raster resta solo come modalità tecnica di confronto/fallback, non come stile WildBit.
+La mappa WildBit è un layer a tile/chunk generati dall’app con asset e regole proprietari.
+Ogni asset sarà originale o con licenza compatibile commerciale.
+Criterio di uscita: una mappa deve continuare a essere leggibile anche senza alcuna tile raster OSM visibile.
+1. Specifica visiva e tecnica del renderer
+Definire formalmente il “linguaggio” della mappa, prima di scrivere altro rendering:
+pixel grid nativa e fattore di ingrandimento;
+palette giorno/notte;
+zoom supportati e quantità di dettaglio per zoom;
+biomi iniziali: prato, foresta, roccia, acqua/fiume, sentiero, strada forestale;
+oggetti: alberi, cespugli, rocce, fiori, ponti, cartelli, rifugi;
+livelli di disegno obbligatori.
+Ordine di composizione:
+acqua e terreno base
+→ rive / scogli / rocce
+→ vegetazione di fondo
+→ sentieri e strade
+→ vegetazione in primo piano
+→ POI e cartelli
+→ percorso utente e Bit
+→ interfaccia
+Criterio di uscita: un mock statico di valle/bosco deve essere riconoscibile e coerente con l’immagine allegata.
+2. Prototipo locale: una piccola area reale
+Prima di affrontare il mondo intero:
+scegliere un’area campione di circa 1–2 km²;
+salvarne una fixture OSM locale ripetibile;
+estrarre foreste, prati, acqua, corsi d’acqua, sentieri, strade e POI;
+disegnare tutto senza rete;
+usare chunk geografici, non coordinate schermo arbitrarie.
+Qui si dimostra la parte importante: un dato natural=wood diventa una massa di alberi, un waterway=stream diventa un torrente con rive e rocce, non una polilinea blu.
+Criterio di uscita: pan e zoom fluidi su area reale, senza fondo verde vuoto e senza OSM raster.
+3. Modello dati semantico
+Creare un modello interno separato da Overpass e dal renderer:
+MapChunk
+  TerrainArea: water, meadow, forest, rock, snow
+  LinearFeature: trail, track, road, stream, river
+  PointFeature: hut, spring, summit, parking, sign
+  ElevationData: opzionale, per ombre e versanti
+Regole:
+normalizzazione e clipping per chunk;
+deduplicazione ai bordi;
+cache persistente;
+identificatori stabili OSM;
+fallback quando una feature non ha tag sufficienti.
+Criterio di uscita: renderer e download offline ricevono gli stessi chunk, senza dipendere direttamente dalla risposta HTTP di Overpass.
+4. Pipeline dati reale
+Per online:
+Overpass solo per viewport piccoli e ricerca, con mirror, timeout e cache;
+query separate per geometrie, POI e sentieri;
+errore distinto da “nessun elemento trovato”.
+Per offline:
+download per viewport selezionato;
+suddivisione dell’area in chunk;
+cache delle feature, degli asset e del risultato composto;
+limite esplicito di area/zoom;
+in futuro, estratti regionali OSM/PBF o vector tiles: Overpass non è adatto a scaricare regioni grandi.
+Per costa e mare, che Overpass non rende bene su viewport aperti, servirà una sorgente dedicata di coastline/water polygons o vector tile aperte.
+Criterio di uscita: la stessa zona è visualizzabile online, poi riapribile in aereo.
+5. Compositore pixel-art
+È il nucleo grafico:
+terreno con tile seamless, non pattern di quadrati;
+scattering deterministico: stessi alberi/rocce nella stessa posizione a ogni apertura;
+densità della vegetazione dipendente da tag, area e zoom;
+sentieri come fasce di terreno con bordo, usura e varianti;
+fiumi con larghezza, rive, rocce, schiuma e direzione;
+occlusione: alberi davanti a Bit, terreno sotto Bit;
+ombre, luce e dettagli HD‑2D senza sfocature anti‑pixel.
+Criterio di uscita: screenshot della zona campione comparabile per ricchezza visiva al riferimento, pur restando geograficamente fedele.
+6. Sistema di asset
+tileset originale: terreno, rive, acqua, rocce, flora, alberi e POI;
+varianti per evitare ripetizioni;
+atlas e metadata per collisioni/ancore;
+generatori procedurali solo per distribuire asset, non per “inventare” una mappa;
+controlli di licenza per ogni sorgente.
+Criterio di uscita: nessun asset proveniente da OsmAnd o senza licenza chiara.
+7. Zoom, GPS e Bit
+Bit scala rispetto al terreno e non in base a dimensioni casuali delle immagini;
+il chunk mantiene una scala geografica chiara;
+LOD: meno oggetti e texture semplificate quando si allontana lo zoom;
+sentieri e percorso registrato sempre leggibili;
+fallback “Ricerca GPS in corso” separato dal caricamento grafico.
+Criterio di uscita: Bit sembra appartenere alla mappa, non un marker sovrapposto.
+8. Integrazione con Esplora e Offline
+“Vicino a me” usa il modello sentiero reale;
+ricerca per nome/ref usa dati OSM normalizzati;
+Offline mostra la copertura dei chunk, non solo una mappa OSM;
+la mappa visibile da scaricare coincide con ciò che verrà renderizzato offline.
+Criterio di uscita: seleziono una valle, la scarico e ritrovo lo stesso stile pixel-art senza rete.
+9. Prestazioni e qualità
+Misurare su dispositivo reale:
+primo rendering;
+pan/zoom;
+RAM;
+batteria;
+tempo di download;
+dimensione cache;
+qualità con dati incompleti.
+Criterio di uscita: nessun caricamento bloccante, nessun redraw completo a ogni GPS fix, nessun “verde vuoto” senza messaggio diagnostico.
+Ordine operativo
+Specifica visiva e schema chunk.
+Prototipo offline su area reale singola.
+Compositore base: prato, bosco, sentiero, torrente.
+Verifica visiva con te.
+Pipeline dati e cache.
+GPS/Bit/POI.
+Download offline.
+Estensione di biomi e copertura.
+Il prossimo punto concreto è il prototipo locale del punto 2: lì smettiamo definitivamente di lavorare su filtri e dimostriamo se il renderer può produrre una scena vera nello stile desiderato.

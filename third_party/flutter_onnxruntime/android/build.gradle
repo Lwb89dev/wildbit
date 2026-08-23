@@ -1,0 +1,37 @@
+group = "com.masicai.flutteronnxruntime"
+version = "1.0-SNAPSHOT"
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "com.masicai.flutteronnxruntime"
+    compileSdk = 37
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.java.srcDirs += "src/main/kotlin"
+        test.java.srcDirs += "src/test/kotlin"
+    }
+
+    defaultConfig {
+        minSdk = 21
+    }
+
+    dependencies {
+        testImplementation("org.jetbrains.kotlin:kotlin-test")
+        testImplementation("org.mockito:mockito-core:5.0.0")
+        implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.23.0'
+    }
+}
+
+// Kotlin is provided by AGP 9's built-in Kotlin support. This must not apply
+// a standalone Kotlin Gradle Plugin, which Flutter will reject in the future.
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}

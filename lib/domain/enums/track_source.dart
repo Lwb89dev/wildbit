@@ -1,0 +1,1 @@
+enum TrackSource { recorded, imported }
