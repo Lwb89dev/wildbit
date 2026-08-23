@@ -30,6 +30,7 @@ import '../../map_rendering/layers/osm_pixel_poi_layer.dart';
 import '../../map_rendering/layers/osm_pixel_foreground_vegetation_layer.dart';
 import '../../map_rendering/layers/osm_pixel_flower_layer.dart';
 import '../../map_rendering/layers/osm_pixel_route_layer.dart';
+import '../../map_rendering/layers/osm_pixel_route_label_layer.dart';
 import '../../map_rendering/layers/osm_pixel_tree_layer.dart';
 import '../../map_rendering/layers/osm_pixel_urban_layer.dart';
 import '../../map_rendering/layers/osm_pixel_water_layer.dart';
@@ -502,6 +503,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
               OsmPixelForegroundVegetationLayer(features: visibleFeatures),
               OsmPixelFlowerLayer(features: visibleFeatures),
+              OsmPixelRouteLabelLayer(features: visibleFeatures),
               OsmPixelPoiLayer(
                 features: visibleFeatures,
                 onPoiTap: _openPoiDetails,

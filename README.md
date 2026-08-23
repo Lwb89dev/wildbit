@@ -1,168 +1,170 @@
 # WildBit
 
-WildBit è un’app escursionistica sperimentale, privacy-first, costruita con
-Flutter. Il suo elemento centrale è una carta geografica in pixel art generata
-da dati OpenStreetMap: non una normale mappa raster con un filtro pixelato, ma
-un renderer semantico originale che trasforma boschi, prati, acqua, sentieri,
-edifici e POI in un piccolo mondo illustrato.
+WildBit is an experimental, privacy-first hiking application built with
+Flutter. Its centrepiece is a pixel-art geographic map generated from
+OpenStreetMap data: not a conventional raster map with a pixelation filter, but
+an original semantic renderer that turns forests, meadows, water, trails,
+buildings, and POIs into a small illustrated world.
 
-Bit, la mascotte, occupa fisicamente la scena: cammina con il bastone da
-trekking, consulta la mappa quando l’utente è fermo e viene ordinato in
-profondità rispetto ad alberi e rocce anche quando la carta viene ruotata.
+Bit, the mascot, physically inhabits the scene. Bit walks with a trekking pole,
+checks a map while the user is stationary, and is depth-sorted against trees
+and rocks even when the map is rotated.
 
 > [!WARNING]
-> WildBit è attualmente un prototipo **alpha**. Non è un dispositivo di
-> navigazione certificato e non deve essere usato come unica fonte per
-> scegliere o seguire un percorso. Dati OSM, GPS, accessibilità, orari,
-> potabilità e condizioni dei sentieri possono essere incompleti o non
-> aggiornati.
+> WildBit is currently an **alpha prototype**. It is not a certified navigation
+> device and must not be used as the sole source for choosing or following a
+> route. OSM data, GPS readings, accessibility, opening hours, drinking-water
+> status, and trail conditions may be incomplete or outdated.
 
-## Obiettivi
+## Goals
 
-- Rendere una carta escursionistica leggibile con un linguaggio pixel-art
-  coerente, senza incorporare artwork o codice proprietario di terzi.
-- Funzionare senza Google Play Services per il fix della posizione su Android.
-- Conservare localmente tracce e aree offline in un database cifrato.
-- Usare servizi e protocolli aperti: OpenStreetMap, Overpass e Nostr.
-- Mantenere separati dato geografico, rappresentazione visiva e valutazioni di
-  sicurezza.
+- Render a readable hiking map with a consistent pixel-art language, without
+  embedding proprietary third-party artwork or code.
+- Obtain location fixes on Android without Google Play Services.
+- Store tracks and offline areas locally in an encrypted database.
+- Use open services and protocols: OpenStreetMap, Overpass, and Nostr.
+- Keep geographic data, visual representation, and safety assessments
+  separate.
 
-Lo stile prende ispirazione generale dai diorami JRPG e dall’HD-2D, ma WildBit
-non è affiliato a Square Enix e non utilizza suoi asset, mappe o codice.
+The visual direction draws broad inspiration from JRPG dioramas and HD-2D.
+WildBit is not affiliated with Square Enix and does not use its assets, maps,
+or code.
 
-## Stato delle funzionalità
+## Feature status
 
-| Area | Stato attuale |
+| Area | Current status |
 | --- | --- |
-| Renderer pixel-art | Attivo sulla mappa principale; FlutterMap gestisce soltanto camera, proiezione e gesture |
-| Terreno e biomi | Prato, foresta, roccia, neve, acqua, corsi d’acqua e costa |
-| Geometrie | Sentieri, strade, ponti, edifici, rive e scala cartografica |
-| Oggetti | Alberi, sottobosco, fiori, rocce, rifugi, cartelli e altri POI |
-| Bit | Animazioni idle/cammino, scala legata allo zoom e occlusione rotazionale |
-| GPS Android | `LocationManager` forzato, cache nativa e fix GNSS senza API Google |
-| Esplora | Ricerca sentieri OSM per nome o entro un raggio configurabile fino a 100 km |
-| Traccia | Registrazione, pausa, salvataggio e statistiche della camminata |
-| Offline | Selezione area da mappa e cache delle feature geografiche; ancora sperimentale |
-| POI | Etichette anticollisione, schede e metadati OSM conservativi |
-| Voce di Bit | Sintesi offline Kokoro/ONNX opzionale con fonemizzazione eSpeak NG |
-| Nostr | Login facoltativo con Amber o nsec e condivisione esplicita delle tracce |
-| Routing automatico | Non disponibile come navigazione affidabile; i segmenti proposti richiedono verifica umana |
+| Pixel-art renderer | Active on the main map; FlutterMap only handles the camera, projection, and gestures |
+| Terrain and biomes | Grassland, forest, rock, snow, water, waterways, and coastline |
+| Geometry | Trails, roads, bridges, buildings, shorelines, and a map scale |
+| Objects | Trees, undergrowth, flowers, rocks, shelters, guideposts, and other POIs |
+| Bit | Idle/walking animations, zoom-aware scale, and rotation-aware occlusion |
+| Android GPS | Forced `LocationManager`, native cache, and GNSS fixes without Google APIs |
+| Explore | OSM trail search by name or within a configurable radius up to 100 km |
+| Track | Recording, pausing, saving, and hiking statistics |
+| Offline | Map-based area selection and geographic feature caching; still experimental |
+| POIs | Collision-aware labels, detail sheets, and conservative OSM metadata |
+| Bit's voice | Optional offline Kokoro/ONNX synthesis with eSpeak NG phonemisation |
+| Nostr | Optional Amber or nsec login and explicit track sharing |
+| Automatic routing | Not available as trusted navigation; proposed segments require human verification |
 
-Le schermate principali sono `Mappa`, `Esplora`, `Traccia`, `Percorsi`,
-`Offline` e `Impostazioni`.
+The main sections are `Map`, `Explore`, `Track`, `Routes`, `Offline`,
+and `Settings`.
 
-## Il renderer della mappa
+## Map renderer
 
-La mappa principale non visualizza tile raster OSM. La pipeline è:
+The main map does not display OSM raster tiles. Its pipeline is:
 
 ```text
 OpenStreetMap / Overpass
         ↓
-parser e modello semantico WildBit
+WildBit semantic parser and model
         ↓
-cache geografica versionata
+versioned geographic cache
         ↓
-proiezione FlutterMap
+FlutterMap projection
         ↓
-composizione Flutter Canvas + sprite pixel-art
+Flutter Canvas composition + pixel-art sprites
 ```
 
-Ordine di composizione semplificato:
+Simplified composition order:
 
 ```text
-terreno e acqua
-→ rive, geologia e curve di livello
-→ biomi ed edifici
-→ sentieri, strade e ponti
-→ alberi, rocce e Bit con profondità geografica
-→ vegetazione di primo piano
-→ POI, etichette e interfaccia
+terrain and water
+→ shorelines, geology, and contour lines
+→ biomes and buildings
+→ trails, roads, and bridges
+→ trees, rocks, and Bit with geographic depth
+→ foreground vegetation
+→ POIs, labels, and interface
 ```
 
-Principi implementati:
+Implemented principles:
 
-- distribuzione deterministica: lo stesso oggetto mantiene posizione e variante;
-- coordinate geografiche stabili durante pan, zoom e rotazione;
-- nearest-neighbour per gli asset, senza sfocatura del pixel;
-- sentieri e strade non vengono eliminati per alleggerire un livello di zoom;
-- dettagli decorativi e dimensioni seguono curve LOD separate;
-- oggetti non vengono generati dentro acqua o nel corridoio dei percorsi;
-- Bit e gli oggetti alti vengono ordinati usando il punto a terra già
-  proiettato e ruotato sullo schermo;
-- marker POI sempre presenti, mentre soltanto le etichette secondarie possono
-  essere omesse quando non c’è spazio;
-- un tag mancante rimane sconosciuto: per esempio una sorgente naturale non
-  viene considerata potabile senza un’indicazione OSM esplicita.
+- deterministic distribution: the same object retains its position and variant;
+- stable geographic coordinates during pan, zoom, and rotation;
+- nearest-neighbour asset rendering with no pixel blurring;
+- trails and roads are not removed merely to simplify a zoom level;
+- decorative detail and object size use separate LOD curves;
+- objects are not generated inside water or within route corridors;
+- Bit and tall objects are sorted using their projected, rotation-aware ground
+  anchors;
+- POI markers remain present, while only secondary labels may be omitted when
+  space is unavailable;
+- missing tags remain unknown: for example, a natural spring is not considered
+  drinkable without an explicit OSM indication;
+- hiking-route relations enrich only their exact OSM way members and never
+  invent connections between nearby segments.
 
-La schermata di selezione offline è un’eccezione intenzionale: usa una mappa
-OSM standard e l’overlay escursionistico Waymarked Trails per rendere evidente
-l’area da scaricare. Questo raster non è il renderer della mappa principale.
+The offline-area selection screen is an intentional exception: it uses a
+standard OSM map and the Waymarked Trails hiking overlay to make the download
+area clear. That raster is not part of the main pixel-art renderer.
 
-## Stack tecnico
+## Technology
 
-- Flutter e Dart
-- `flutter_map` e `latlong2`
-- OpenStreetMap e API Overpass pubbliche
-- Drift + SQLite3MultipleCiphers per il database locale cifrato
-- Android `LocationManager` tramite `geolocator` e canale nativo
-- Kokoro-82M tramite ONNX Runtime, con eSpeak NG
-- Nostr, NIP-44 e firma esterna NIP-55 tramite Amber
-- Provider per il grafo delle dipendenze
+- Flutter and Dart
+- `flutter_map` and `latlong2`
+- OpenStreetMap and public Overpass APIs
+- Drift and SQLite3MultipleCiphers for the encrypted local database
+- Android `LocationManager` through `geolocator` and a native channel
+- Kokoro-82M through ONNX Runtime, with eSpeak NG
+- Nostr, NIP-44, and external NIP-55 signing through Amber
+- Provider for dependency wiring
 
-## Struttura del repository
+## Repository layout
 
 ```text
-android/                   integrazione e build Android
+android/                   Android integration and build
 assets/
-  icons/                   icona launcher e mascotte
-  map/mock/                tile e sprite del renderer
-  sprites/bit/             frame delle animazioni di Bit
-docs/                      specifiche visive, tecniche e prestazionali
+  icons/                   launcher icon and mascot
+  map/mock/                renderer tiles and sprites
+  sprites/bit/             Bit animation frames
+docs/                      visual, technical, and performance specifications
 lib/
-  app/                     bootstrap, provider e tema
-  data/                    parser OSM, cache e repository
-  domain/                  entità e regole indipendenti dalla UI
-  location/                sorgenti GNSS reali e simulate
-  map_rendering/           compositori, layer Canvas, Bit e budget
-  offline/                 download e ripresa delle aree
-  presentation/            schermate Flutter
-  services/                voce, Nostr, registrazione e sicurezza
-  storage/                 database Drift
-linux/                     runner desktop
-test/                      test unitari, geometrici e widget
-third_party/               fork locali necessari alla build
+  app/                     bootstrap, providers, and theme
+  data/                    OSM parser, cache, and repositories
+  domain/                  UI-independent entities and rules
+  location/                real and simulated GNSS sources
+  map_rendering/           compositors, Canvas layers, Bit, and budgets
+  offline/                 area downloads and resumption
+  presentation/            Flutter screens
+  services/                voice, Nostr, recording, and security
+  storage/                 Drift database
+linux/                     desktop runner
+test/                      unit, geometry, and widget tests
+third_party/               local forks required by the build
 ```
 
-## Requisiti di sviluppo
+## Development requirements
 
-- Flutter con Dart `>= 3.12.2 < 4.0.0`
+- Flutter with Dart `>= 3.12.2 < 4.0.0`
 - Java 17
-- Android SDK Platform 37 per la build Android
-- toolchain Linux desktop configurata, se si usa il runner Linux
-- un dispositivo Android o un emulatore per verificare permessi e GNSS reali
+- Android SDK Platform 37 for Android builds
+- A configured Linux desktop toolchain when using the Linux runner
+- An Android device or emulator to test real permissions and GNSS behaviour
 
-Controllare l’ambiente:
+Check the environment:
 
 ```bash
 flutter doctor -v
 flutter pub get
 ```
 
-## Avvio
+## Running WildBit
 
-### Linux con posizione simulata
+### Linux with a simulated location
 
-Il runner desktop usa automaticamente un percorso simulato, così Bit può
-essere verificato senza hardware GNSS:
+The desktop runner automatically uses a simulated route, so Bit can be tested
+without GNSS hardware:
 
 ```bash
 flutter run -d linux
 ```
 
-### Preview offline completa
+### Complete offline preview
 
-Questa modalità non interroga Overpass e carica immediatamente una valle mock
-con biomi, edifici, sentieri, alberi, acqua e POI:
+This mode does not query Overpass. It immediately loads a mock valley with
+biomes, buildings, trails, trees, water, and POIs:
 
 ```bash
 flutter run -d linux \
@@ -170,9 +172,9 @@ flutter run -d linux \
   --dart-define=WILDBIT_MIXED_PREVIEW=true
 ```
 
-### Laboratorio isolato del renderer
+### Isolated renderer laboratory
 
-Per lavorare soltanto sulla scena grafica statica:
+To work only on the static graphic scene:
 
 ```bash
 flutter run -d linux -t lib/mock_preview_main.dart
@@ -180,118 +182,114 @@ flutter run -d linux -t lib/mock_preview_main.dart
 
 ### Android
 
-Con un dispositivo visibile da ADB:
+With a device visible through ADB:
 
 ```bash
 flutter devices
 flutter run -d <device-id>
 ```
 
-Al primo avvio l’onboarding richiede esplicitamente il permesso di posizione.
-L’identità Nostr è facoltativa.
+On first launch, onboarding explicitly requests location permission. A Nostr
+identity is optional.
 
 > [!IMPORTANT]
-> La configurazione `release` Android usa ancora la chiave di debug. Prima di
-> distribuire APK/AAB occorre configurare firma, application ID definitivo,
-> versioning e pipeline di rilascio.
+> The Android `release` configuration still uses the debug signing key.
+> Configure a production signing key, final application ID, versioning, and a
+> release pipeline before distributing an APK or AAB.
 
-## Test e controlli
+## Tests and checks
 
-Eseguire l’intera suite:
+Run the complete suite:
 
 ```bash
 flutter test
 ```
 
-Controlli mirati utili durante lo sviluppo del renderer:
+Useful focused checks while developing the renderer:
 
 ```bash
 dart analyze lib/map_rendering
 flutter test test/map_geometry_rules_test.dart
 flutter test test/projected_depth_order_test.dart
 flutter test test/poi_label_layout_test.dart
+flutter test test/route_label_layout_test.dart
 ```
 
-La suite copre, tra le altre cose, parsing e cache OSM, topologia dei percorsi,
-coste, rive, persistenza degli oggetti allo zoom, ordinamento Bit/alberi,
-collisione delle etichette e trattamento conservativo dei metadati POI.
+The suite covers OSM parsing and caching, route topology, coastlines,
+shorelines, object persistence across zoom levels, Bit/tree depth ordering,
+label collision handling, and conservative POI metadata treatment.
 
-## Dati e servizi esterni
+## External data and services
 
-| Servizio | Utilizzo | Nota |
+| Service | Use | Notes |
 | --- | --- | --- |
-| OpenStreetMap | geometrie e tag della carta | dati © OpenStreetMap contributors, ODbL |
-| Overpass | viewport e ricerca sentieri | istanze pubbliche soggette a timeout, rate limit e indisponibilità |
-| tile.openstreetmap.org | sola selezione area offline | non usato come fondo della mappa pixel-art principale |
-| Waymarked Trails | overlay escursionistico nella selezione offline | servizio esterno, non incluso nella cache grafica principale |
-| relay Nostr | pubblicazione volontaria di tracce | la traccia GPS diventa pubblica solo dopo conferma esplicita |
-| Hugging Face | download opzionale del modello Kokoro | file verificati per dimensione e SHA-256 prima dell’uso |
+| OpenStreetMap | Map geometry and tags | Data © OpenStreetMap contributors, ODbL |
+| Overpass | Viewport data and trail search | Public instances are subject to timeouts, rate limits, and outages |
+| tile.openstreetmap.org | Offline-area selection only | Not used as the main pixel-art map background |
+| Waymarked Trails | Hiking overlay in offline selection | External service, not included in the main graphic cache |
+| Nostr relays | Voluntary track publishing | GPS tracks become public only after explicit confirmation |
+| Hugging Face | Optional Kokoro model download | Files are checked for size and SHA-256 before use |
 
-Overpass non è adatto al download massivo di regioni. L’attuale cache a celle è
-una soluzione da prototipo; estratti regionali PBF o vector tile aperte sono
-la direzione prevista per aree più grandi e affidabilità offline reale.
+Overpass is not suitable for bulk regional downloads. The current cell cache
+is a prototype solution; regional PBF extracts or open vector tiles are the
+intended direction for larger areas and reliable offline use.
 
-## Privacy e sicurezza
+## Privacy and safety
 
-- WildBit non richiede un account per usare mappa, GPS e registrazione.
-- Su Android la posizione usa `LocationManager` con
-  `forceLocationManager: true`; non viene richiesto il fused provider di
-  Google Play Services.
-- Il database è cifrato con una chiave casuale conservata nel secure storage
-  della piattaforma.
-- Amber è il metodo Nostr consigliato: la chiave privata non entra nel processo
-  di WildBit.
-- L’inserimento diretto di un nsec è supportato, ma lo conserva nel secure
-  storage del dispositivo ed è quindi un’opzione più sensibile.
-- La pubblicazione Nostr include i punti GPS esatti della traccia. La UI deve
-  ottenere una conferma esplicita prima dell’invio.
-- Il modello vocale è opzionale e, dopo il download, l’inferenza avviene
-  localmente.
+- WildBit does not require an account for maps, GPS, or recording.
+- On Android, location uses `LocationManager` with
+  `forceLocationManager: true`; the Google Play Services fused provider is
+  not requested.
+- The database is encrypted with a random key held in the platform secure
+  storage.
+- Amber is the recommended Nostr method: the private key never enters the
+  WildBit process.
+- Direct nsec entry is supported, but stores the key in device secure storage
+  and is therefore a more sensitive option.
+- Nostr publishing includes the exact GPS points of a track. The UI must obtain
+  explicit confirmation before sending.
+- The voice model is optional and inference runs locally after download.
 
-## Limiti noti
+## Known limitations
 
-- Le istanze Overpass pubbliche possono rispondere con `429`, `500`, `502` o
-  timeout; la cache locale e i mirror riducono ma non eliminano il problema.
-- Rifugi e altri POI mappati come aree/edifici devono ancora essere trattati
-  con la stessa completezza dei POI nodo.
-- La coastline globale e le isole complesse richiedono ulteriore validazione
-  su dataset reali estesi.
-- La selezione offline è funzionante ma la pipeline non è ancora equivalente
-  a un pacchetto cartografico regionale completo.
-- Orari, accesso, potabilità e difficoltà sono osservazioni OSM, non garanzie
-  sullo stato corrente del luogo.
-- Autonomia, memoria e frame time devono continuare a essere misurati su
-  dispositivi Android di fascia diversa.
-- La voce Kokoro richiede un download iniziale relativamente grande.
+- Public Overpass instances may return `429`, `500`, `502`, or time out;
+  local caching and mirrors reduce but do not eliminate this problem.
+- Global coastlines and complex islands need further validation against large,
+  real-world datasets.
+- Offline selection works, but the pipeline is not yet equivalent to a complete
+  regional map package.
+- Opening hours, access, drinkability, and difficulty are OSM observations, not
+  guarantees of current real-world conditions.
+- Battery life, memory use, and frame time still need measurement across a
+  wider range of Android devices.
+- Kokoro requires a relatively large initial download.
 
-## Documentazione tecnica
+## Technical documentation
 
 - [`docs/pixel_map_renderer_spec.md`](docs/pixel_map_renderer_spec.md) —
-  linguaggio visivo e livelli del renderer
-- [`docs/pixel_map_mock_assets.md`](docs/pixel_map_mock_assets.md) — asset,
-  ancoraggi, footprint e occlusioni
-- [`docs/coastline_composition.md`](docs/coastline_composition.md) — regole per
-  costa, catene e isole
+  renderer visual language and layer specification
+- [`docs/pixel_map_mock_assets.md`](docs/pixel_map_mock_assets.md) — assets,
+  anchors, footprints, and occlusion rules
+- [`docs/coastline_composition.md`](docs/coastline_composition.md) —
+  coastline, chain, and island rules
 - [`docs/map_rendering_performance.md`](docs/map_rendering_performance.md) —
-  budget e principi prestazionali
-- [`roadmap.txt`](roadmap.txt) — roadmap storica del renderer
+  budgets and performance principles
+- [`roadmap.txt`](roadmap.txt) — historical renderer roadmap
 
-Alcuni documenti descrivono anche obiettivi e budget precedenti: il codice e i
-test restano la fonte di verità sul comportamento attualmente implementato.
+Some documents also describe earlier goals and budgets. The code and tests are
+the source of truth for currently implemented behaviour.
 
-## Licenze e pubblicazione del repository
+## License
 
-Al momento il repository **non contiene una licenza principale**. In assenza
-di un file `LICENSE`, il codice e gli asset non sono automaticamente
-riutilizzabili o redistribuibili da terzi. Per un semplice backup cloud è
-consigliato mantenere il repository privato finché non sono stati definiti:
+WildBit is free software licensed under the
+[GNU General Public License version 3](LICENSE), identified by the SPDX
+expression `GPL-3.0-only`.
 
-1. licenza del codice WildBit;
-2. licenza e provenienza definitiva di ogni artwork;
-3. compatibilità delle licenze delle dipendenze e dei componenti in
-   `third_party/`;
-4. attribuzioni complete per modello vocale, eSpeak NG, OSM e servizi tile.
+You may use, study, modify, and redistribute WildBit under the terms of that
+license. If you distribute a modified version or a product containing covered
+WildBit code, the corresponding source must remain available under GPLv3.
 
-I componenti inclusi in `third_party/` conservano i rispettivi file `LICENSE`.
-OpenStreetMap è attribuito ai suoi contributori secondo ODbL. Marchi e nomi di
-terzi appartengono ai rispettivi proprietari.
+Files in `third_party/` retain their own copyright notices and licenses.
+OpenStreetMap data is © OpenStreetMap contributors and is available under the
+ODbL. Third-party trademarks, services, datasets, models, and names remain the
+property of their respective owners.

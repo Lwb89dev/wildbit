@@ -10,12 +10,7 @@ import 'package:wildbit/map_rendering/performance/map_rendering_budget.dart';
 void main() {
   const lake = AreaFeature(
     kind: MapFeatureKind.water,
-    ring: [
-      LatLng(45, 10),
-      LatLng(45, 11),
-      LatLng(46, 11),
-      LatLng(46, 10),
-    ],
+    ring: [LatLng(45, 10), LatLng(45, 11), LatLng(46, 11), LatLng(46, 10)],
     sourceId: 'lake-1',
   );
 
@@ -32,26 +27,17 @@ void main() {
 
   test('rejects objects inside any water area', () {
     expect(
-      MapGeometryRules.insideAnyWater(
-        const LatLng(45.25, 10.25),
-        [lake],
-      ),
+      MapGeometryRules.insideAnyWater(const LatLng(45.25, 10.25), [lake]),
       isTrue,
     );
     expect(
-      MapGeometryRules.insideAnyWater(
-        const LatLng(44.9, 10.25),
-        [lake],
-      ),
+      MapGeometryRules.insideAnyWater(const LatLng(44.9, 10.25), [lake]),
       isFalse,
     );
   });
 
   test('ranks larger geographic polygons first', () {
-    expect(
-      MapGeometryRules.polygonArea(lake.ring),
-      greaterThan(0),
-    );
+    expect(MapGeometryRules.polygonArea(lake.ring), greaterThan(0));
   });
 
   test('detects the transition band along polygon boundaries', () {
@@ -74,25 +60,13 @@ void main() {
   });
 
   test('keeps decorative sprites readable across zoom extremes', () {
-    expect(
-      MapRenderingBudget.decorativeScale(3),
-      closeTo(.28, 0.001),
-    );
-    expect(
-      MapRenderingBudget.decorativeScale(16),
-      closeTo(1, 0.001),
-    );
-    expect(
-      MapRenderingBudget.decorativeScale(22),
-      closeTo(1.3, 0.001),
-    );
+    expect(MapRenderingBudget.decorativeScale(3), closeTo(.28, 0.001));
+    expect(MapRenderingBudget.decorativeScale(16), closeTo(1, 0.001));
+    expect(MapRenderingBudget.decorativeScale(22), closeTo(1.3, 0.001));
   });
 
   test('uses deterministic progressive decorative density', () {
-    expect(
-      MapRenderingBudget.decorativeCount(8, overview: 20, close: 100),
-      20,
-    );
+    expect(MapRenderingBudget.decorativeCount(8, overview: 20, close: 100), 20);
     expect(
       MapRenderingBudget.decorativeCount(11.5, overview: 20, close: 100),
       60,
@@ -119,9 +93,8 @@ void main() {
       MapRenderingBudget.poiMarkerSize(PoiType.shelter, 16),
       greaterThan(MapRenderingBudget.poiMarkerSize(PoiType.campsite, 16)),
     );
-    expect(
-      MapRenderingBudget.poiMarkerSize(PoiType.shelter, 3),
-      greaterThanOrEqualTo(15),
-    );
+    expect(MapRenderingBudget.poiMarkerSize(PoiType.shelter, 16), 76);
+    expect(MapRenderingBudget.poiMarkerSize(PoiType.shelter, 14), 58.4);
+    expect(MapRenderingBudget.poiMarkerSize(PoiType.shelter, 3), 32);
   });
 }

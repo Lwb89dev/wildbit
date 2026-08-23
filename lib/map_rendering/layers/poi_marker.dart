@@ -3,12 +3,10 @@ import 'package:flutter/material.dart';
 import '../../app/theme/wildbit_theme.dart';
 import '../../domain/enums/poi_type.dart';
 
-String? _assetFor(PoiType type, int variant) => switch (type) {
-  PoiType.shelter => variant.isEven
-      ? 'assets/map/mock/structures/hut_alpine.png'
-      : 'assets/map/mock/structures/hut_bivouac.png',
-  PoiType.viewpoint || PoiType.guidepost =>
-    'assets/map/mock/structures/guidepost_multi.png',
+String? _assetFor(PoiType type, int _) => switch (type) {
+  PoiType.shelter => 'assets/map/mock/structures/hut_alpine.png',
+  PoiType.viewpoint ||
+  PoiType.guidepost => 'assets/map/mock/structures/guidepost_multi.png',
   PoiType.campsite => 'assets/map/mock/structures/trail_marker_low.png',
   PoiType.summit => 'assets/map/mock/structures/boulder.png',
   PoiType.parking || PoiType.waterSource || PoiType.tree => null,
@@ -37,30 +35,28 @@ class PoiMarker extends StatelessWidget {
       child: Tooltip(
         message: label,
         child: asset == null
-          ? DecoratedBox(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFFFFFCF0), Color(0xFFE6DDBF)],
-                ),
-                border: Border.all(
-                  color: WildBitColors.brown.withValues(alpha: .85),
-                  width: 1.5,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF263325).withValues(alpha: .35),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
+            ? DecoratedBox(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFFFFFCF0), Color(0xFFE6DDBF)],
                   ),
-                ],
-              ),
-              child: CustomPaint(
-                painter: _PixelPoiGlyphPainter(type),
-              ),
-            )
+                  border: Border.all(
+                    color: WildBitColors.brown.withValues(alpha: .85),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF263325).withValues(alpha: .35),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: CustomPaint(painter: _PixelPoiGlyphPainter(type)),
+              )
             : Stack(
                 alignment: Alignment.bottomCenter,
                 children: [

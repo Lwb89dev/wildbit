@@ -113,19 +113,25 @@ class _RoutePainter extends CustomPainter {
           filterQuality: ui.FilterQuality.none,
         ),
     ];
-    final lines = features.lines.where(
-      (line) =>
-          (line.kind == MapFeatureKind.trail ||
-              line.kind == MapFeatureKind.road) &&
-          MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
-    ).toList(growable: false)
-      ..sort((a, b) {
-        // Broad roads form the base; narrow trails remain readable on top at
-        // intersections and shared nodes.
-        final aOrder = a.kind == MapFeatureKind.road ? 0 : 1;
-        final bOrder = b.kind == MapFeatureKind.road ? 0 : 1;
-        return aOrder.compareTo(bOrder);
-      });
+    final lines =
+        features.lines
+            .where(
+              (line) =>
+                  (line.kind == MapFeatureKind.trail ||
+                      line.kind == MapFeatureKind.road) &&
+                  MapRenderingBudget.lineMayBeVisible(
+                    line,
+                    camera.visibleBounds,
+                  ),
+            )
+            .toList(growable: false)
+          ..sort((a, b) {
+            // Broad roads form the base; narrow trails remain readable on top at
+            // intersections and shared nodes.
+            final aOrder = a.kind == MapFeatureKind.road ? 0 : 1;
+            final bOrder = b.kind == MapFeatureKind.road ? 0 : 1;
+            return aOrder.compareTo(bOrder);
+          });
     for (final line in lines) {
       final points = OsmLineProjector.projectSimplified(
         line,

@@ -245,23 +245,16 @@ class _PoiPainter extends CustomPainter {
 
   String? _assetFor(Poi poi) => switch (poi.type) {
     PoiType.shelter =>
-      _stableSeed(poi.id).isEven
-          ? 'assets/map/mock/structures/hut_alpine.png'
-          : 'assets/map/mock/structures/hut_bivouac.png',
+      poi.metadata.shelterType == 'wilderness_hut' ||
+              poi.metadata.shelterType == 'shelter'
+          ? 'assets/map/mock/structures/hut_bivouac.png'
+          : 'assets/map/mock/structures/hut_alpine.png',
     PoiType.viewpoint ||
     PoiType.guidepost => 'assets/map/mock/structures/guidepost_multi.png',
     PoiType.campsite => 'assets/map/mock/structures/trail_marker_low.png',
     PoiType.summit => 'assets/map/mock/structures/boulder.png',
     PoiType.parking || PoiType.waterSource || PoiType.tree => null,
   };
-
-  int _stableSeed(String id) {
-    var seed = 17;
-    for (final unit in id.codeUnits) {
-      seed = seed * 31 + unit;
-    }
-    return seed.abs();
-  }
 
   void _paintGlyph(
     Canvas canvas,

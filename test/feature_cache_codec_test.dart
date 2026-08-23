@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:wildbit/data/osm/feature_cache_codec.dart';
 import 'package:wildbit/domain/entities/line_feature.dart';
+import 'package:wildbit/domain/entities/hiking_route_membership.dart';
 import 'package:wildbit/domain/entities/map_feature_collection.dart';
 import 'package:wildbit/domain/entities/poi.dart';
 import 'package:wildbit/domain/entities/poi_metadata.dart';
@@ -19,7 +20,18 @@ void main() {
           kind: MapFeatureKind.trail,
           points: const [LatLng(46, 11), LatLng(46.001, 11.001)],
           nodeIds: const ['1', '2'],
-          metadata: const RouteMetadata(osmWayId: '1'),
+          metadata: const RouteMetadata(
+            osmWayId: '1',
+            ref: '105',
+            hikingRoutes: [
+              HikingRouteMembership(
+                relationId: '700',
+                ref: 'E5',
+                name: 'Sentiero Europeo E5',
+                network: 'nwn',
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -27,6 +39,12 @@ void main() {
     final restored = FeatureCacheCodec.decode(FeatureCacheCodec.encode(source));
 
     expect(restored.lines.single.nodeIds, ['1', '2']);
+    expect(restored.lines.single.metadata.ref, '105');
+    final route = restored.lines.single.metadata.hikingRoutes.single;
+    expect(route.relationId, '700');
+    expect(route.ref, 'E5');
+    expect(route.name, 'Sentiero Europeo E5');
+    expect(route.network, 'nwn');
   });
 
   test('persists OSM identities for filled polygons', () {
@@ -77,5 +95,25 @@ void main() {
     expect(metadata.drinkingWater, isFalse);
     expect(metadata.operatorName, 'Comune');
     expect(metadata.openingHours, '24/7');
+  });
+
+  test('persists the shelter class used to select its silhouette', () {
+    const source = MapFeatureCollection(
+      areas: [],
+      lines: [],
+      pois: [
+        Poi(
+          id: 'osm-node-84',
+          name: 'Bivacco',
+          type: PoiType.shelter,
+          position: LatLng(46, 11),
+          metadata: PoiMetadata(shelterType: 'wilderness_hut'),
+        ),
+      ],
+    );
+
+    final restored = FeatureCacheCodec.decode(FeatureCacheCodec.encode(source));
+
+    expect(restored.pois.single.metadata.shelterType, 'wilderness_hut');
   });
 }

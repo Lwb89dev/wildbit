@@ -71,9 +71,15 @@ abstract final class MapRenderingBudget {
   };
 
   static double poiMarkerSize(PoiType type, double zoom) {
+    // Shelters are geographic structures, not compact pin icons. At walking
+    // zoom they must read as buildings and remain larger than Bit and signs.
+    if (type == PoiType.shelter) {
+      final t = ((zoom - 11) / 5).clamp(0.0, 1.0);
+      return 32 + (76 - 32) * t;
+    }
     final base = (18 + (zoom - 11) * 3.5).clamp(16.0, 38.0).toDouble();
     final multiplier = switch (type) {
-      PoiType.shelter => 1.28,
+      PoiType.shelter => 1.0,
       PoiType.viewpoint => 1.05,
       PoiType.guidepost => .96,
       PoiType.campsite => .9,

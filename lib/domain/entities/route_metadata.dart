@@ -1,3 +1,5 @@
+import 'hiking_route_membership.dart';
+
 /// OSM attributes describing a route segment.
 ///
 /// These are observations from map data, not safety guarantees. Null means
@@ -14,6 +16,8 @@ class RouteMetadata {
     this.trailVisibility,
     this.access,
     this.footAccess,
+    this.ref,
+    this.hikingRoutes = const [],
   });
 
   final String? osmWayId;
@@ -25,12 +29,18 @@ class RouteMetadata {
   final String? trailVisibility;
   final String? access;
   final String? footAccess;
+  final String? ref;
+  final List<HikingRouteMembership> hikingRoutes;
 
   /// Only an explicit affirmative OSM bridge value allows bridge artwork.
   /// Unknown values deliberately do not become a passable-looking bridge.
   bool get hasConfirmedBridge => bridgeTag == 'yes';
 
-  static RouteMetadata fromOsmTags(Map<String, String> tags, {String? wayId}) {
+  static RouteMetadata fromOsmTags(
+    Map<String, String> tags, {
+    String? wayId,
+    List<HikingRouteMembership> hikingRoutes = const [],
+  }) {
     return RouteMetadata(
       osmWayId: wayId,
       bridgeTag: _value(tags['bridge']),
@@ -41,6 +51,8 @@ class RouteMetadata {
       trailVisibility: _value(tags['trail_visibility']),
       access: _value(tags['access']),
       footAccess: _value(tags['foot']),
+      ref: _value(tags['ref']),
+      hikingRoutes: hikingRoutes,
     );
   }
 

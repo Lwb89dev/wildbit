@@ -25,8 +25,7 @@ class OsmMapDataRepository implements MapDataRepository {
     http.Client? httpClient,
     this.offlinePreview = false,
     this.mixedPreview = false,
-  })
-    : _httpClient = httpClient ?? http.Client();
+  }) : _httpClient = httpClient ?? http.Client();
 
   final bool offlinePreview;
   final bool mixedPreview;
@@ -149,24 +148,28 @@ class OsmMapDataRepository implements MapDataRepository {
 
   Future<MapFeatureCollection> _fetchFromOverpass(GeoBounds cell) async {
     final query = OverpassQueryBuilder.forBounds(cell);
-    final buildingsQuery = OverpassQueryBuilder.buildingsForBounds(cell);
+    final structuresQuery = OverpassQueryBuilder.structuresForBounds(cell);
     final treesQuery = OverpassQueryBuilder.treesForBounds(cell);
     // Base geography first: bursting three queries per cell together causes
     // public Overpass instances to answer with 502 under load.
     final base = await _fetchQueryFromOverpass(query);
     final optional = await Future.wait<MapFeatureCollection?>([
-      _optionalQuery(buildingsQuery),
+      _optionalQuery(structuresQuery),
       _optionalQuery(treesQuery),
     ]);
-    final buildings = optional[0];
+    final structures = optional[0];
     final trees = optional[1];
-    // Buildings are optional context. Never discard valid roads, trails,
-    // water or mapped trees when the urban query is too large/unavailable.
+    // Structures and detailed vegetation are optional context. Never discard
+    // valid roads, trails or water when either query is unavailable.
     return MapFeatureCollection(
-      areas: [...base.areas, if (buildings != null) ...buildings.areas],
-      lines: base.lines,
-      pois: [...base.pois, if (trees != null) ...trees.pois],
-    );
+      areas: [...base.areas, if (structures != null) ...structures.areas],
+      lines: [...base.lines, if (structures != null) ...structures.lines],
+      pois: [
+        ...base.pois,
+        if (structures != null) ...structures.pois,
+        if (trees != null) ...trees.pois,
+      ],
+    ).deduplicated();
   }
 
   Future<MapFeatureCollection?> _optionalQuery(String query) async {
@@ -234,8 +237,9 @@ class OsmMapDataRepository implements MapDataRepository {
         // prevents every GPS/camera refresh from waiting through the same
         // dead endpoint chain again.
         final seconds = error.toString().contains('502') ? 45 : 25;
-        _endpointCooldownUntil[endpoint] =
-            DateTime.now().add(Duration(seconds: seconds));
+        _endpointCooldownUntil[endpoint] = DateTime.now().add(
+          Duration(seconds: seconds),
+        );
         debugPrint(
           'WildBit Overpass: ${Uri.parse(endpoint).host} errore $error',
         );

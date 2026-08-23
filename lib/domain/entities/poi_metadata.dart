@@ -11,6 +11,7 @@ class PoiMetadata {
     this.drinkingWater,
     this.operatorName,
     this.openingHours,
+    this.shelterType,
   });
 
   final double? elevationMeters;
@@ -18,6 +19,10 @@ class PoiMetadata {
   final bool? drinkingWater;
   final String? operatorName;
   final String? openingHours;
+
+  /// Exact OSM shelter classification used to select an honest silhouette.
+  /// Examples: `alpine_hut`, `wilderness_hut`, and `shelter`.
+  final String? shelterType;
 
   bool get hasMappedDetails =>
       elevationMeters != null ||
@@ -41,7 +46,16 @@ class PoiMetadata {
               : null),
       operatorName: _value(tags['operator']),
       openingHours: _value(tags['opening_hours']),
+      shelterType: type == PoiType.shelter ? _shelterTypeFrom(tags) : null,
     );
+  }
+
+  static String? _shelterTypeFrom(Map<String, String> tags) {
+    final tourism = tags['tourism'];
+    if (tourism == 'alpine_hut' || tourism == 'wilderness_hut') {
+      return tourism;
+    }
+    return tags['amenity'] == 'shelter' ? 'shelter' : null;
   }
 
   static String? _value(String? raw) {

@@ -20,6 +20,7 @@ void main() {
             'trail_visibility': 'intermediate',
             'access': 'permissive',
             'foot': 'yes',
+            'ref': '105',
           },
           'geometry': [
             {'lat': 46.0, 'lon': 11.0},
@@ -36,6 +37,7 @@ void main() {
     expect(metadata.widthMeters, .8);
     expect(metadata.sacScale, 'mountain_hiking');
     expect(metadata.trailVisibility, 'intermediate');
+    expect(metadata.ref, '105');
     expect(collection.lines.single.nodeIds, ['100', '101']);
   });
 
@@ -60,6 +62,55 @@ void main() {
 
     expect(metadata.widthMeters, isNull);
     expect(metadata.hasConfirmedBridge, isFalse);
+  });
+
+  test('enriches only exact way members from hiking route relations', () {
+    final collection = OverpassParser.parse({
+      'elements': [
+        {
+          'type': 'relation',
+          'id': 700,
+          'tags': {
+            'type': 'route',
+            'route': 'hiking',
+            'network': 'nwn',
+            'ref': 'E5',
+            'name': 'Sentiero Europeo E5',
+          },
+          'members': [
+            {'type': 'way', 'ref': 42, 'role': ''},
+            {'type': 'way', 'ref': 999, 'role': ''},
+            {'type': 'node', 'ref': 123, 'role': 'guidepost'},
+          ],
+        },
+        {
+          'type': 'way',
+          'id': 42,
+          'tags': {'highway': 'path'},
+          'geometry': [
+            {'lat': 46.0, 'lon': 11.0},
+            {'lat': 46.001, 'lon': 11.001},
+          ],
+        },
+        {
+          'type': 'way',
+          'id': 43,
+          'tags': {'highway': 'path'},
+          'geometry': [
+            {'lat': 46.002, 'lon': 11.002},
+            {'lat': 46.003, 'lon': 11.003},
+          ],
+        },
+      ],
+    });
+
+    final mapped = collection.lines.first.metadata.hikingRoutes.single;
+    expect(mapped.relationId, '700');
+    expect(mapped.ref, 'E5');
+    expect(mapped.name, 'Sentiero Europeo E5');
+    expect(mapped.network, 'nwn');
+    expect(collection.lines.last.metadata.hikingRoutes, isEmpty);
+    expect(collection.lines, hasLength(2));
   });
 
   test('parses hiking guideposts and wilderness huts as explicit POIs', () {
@@ -98,7 +149,75 @@ void main() {
     expect(collection.pois[0].metadata.operatorName, 'SAT');
     expect(collection.pois[1].type, PoiType.shelter);
     expect(collection.pois[1].name, 'Rifugio');
+    expect(collection.pois[1].metadata.shelterType, 'wilderness_hut');
     expect(collection.pois[1].metadata.openingHours, 'Jun-Sep 08:00-20:00');
+  });
+
+  test('keeps a hut way as both building footprint and semantic POI', () {
+    final collection = OverpassParser.parse({
+      'elements': [
+        {
+          'type': 'way',
+          'id': 901,
+          'tags': {
+            'building': 'yes',
+            'tourism': 'alpine_hut',
+            'name': 'Rifugio Stella',
+            'ele': '2010',
+          },
+          'geometry': [
+            {'lat': 46.0, 'lon': 11.0},
+            {'lat': 46.0, 'lon': 11.002},
+            {'lat': 46.002, 'lon': 11.002},
+            {'lat': 46.002, 'lon': 11.0},
+            {'lat': 46.0, 'lon': 11.0},
+          ],
+        },
+      ],
+    });
+
+    expect(collection.areas, hasLength(1));
+    expect(collection.areas.single.kind, MapFeatureKind.building);
+    expect(collection.pois, hasLength(1));
+    expect(collection.pois.single.id, 'osm-way-901');
+    expect(collection.pois.single.type, PoiType.shelter);
+    expect(collection.pois.single.name, 'Rifugio Stella');
+    expect(collection.pois.single.position.latitude, closeTo(46.001, 1e-6));
+    expect(collection.pois.single.position.longitude, closeTo(11.001, 1e-6));
+    expect(collection.pois.single.metadata.elevationMeters, 2010);
+    expect(collection.pois.single.metadata.shelterType, 'alpine_hut');
+  });
+
+  test('extracts a semantic POI from relation member geometry', () {
+    final collection = OverpassParser.parse({
+      'elements': [
+        {
+          'type': 'relation',
+          'id': 902,
+          'tags': {'tourism': 'camp_site', 'name': 'Campo del Bosco'},
+          'members': [
+            {
+              'type': 'way',
+              'ref': 12,
+              'role': 'outer',
+              'geometry': [
+                {'lat': 46.0, 'lon': 11.0},
+                {'lat': 46.0, 'lon': 11.004},
+                {'lat': 46.004, 'lon': 11.004},
+                {'lat': 46.004, 'lon': 11.0},
+                {'lat': 46.0, 'lon': 11.0},
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(collection.pois, hasLength(1));
+    expect(collection.pois.single.id, 'osm-relation-902');
+    expect(collection.pois.single.type, PoiType.campsite);
+    expect(collection.pois.single.position.latitude, closeTo(46.002, 1e-6));
+    expect(collection.pois.single.position.longitude, closeTo(11.002, 1e-6));
   });
 
   test('keeps a mapped stream as a waterway line, not a route', () {

@@ -2,9 +2,11 @@ import 'package:latlong2/latlong.dart';
 
 import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/line_feature.dart';
+import '../../domain/entities/hiking_route_membership.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
 import '../../domain/entities/poi_metadata.dart';
+import '../../domain/entities/route_metadata.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/enums/poi_type.dart';
 
@@ -78,6 +80,17 @@ final MapFeatureCollection testRegionFeatures = MapFeatureCollection(
     LineFeature(
       kind: MapFeatureKind.trail,
       name: 'Sentiero del Lago Alto',
+      metadata: RouteMetadata(
+        ref: '105',
+        hikingRoutes: [
+          HikingRouteMembership(
+            relationId: 'mock-e5',
+            ref: 'E5',
+            name: 'Sentiero Europeo E5',
+            network: 'iwn',
+          ),
+        ],
+      ),
       points: [
         LatLng(46.0740, 11.1150),
         LatLng(46.0700, 11.1190),

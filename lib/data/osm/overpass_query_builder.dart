@@ -9,7 +9,7 @@ abstract final class OverpassQueryBuilder {
         '${bounds.southWest.latitude},${bounds.southWest.longitude},'
         '${bounds.northEast.latitude},${bounds.northEast.longitude}';
 
-    final clauses = [
+    final clauses = <String>[
       'way["natural"="wood"]($bbox);',
       'way["landuse"="forest"]($bbox);',
       'way["landuse"="meadow"]($bbox);',
@@ -24,16 +24,7 @@ abstract final class OverpassQueryBuilder {
       'way["natural"="glacier"]($bbox);',
       'way["highway"~"^(path|footway|track|steps)\$"]($bbox);',
       'way["highway"~"^(residential|service|unclassified|tertiary|secondary|primary)\$"]($bbox);',
-      'node["tourism"="viewpoint"]($bbox);',
-      'node["tourism"="alpine_hut"]($bbox);',
-      'node["tourism"="wilderness_hut"]($bbox);',
-      'node["amenity"="shelter"]($bbox);',
-      'node["tourism"="information"]["information"="guidepost"]($bbox);',
-      'node["tourism"="camp_site"]($bbox);',
-      'node["amenity"="parking"]($bbox);',
-      'node["natural"="spring"]($bbox);',
-      'node["amenity"="drinking_water"]($bbox);',
-      'node["natural"="peak"]($bbox);',
+      for (final selector in _poiSelectors) 'node$selector($bbox);',
     ];
 
     // `body` retains the ordered OSM node references for every way; `geom`
@@ -41,17 +32,41 @@ abstract final class OverpassQueryBuilder {
     // alone is never used to infer a route connection by proximity.
     // Keep a slow public Overpass instance from blocking the first map paint
     // for minutes; the repository can retry another endpoint or refresh cache.
-    return '[out:json][timeout:12];(${clauses.join()});out body geom;';
+    // Route relations are metadata only. A separate `out body` prevents a
+    // long-distance route relation from returning geometry far outside the
+    // viewport; selected ways above remain the sole source of drawn lines.
+    return '[out:json][timeout:12];(${clauses.join()});out body geom;'
+        'relation["type"="route"]["route"~"^(hiking|foot)\$"]($bbox);'
+        'out body;';
   }
 
-  /// Buildings are fetched separately because dense urban cells can contain
-  /// thousands of them. Keeping them out of the route/vegetation response
-  /// prevents one oversized payload from dropping trees and trails too.
-  static String buildingsForBounds(GeoBounds bounds) {
+  static const _poiSelectors = [
+    '["tourism"="viewpoint"]',
+    '["tourism"="alpine_hut"]',
+    '["tourism"="wilderness_hut"]',
+    '["amenity"="shelter"]',
+    '["tourism"="information"]["information"="guidepost"]',
+    '["tourism"="camp_site"]',
+    '["amenity"="parking"]',
+    '["natural"="spring"]',
+    '["amenity"="drinking_water"]',
+    '["natural"="peak"]',
+  ];
+
+  /// Buildings and complex POIs share one optional context request. Keeping
+  /// them out of the base query prevents a dense urban cell or multipolygon
+  /// campsite from delaying trails, water and terrain.
+  static String structuresForBounds(GeoBounds bounds) {
     final bbox =
         '${bounds.southWest.latitude},${bounds.southWest.longitude},'
         '${bounds.northEast.latitude},${bounds.northEast.longitude}';
-    return '[out:json][timeout:8];way["building"]($bbox);out body geom;';
+    final clauses = <String>[
+      'way["building"]($bbox);',
+      for (final selector in _poiSelectors)
+        for (final elementType in const ['way', 'relation'])
+          '$elementType$selector($bbox);',
+    ];
+    return '[out:json][timeout:10];(${clauses.join()});out body geom;';
   }
 
   static String treesForBounds(GeoBounds bounds) {

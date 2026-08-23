@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:latlong2/latlong.dart';
 
 import '../../domain/entities/area_feature.dart';
+import '../../domain/entities/hiking_route_membership.dart';
 import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
@@ -14,9 +15,8 @@ import '../../domain/enums/poi_type.dart';
 /// (De)serializes [MapFeatureCollection] for on-disk caching. This is a data
 /// layer concern only — the domain entities themselves stay JSON-agnostic.
 abstract final class FeatureCacheCodec {
-  // Version 7 persists POI metadata. Invalidate older cells so a fresh fetch
-  // can expose elevation, access, potability, operator and opening hours.
-  static const currentFormatVersion = 7;
+  // Version 11 also preserves the exact shelter class used by artwork rules.
+  static const currentFormatVersion = 11;
 
   static String encode(MapFeatureCollection features) {
     return jsonEncode({
@@ -46,6 +46,16 @@ abstract final class FeatureCacheCodec {
               'trailVisibility': l.metadata.trailVisibility,
               'access': l.metadata.access,
               'footAccess': l.metadata.footAccess,
+              'ref': l.metadata.ref,
+              'hikingRoutes': [
+                for (final route in l.metadata.hikingRoutes)
+                  {
+                    'relationId': route.relationId,
+                    'ref': route.ref,
+                    'name': route.name,
+                    'network': route.network,
+                  },
+              ],
             },
           },
       ],
@@ -63,6 +73,7 @@ abstract final class FeatureCacheCodec {
               'drinkingWater': p.metadata.drinkingWater,
               'operatorName': p.metadata.operatorName,
               'openingHours': p.metadata.openingHours,
+              'shelterType': p.metadata.shelterType,
             },
           },
       ],
@@ -145,6 +156,17 @@ abstract final class FeatureCacheCodec {
       trailVisibility: raw['trailVisibility'] as String?,
       access: raw['access'] as String?,
       footAccess: raw['footAccess'] as String?,
+      ref: raw['ref'] as String?,
+      hikingRoutes: [
+        for (final route in raw['hikingRoutes'] as List? ?? const [])
+          if (route is Map && route['relationId'] != null)
+            HikingRouteMembership(
+              relationId: route['relationId'].toString(),
+              ref: route['ref'] as String?,
+              name: route['name'] as String?,
+              network: route['network'] as String?,
+            ),
+      ],
     );
   }
 
@@ -156,6 +178,7 @@ abstract final class FeatureCacheCodec {
       drinkingWater: raw['drinkingWater'] as bool?,
       operatorName: raw['operatorName'] as String?,
       openingHours: raw['openingHours'] as String?,
+      shelterType: raw['shelterType'] as String?,
     );
   }
 }

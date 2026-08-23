@@ -1,6 +1,7 @@
 import 'package:latlong2/latlong.dart';
 
 import '../../domain/entities/area_feature.dart';
+import '../../domain/entities/hiking_route_membership.dart';
 import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
@@ -17,15 +18,20 @@ abstract final class OverpassParser {
     final areas = <AreaFeature>[];
     final lines = <LineFeature>[];
     final pois = <Poi>[];
+    final hikingRoutesByWay = _hikingRoutesByWay(
+      json['elements'] as List? ?? const [],
+    );
 
     for (final element in (json['elements'] as List? ?? const [])) {
       final map = element as Map<String, dynamic>;
       final tags = (map['tags'] as Map?)?.cast<String, String>() ?? const {};
       switch (map['type']) {
         case 'way':
-          _parseWay(map, tags, areas, lines);
+          _parseWay(map, tags, areas, lines, pois, hikingRoutesByWay);
         case 'node':
           _parseNode(map, tags, pois);
+        case 'relation':
+          _parseRelation(map, tags, pois);
       }
     }
 
@@ -37,6 +43,8 @@ abstract final class OverpassParser {
     Map<String, String> tags,
     List<AreaFeature> areas,
     List<LineFeature> lines,
+    List<Poi> pois,
+    Map<String, List<HikingRouteMembership>> hikingRoutesByWay,
   ) {
     final geometry = (way['geometry'] as List?)
         ?.map(
@@ -52,6 +60,18 @@ abstract final class OverpassParser {
             .toList(growable: false) ??
         const <String>[];
     if (geometry == null || geometry.length < 2) return;
+
+    final poiType = _poiTypeForTags(tags);
+    if (poiType != null) {
+      _addPoi(
+        pois,
+        osmType: 'way',
+        osmId: way['id'],
+        tags: tags,
+        type: poiType,
+        position: _representativePoint(geometry),
+      );
+    }
 
     final areaKind = _areaKindForTags(tags);
     if (areaKind != null) {
@@ -75,11 +95,54 @@ abstract final class OverpassParser {
           metadata: RouteMetadata.fromOsmTags(
             tags,
             wayId: way['id']?.toString(),
+            hikingRoutes: hikingRoutesByWay[way['id']?.toString()] ?? const [],
           ),
           nodeIds: nodeIds,
         ),
       );
     }
+  }
+
+  static Map<String, List<HikingRouteMembership>> _hikingRoutesByWay(
+    List elements,
+  ) {
+    final result = <String, List<HikingRouteMembership>>{};
+    for (final rawElement in elements) {
+      if (rawElement is! Map || rawElement['type'] != 'relation') continue;
+      final rawTags = rawElement['tags'];
+      if (rawTags is! Map) continue;
+      final tags = rawTags.cast<String, String>();
+      if (tags['type'] != 'route' ||
+          !const {'hiking', 'foot'}.contains(tags['route'])) {
+        continue;
+      }
+      final relationId = rawElement['id']?.toString();
+      if (relationId == null) continue;
+      final membership = HikingRouteMembership(
+        relationId: relationId,
+        ref: _nonEmpty(tags['ref']),
+        name: _nonEmpty(tags['name']),
+        network: _nonEmpty(tags['network']),
+      );
+      for (final rawMember in rawElement['members'] as List? ?? const []) {
+        if (rawMember is! Map || rawMember['type'] != 'way') continue;
+        final wayId = rawMember['ref']?.toString();
+        if (wayId == null) continue;
+        (result[wayId] ??= []).add(membership);
+      }
+    }
+    for (final memberships in result.values) {
+      memberships.sort((a, b) {
+        final priority = a.displayPriority.compareTo(b.displayPriority);
+        return priority != 0 ? priority : a.relationId.compareTo(b.relationId);
+      });
+    }
+    return result;
+  }
+
+  static String? _nonEmpty(Object? raw) {
+    final value = raw?.toString().trim();
+    return value == null || value.isEmpty ? null : value;
   }
 
   static void _parseNode(
@@ -94,15 +157,113 @@ abstract final class OverpassParser {
     final type = _poiTypeForTags(tags);
     if (type == null) return;
 
+    _addPoi(
+      pois,
+      osmType: 'node',
+      osmId: node['id'],
+      tags: tags,
+      type: type,
+      position: LatLng(lat.toDouble(), lon.toDouble()),
+    );
+  }
+
+  static void _parseRelation(
+    Map<String, dynamic> relation,
+    Map<String, String> tags,
+    List<Poi> pois,
+  ) {
+    final type = _poiTypeForTags(tags);
+    if (type == null) return;
+    final center = relation['center'] as Map?;
+    final centerLat = center?['lat'] as num?;
+    final centerLon = center?['lon'] as num?;
+    LatLng? position;
+    if (centerLat != null && centerLon != null) {
+      position = LatLng(centerLat.toDouble(), centerLon.toDouble());
+    } else {
+      final geometry = <LatLng>[];
+      for (final rawMember in relation['members'] as List? ?? const []) {
+        if (rawMember is! Map) continue;
+        for (final rawPoint in rawMember['geometry'] as List? ?? const []) {
+          if (rawPoint is! Map) continue;
+          final lat = rawPoint['lat'] as num?;
+          final lon = rawPoint['lon'] as num?;
+          if (lat != null && lon != null) {
+            geometry.add(LatLng(lat.toDouble(), lon.toDouble()));
+          }
+        }
+      }
+      if (geometry.isNotEmpty) position = _representativePoint(geometry);
+    }
+    if (position == null) return;
+    _addPoi(
+      pois,
+      osmType: 'relation',
+      osmId: relation['id'],
+      tags: tags,
+      type: type,
+      position: position,
+    );
+  }
+
+  static void _addPoi(
+    List<Poi> pois, {
+    required String osmType,
+    required Object? osmId,
+    required Map<String, String> tags,
+    required PoiType type,
+    required LatLng position,
+  }) {
+    if (osmId == null) return;
     pois.add(
       Poi(
-        id: 'osm-node-${node['id']}',
+        id: 'osm-$osmType-$osmId',
         name: tags['name'] ?? _defaultNameFor(type),
         type: type,
-        position: LatLng(lat.toDouble(), lon.toDouble()),
+        position: position,
         metadata: PoiMetadata.fromOsmTags(tags, type: type),
       ),
     );
+  }
+
+  static LatLng _representativePoint(List<LatLng> geometry) {
+    if (geometry.length < 3) {
+      final latitude =
+          geometry.fold<double>(0, (sum, point) => sum + point.latitude) /
+          geometry.length;
+      final longitude =
+          geometry.fold<double>(0, (sum, point) => sum + point.longitude) /
+          geometry.length;
+      return LatLng(latitude, longitude);
+    }
+
+    // Shoelace centroid for ordinary closed OSM ways. It provides a stable
+    // point near the visual centre without relying on screen coordinates.
+    var twiceArea = 0.0;
+    var longitudeMoment = 0.0;
+    var latitudeMoment = 0.0;
+    for (var index = 0; index < geometry.length; index++) {
+      final current = geometry[index];
+      final next = geometry[(index + 1) % geometry.length];
+      final cross =
+          current.longitude * next.latitude - next.longitude * current.latitude;
+      twiceArea += cross;
+      longitudeMoment += (current.longitude + next.longitude) * cross;
+      latitudeMoment += (current.latitude + next.latitude) * cross;
+    }
+    if (twiceArea.abs() > 1e-12) {
+      return LatLng(
+        latitudeMoment / (3 * twiceArea),
+        longitudeMoment / (3 * twiceArea),
+      );
+    }
+    final latitude =
+        geometry.fold<double>(0, (sum, point) => sum + point.latitude) /
+        geometry.length;
+    final longitude =
+        geometry.fold<double>(0, (sum, point) => sum + point.longitude) /
+        geometry.length;
+    return LatLng(latitude, longitude);
   }
 
   static MapFeatureKind? _areaKindForTags(Map<String, String> tags) {
