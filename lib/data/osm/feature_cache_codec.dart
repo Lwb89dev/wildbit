@@ -6,6 +6,7 @@ import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
+import '../../domain/entities/poi_metadata.dart';
 import '../../domain/entities/route_metadata.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/enums/poi_type.dart';
@@ -13,9 +14,9 @@ import '../../domain/enums/poi_type.dart';
 /// (De)serializes [MapFeatureCollection] for on-disk caching. This is a data
 /// layer concern only — the domain entities themselves stay JSON-agnostic.
 abstract final class FeatureCacheCodec {
-  // Version 3 adds parks and individually mapped trees to the OSM request.
-  // Invalidate older cells so a fresh fetch can expose that semantic detail.
-  static const currentFormatVersion = 6;
+  // Version 7 persists POI metadata. Invalidate older cells so a fresh fetch
+  // can expose elevation, access, potability, operator and opening hours.
+  static const currentFormatVersion = 7;
 
   static String encode(MapFeatureCollection features) {
     return jsonEncode({
@@ -56,6 +57,13 @@ abstract final class FeatureCacheCodec {
             'type': p.type.name,
             'lat': p.position.latitude,
             'lng': p.position.longitude,
+            'metadata': {
+              'elevationMeters': p.metadata.elevationMeters,
+              'access': p.metadata.access,
+              'drinkingWater': p.metadata.drinkingWater,
+              'operatorName': p.metadata.operatorName,
+              'openingHours': p.metadata.openingHours,
+            },
           },
       ],
     });
@@ -94,6 +102,7 @@ abstract final class FeatureCacheCodec {
               (p['lat'] as num).toDouble(),
               (p['lng'] as num).toDouble(),
             ),
+            metadata: _decodePoiMetadata(p['metadata']),
           ),
       ],
     );
@@ -136,6 +145,17 @@ abstract final class FeatureCacheCodec {
       trailVisibility: raw['trailVisibility'] as String?,
       access: raw['access'] as String?,
       footAccess: raw['footAccess'] as String?,
+    );
+  }
+
+  static PoiMetadata _decodePoiMetadata(Object? raw) {
+    if (raw is! Map) return const PoiMetadata();
+    return PoiMetadata(
+      elevationMeters: (raw['elevationMeters'] as num?)?.toDouble(),
+      access: raw['access'] as String?,
+      drinkingWater: raw['drinkingWater'] as bool?,
+      operatorName: raw['operatorName'] as String?,
+      openingHours: raw['openingHours'] as String?,
     );
   }
 }

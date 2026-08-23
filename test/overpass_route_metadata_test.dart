@@ -73,6 +73,9 @@ void main() {
           'tags': {
             'tourism': 'information',
             'information': 'guidepost',
+            'ele': '1642 m',
+            'access': 'permissive',
+            'operator': 'SAT',
           },
         },
         {
@@ -80,15 +83,22 @@ void main() {
           'id': 502,
           'lat': 46.2,
           'lon': 11.2,
-          'tags': {'tourism': 'wilderness_hut'},
+          'tags': {
+            'tourism': 'wilderness_hut',
+            'opening_hours': 'Jun-Sep 08:00-20:00',
+          },
         },
       ],
     });
 
     expect(collection.pois[0].type, PoiType.guidepost);
     expect(collection.pois[0].name, 'Cartello escursionistico');
+    expect(collection.pois[0].metadata.elevationMeters, 1642);
+    expect(collection.pois[0].metadata.access, 'permissive');
+    expect(collection.pois[0].metadata.operatorName, 'SAT');
     expect(collection.pois[1].type, PoiType.shelter);
     expect(collection.pois[1].name, 'Rifugio');
+    expect(collection.pois[1].metadata.openingHours, 'Jun-Sep 08:00-20:00');
   });
 
   test('keeps a mapped stream as a waterway line, not a route', () {

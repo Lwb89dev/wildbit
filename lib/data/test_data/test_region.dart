@@ -4,6 +4,7 @@ import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
+import '../../domain/entities/poi_metadata.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/enums/poi_type.dart';
 
@@ -104,6 +105,12 @@ final MapFeatureCollection testRegionFeatures = MapFeatureCollection(
       name: 'Rifugio Alto Lago',
       type: PoiType.shelter,
       position: LatLng(46.0662, 11.1233),
+      metadata: PoiMetadata(
+        elevationMeters: 1880,
+        access: 'yes',
+        operatorName: 'CAI - sezione locale',
+        openingHours: 'Jun-Sep 08:00-20:00',
+      ),
     ),
     Poi(
       id: 'belvedere-1',
@@ -128,6 +135,7 @@ final MapFeatureCollection testRegionFeatures = MapFeatureCollection(
       name: 'Fonte d\'acqua',
       type: PoiType.waterSource,
       position: LatLng(46.0700, 11.1195),
+      metadata: PoiMetadata(drinkingWater: true),
     ),
     Poi(
       id: 'campeggio-1',

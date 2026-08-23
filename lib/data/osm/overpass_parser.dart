@@ -4,6 +4,7 @@ import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
+import '../../domain/entities/poi_metadata.dart';
 import '../../domain/entities/route_metadata.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/enums/poi_type.dart';
@@ -99,6 +100,7 @@ abstract final class OverpassParser {
         name: tags['name'] ?? _defaultNameFor(type),
         type: type,
         position: LatLng(lat.toDouble(), lon.toDouble()),
+        metadata: PoiMetadata.fromOsmTags(tags, type: type),
       ),
     );
   }

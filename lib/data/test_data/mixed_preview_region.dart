@@ -4,6 +4,7 @@ import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
+import '../../domain/entities/poi_metadata.dart';
 import '../../domain/entities/route_metadata.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/enums/poi_type.dart';
@@ -92,12 +93,14 @@ final MapFeatureCollection mixedPreviewFeatures = MapFeatureCollection(
       name: 'Cima panoramica',
       type: PoiType.summit,
       position: LatLng(46.0605, 11.1250),
+      metadata: PoiMetadata(elevationMeters: 2140, access: 'yes'),
     ),
     const Poi(
       id: 'mixed-water',
       name: 'Fonte del sentiero',
       type: PoiType.waterSource,
       position: LatLng(46.0675, 11.1215),
+      metadata: PoiMetadata(drinkingWater: null),
     ),
   ],
 );

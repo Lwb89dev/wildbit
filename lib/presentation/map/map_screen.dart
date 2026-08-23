@@ -601,6 +601,7 @@ class _PoiDetailsSheet extends StatelessWidget {
                   '${poi.position.latitude.toStringAsFixed(5)}, '
                   '${poi.position.longitude.toStringAsFixed(5)}',
             ),
+            ..._metadataFacts(poi),
             const SizedBox(height: 10),
             const _PoiFactRow(
               icon: Icons.public,
@@ -667,6 +668,59 @@ class _PoiDetailsSheet extends StatelessWidget {
     PoiType.waterSource => Icons.water_drop_outlined,
     PoiType.summit => Icons.filter_hdr,
     PoiType.tree => Icons.park_outlined,
+  };
+
+  static List<Widget> _metadataFacts(Poi poi) {
+    final metadata = poi.metadata;
+    final facts = <Widget>[];
+    void add(IconData icon, String label, String value) {
+      facts
+        ..add(const SizedBox(height: 10))
+        ..add(_PoiFactRow(icon: icon, label: label, value: value));
+    }
+
+    final elevation = metadata.elevationMeters;
+    if (elevation != null) {
+      final formatted = elevation == elevation.roundToDouble()
+          ? elevation.toStringAsFixed(0)
+          : elevation.toStringAsFixed(1);
+      add(Icons.height, 'Quota OSM', '$formatted m');
+    }
+    final access = metadata.access;
+    if (access != null) {
+      add(Icons.directions_walk, 'Accesso OSM', _accessLabel(access));
+    }
+    if (poi.type == PoiType.waterSource || metadata.drinkingWater != null) {
+      add(
+        Icons.water_drop_outlined,
+        'Potabilità',
+        switch (metadata.drinkingWater) {
+          true => 'Indicata come potabile su OSM',
+          false => 'Indicata come non potabile su OSM',
+          null => 'Non indicata su OSM',
+        },
+      );
+    }
+    final operatorName = metadata.operatorName;
+    if (operatorName != null) {
+      add(Icons.badge_outlined, 'Gestore OSM', operatorName);
+    }
+    final openingHours = metadata.openingHours;
+    if (openingHours != null) {
+      add(Icons.schedule, 'Orari OSM', openingHours);
+    }
+    return facts;
+  }
+
+  static String _accessLabel(String value) => switch (value) {
+    'yes' => 'Consentito (tag: yes)',
+    'permissive' => 'Consentito dal proprietario (tag: permissive)',
+    'private' => 'Privato (tag: private)',
+    'no' => 'Vietato (tag: no)',
+    'customers' => 'Riservato ai clienti (tag: customers)',
+    'destination' => 'Solo destinazione (tag: destination)',
+    'permit' => 'Con permesso (tag: permit)',
+    _ => 'Tag OSM: $value',
   };
 }
 
