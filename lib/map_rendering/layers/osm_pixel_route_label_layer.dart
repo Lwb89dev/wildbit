@@ -7,6 +7,7 @@ import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/hiking_route_membership.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/route_label_content.dart';
 import '../composition/route_label_layout.dart';
 import '../performance/map_rendering_budget.dart';
 
@@ -50,21 +51,8 @@ class _RouteLabelPainter extends CustomPainter {
           !MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds)) {
         continue;
       }
-      final ref = line.metadata.ref?.trim();
-      final name = line.name?.trim();
-      final membership = line.metadata.hikingRoutes.firstOrNull;
-      final relationRef = membership?.ref?.trim();
-      final relationName = membership?.name?.trim();
-      final effectiveRef = relationRef != null && relationRef.isNotEmpty
-          ? relationRef
-          : ref;
-      final effectiveName = relationName != null && relationName.isNotEmpty
-          ? relationName
-          : name;
-      final hasRef = effectiveRef != null && effectiveRef.isNotEmpty;
-      final hasName = effectiveName != null && effectiveName.isNotEmpty;
-      if (!hasRef && (!hasName || camera.zoom < 13.5)) continue;
-      if (hasRef && camera.zoom < 12) continue;
+      final content = RouteLabelContent.forLine(line, camera.zoom);
+      if (content == null) continue;
 
       final points = OsmLineProjector.projectSimplified(
         line,
@@ -76,17 +64,12 @@ class _RouteLabelPainter extends CustomPainter {
       );
       final anchor = RouteLabelLayout.anchorForPath(points, size);
       if (anchor == null) continue;
-      final text = hasRef && hasName && camera.zoom >= 15
-          ? '$effectiveRef · $effectiveName'
-          : hasRef
-          ? effectiveRef
-          : effectiveName!;
       final painter = TextPainter(
         text: TextSpan(
-          text: text,
+          text: content.text,
           style: TextStyle(
             color: const Color(0xFF2C3828),
-            fontSize: hasRef ? 10.5 : 10,
+            fontSize: content.hasReference ? 10.5 : 10,
             fontWeight: FontWeight.w800,
             height: 1,
           ),
@@ -96,13 +79,16 @@ class _RouteLabelPainter extends CustomPainter {
         ellipsis: '…',
       )..layout(maxWidth: 138);
       final id = line.metadata.osmWayId ?? '${OsmLineProjector.seedFor(line)}';
-      visuals[id] = _RouteLabelVisual(painter, colors: _colorsFor(membership));
+      visuals[id] = _RouteLabelVisual(
+        painter,
+        colors: _colorsFor(content.membership, content.priority < 0),
+      );
       candidates.add(
         RouteLabelCandidate(
           id: id,
           anchor: anchor,
           labelSize: Size(painter.width + 12, painter.height + 6),
-          priority: membership?.displayPriority ?? (hasRef ? 5 : 6),
+          priority: content.priority,
         ),
       );
     }
@@ -143,7 +129,13 @@ class _RouteLabelPainter extends CustomPainter {
     }
   }
 
-  _RouteLabelColors _colorsFor(HikingRouteMembership? membership) {
+  _RouteLabelColors _colorsFor(
+    HikingRouteMembership? membership,
+    bool restricted,
+  ) {
+    if (restricted) {
+      return const _RouteLabelColors(Color(0xFF872B2B), Color(0xFFFFD5C8));
+    }
     return switch (membership?.network) {
       'iwn' => const _RouteLabelColors(Color(0xFF6E2830), Color(0xFFFFD7CF)),
       'nwn' => const _RouteLabelColors(Color(0xFF334D75), Color(0xFFDCEBFF)),

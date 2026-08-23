@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:wildbit/domain/entities/line_feature.dart';
 import 'package:wildbit/domain/entities/route_metadata.dart';
+import 'package:wildbit/domain/entities/trail_classification.dart';
 import 'package:wildbit/domain/enums/map_feature_kind.dart';
 import 'package:wildbit/map_rendering/composition/osm_line_projector.dart';
 import 'package:wildbit/map_rendering/composition/route_visual_style.dart';
@@ -43,9 +44,7 @@ void main() {
     );
 
     expect(
-      points.any(
-        (point) => (point - const Offset(.01, 0)).distance < .000001,
-      ),
+      points.any((point) => (point - const Offset(.01, 0)).distance < .000001),
       isTrue,
     );
   });
@@ -74,5 +73,26 @@ void main() {
       RouteVisualStyle.forLine(trail, 16).family,
       RouteTextureFamily.trail,
     );
+  });
+
+  test('exposes exact trail safety styling without hiding the geometry', () {
+    const technicalTrail = LineFeature(
+      kind: MapFeatureKind.trail,
+      points: [LatLng(0, 0), LatLng(1, 1)],
+      metadata: RouteMetadata(
+        sacScale: 'alpine_hiking',
+        trailVisibility: 'bad',
+        footAccess: 'no',
+      ),
+    );
+
+    final style = RouteVisualStyle.forLine(technicalTrail, 16);
+
+    expect(style.family, RouteTextureFamily.trail);
+    expect(style.difficulty, TrailDifficulty.t4);
+    expect(style.difficultyColor, isNotNull);
+    expect(style.access, TrailAccessStatus.restricted);
+    expect(style.visibility, TrailVisibilityStatus.reduced);
+    expect(style.width, greaterThan(0));
   });
 }

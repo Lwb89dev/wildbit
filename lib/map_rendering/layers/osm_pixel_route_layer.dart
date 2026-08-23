@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 
 import '../../domain/entities/map_feature_collection.dart';
+import '../../domain/entities/trail_classification.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../composition/osm_line_projector.dart';
 import '../composition/route_visual_style.dart';
@@ -160,6 +161,7 @@ class _RoutePainter extends CustomPainter {
           width: style.width,
           color: style.fallbackColor,
         );
+        _paintTechnicalOverlay(canvas, points, line.kind, style);
         continue;
       }
       for (var index = 0; index + 1 < points.length; index++) {
@@ -174,6 +176,94 @@ class _RoutePainter extends CustomPainter {
           width: style.width,
           shader: shaders[imageIndex],
         );
+      }
+      _paintTechnicalOverlay(canvas, points, line.kind, style);
+    }
+  }
+
+  void _paintTechnicalOverlay(
+    Canvas canvas,
+    List<Offset> points,
+    MapFeatureKind kind,
+    RouteVisualStyle style,
+  ) {
+    if (kind != MapFeatureKind.trail || points.length < 2) return;
+    final difficultyColor = style.difficultyColor;
+    if (difficultyColor != null && camera.zoom >= 13) {
+      _paintDashedLine(
+        canvas,
+        points,
+        paint: Paint()
+          ..color = difficultyColor
+          ..strokeWidth = math.max(1.4, style.width * .24)
+          ..strokeCap = StrokeCap.square
+          ..isAntiAlias = false,
+        dash: style.difficulty.level >= 4 ? 5 : 3,
+        gap: style.difficulty.level >= 4 ? 8 : 12,
+      );
+    }
+    if (style.visibility == TrailVisibilityStatus.reduced ||
+        style.visibility == TrailVisibilityStatus.poor) {
+      _paintDashedLine(
+        canvas,
+        points,
+        paint: Paint()
+          ..color = style.visibility == TrailVisibilityStatus.poor
+              ? const Color(0xFFE9D9A2)
+              : const Color(0xFFEEE2B8)
+          ..strokeWidth = math.max(1.2, style.width * .18)
+          ..strokeCap = StrokeCap.square
+          ..isAntiAlias = false,
+        dash: 2,
+        gap: style.visibility == TrailVisibilityStatus.poor ? 7 : 11,
+      );
+    }
+    if (style.access == TrailAccessStatus.restricted) {
+      _paintDashedLine(
+        canvas,
+        points,
+        paint: Paint()
+          ..color = const Color(0xFFD53A35)
+          ..strokeWidth = math.max(2.0, style.width * .38)
+          ..strokeCap = StrokeCap.square
+          ..isAntiAlias = false,
+        dash: 7,
+        gap: 4,
+      );
+    }
+  }
+
+  void _paintDashedLine(
+    Canvas canvas,
+    List<Offset> points, {
+    required Paint paint,
+    required double dash,
+    required double gap,
+  }) {
+    var drawing = true;
+    var remaining = dash;
+    for (var index = 0; index + 1 < points.length; index++) {
+      final start = points[index];
+      final delta = points[index + 1] - start;
+      final length = delta.distance;
+      if (length <= 0) continue;
+      final direction = delta / length;
+      var travelled = 0.0;
+      while (travelled < length) {
+        final step = math.min(remaining, length - travelled);
+        if (drawing && step > 0) {
+          canvas.drawLine(
+            start + direction * travelled,
+            start + direction * (travelled + step),
+            paint,
+          );
+        }
+        travelled += step;
+        remaining -= step;
+        if (remaining <= .001) {
+          drawing = !drawing;
+          remaining = drawing ? dash : gap;
+        }
       }
     }
   }

@@ -1,4 +1,5 @@
 import '../entities/route_metadata.dart';
+import '../entities/trail_classification.dart';
 
 /// Conservative decision for route *proposals*, never a safety guarantee.
 enum RouteProposalStatus { doNotOffer, needsVerification, eligibleForProposal }
@@ -29,9 +30,8 @@ abstract final class RouteEligibilityGate {
     RouteMetadata metadata, {
     RouteEvidence evidence = const RouteEvidence(),
   }) {
-    final access = metadata.access?.toLowerCase();
-    final foot = metadata.footAccess?.toLowerCase();
-    if (access == 'no' || access == 'private' || foot == 'no') {
+    final classification = TrailClassification.fromMetadata(metadata);
+    if (classification.access == TrailAccessStatus.restricted) {
       return const RouteEligibility(
         status: RouteProposalStatus.doNotOffer,
         reasons: ['Accesso pedonale non consentito o privato secondo OSM'],
@@ -42,11 +42,21 @@ abstract final class RouteEligibilityGate {
     if (metadata.access == null && metadata.footAccess == null) {
       missing.add('accesso pedonale non mappato');
     }
-    if (metadata.sacScale == null) missing.add('difficoltà non mappata');
-    if (metadata.trailVisibility == null) missing.add('visibilità non mappata');
-    if (!evidence.hasContinuousGeometry) missing.add('continuità non verificata');
-    if (!evidence.dataIsFresh) missing.add('dato non aggiornato/verificato');
-    if (!evidence.hasManualRouteReview) missing.add('revisione umana assente');
+    if (metadata.sacScale == null) {
+      missing.add('difficoltà non mappata');
+    }
+    if (metadata.trailVisibility == null) {
+      missing.add('visibilità non mappata');
+    }
+    if (!evidence.hasContinuousGeometry) {
+      missing.add('continuità non verificata');
+    }
+    if (!evidence.dataIsFresh) {
+      missing.add('dato non aggiornato/verificato');
+    }
+    if (!evidence.hasManualRouteReview) {
+      missing.add('revisione umana assente');
+    }
 
     if (missing.isNotEmpty) {
       return RouteEligibility(

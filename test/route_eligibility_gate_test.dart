@@ -16,6 +16,19 @@ void main() {
     expect(result.mayBeProposed, isFalse);
   });
 
+  test('treats an explicitly private foot tag as restricted', () {
+    final result = RouteEligibilityGate.evaluate(
+      const RouteMetadata(access: 'yes', footAccess: 'private'),
+      evidence: const RouteEvidence(
+        hasContinuousGeometry: true,
+        dataIsFresh: true,
+        hasManualRouteReview: true,
+      ),
+    );
+
+    expect(result.status, RouteProposalStatus.doNotOffer);
+  });
+
   test('unknown or incomplete OSM data requires verification', () {
     final result = RouteEligibilityGate.evaluate(const RouteMetadata());
     expect(result.status, RouteProposalStatus.needsVerification);

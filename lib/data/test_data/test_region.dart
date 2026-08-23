@@ -82,6 +82,9 @@ final MapFeatureCollection testRegionFeatures = MapFeatureCollection(
       name: 'Sentiero del Lago Alto',
       metadata: RouteMetadata(
         ref: '105',
+        sacScale: 'mountain_hiking',
+        trailVisibility: 'good',
+        access: 'yes',
         hikingRoutes: [
           HikingRouteMembership(
             relationId: 'mock-e5',
@@ -98,6 +101,22 @@ final MapFeatureCollection testRegionFeatures = MapFeatureCollection(
         LatLng(46.0655, 11.1270),
         LatLng(46.0620, 11.1290),
         LatLng(46.0595, 11.1245),
+      ],
+    ),
+    LineFeature(
+      kind: MapFeatureKind.trail,
+      name: 'Tratto non percorribile',
+      metadata: RouteMetadata(
+        osmWayId: 'mock-restricted',
+        ref: 'X1',
+        sacScale: 'demanding_mountain_hiking',
+        trailVisibility: 'horrible',
+        access: 'private',
+      ),
+      points: [
+        LatLng(46.0715, 11.1260),
+        LatLng(46.0695, 11.1280),
+        LatLng(46.0678, 11.1300),
       ],
     ),
     // Service road along the valley floor.
