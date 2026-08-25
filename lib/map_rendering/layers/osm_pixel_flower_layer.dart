@@ -82,7 +82,18 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
-    final flowers = _candidates
+    final budgeted = MapRenderingBudget.stableDecorativeSubset(
+      _candidates,
+      count: MapRenderingBudget.decorativeCount(
+        camera.zoom,
+        overview: 60,
+        close: _candidates.length,
+      ),
+      rank: (flower) =>
+          flower.position.latitude.hashCode ^
+          flower.position.longitude.hashCode,
+    );
+    final flowers = budgeted
         .where((flower) => camera.visibleBounds.contains(flower.position))
         .toList(growable: false);
     flowers.sort((a, b) => b.position.latitude.compareTo(a.position.latitude));
@@ -126,10 +137,7 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
     return List.unmodifiable(result);
   }
 
-  List<_FlowerPoint> _sample(
-    AreaFeature area,
-    int remaining,
-  ) {
+  List<_FlowerPoint> _sample(AreaFeature area, int remaining) {
     if (area.ring.length < 3 || remaining <= 0) return const [];
     var south = area.ring.first.latitude;
     var north = south;
@@ -143,15 +151,25 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
     }
     final random = math.Random(_seed(area));
     final clusterCenters = [
-      (south + random.nextDouble() * (north - south),
-        west + random.nextDouble() * (east - west)),
-      (south + random.nextDouble() * (north - south),
-        west + random.nextDouble() * (east - west)),
-      (south + random.nextDouble() * (north - south),
-        west + random.nextDouble() * (east - west)),
+      (
+        south + random.nextDouble() * (north - south),
+        west + random.nextDouble() * (east - west),
+      ),
+      (
+        south + random.nextDouble() * (north - south),
+        west + random.nextDouble() * (east - west),
+      ),
+      (
+        south + random.nextDouble() * (north - south),
+        west + random.nextDouble() * (east - west),
+      ),
     ];
     final result = <_FlowerPoint>[];
-    for (var attempt = 0; attempt < remaining * 10 && result.length < remaining; attempt++) {
+    for (
+      var attempt = 0;
+      attempt < remaining * 10 && result.length < remaining;
+      attempt++
+    ) {
       final cluster = clusterCenters[random.nextInt(clusterCenters.length)];
       final position = LatLng(
         cluster.$1 + (random.nextDouble() - .5) * (north - south) * .28,
@@ -184,13 +202,11 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
   }
 
   int _signature(MapFeatureCollection features) => Object.hash(
-        Object.hashAll(
-          features.areas.map((area) => area.sourceId ?? _seed(area)),
-        ),
-        Object.hashAll(
-          features.lines.map((line) => OsmLineProjector.seedFor(line)),
-        ),
-      );
+    Object.hashAll(features.areas.map((area) => area.sourceId ?? _seed(area))),
+    Object.hashAll(
+      features.lines.map((line) => OsmLineProjector.seedFor(line)),
+    ),
+  );
 }
 
 class _FlowerPoint {
@@ -230,7 +246,10 @@ class _FlowerPainter extends CustomPainter {
       final sway =
           math.sin((phase * math.pi * 2) + flower.variant) * .65 * scale;
       final point = base.translate(sway, 0);
-      if (point.dx < -8 || point.dy < -8 || point.dx > size.width + 8 || point.dy > size.height + 8) {
+      if (point.dx < -8 ||
+          point.dy < -8 ||
+          point.dx > size.width + 8 ||
+          point.dy > size.height + 8) {
         continue;
       }
       final stemHeight = 5 * scale;
@@ -241,11 +260,21 @@ class _FlowerPainter extends CustomPainter {
       final petal = Paint()..color = colors[flower.variant];
       final pixel = math.max(1.0, 2 * scale);
       canvas.drawRect(
-        Rect.fromLTWH(point.dx - pixel, point.dy - stemHeight - pixel, pixel * 2, pixel * 2),
+        Rect.fromLTWH(
+          point.dx - pixel,
+          point.dy - stemHeight - pixel,
+          pixel * 2,
+          pixel * 2,
+        ),
         petal,
       );
       canvas.drawRect(
-        Rect.fromLTWH(point.dx - pixel * .5, point.dy - stemHeight - pixel * 2, pixel, pixel),
+        Rect.fromLTWH(
+          point.dx - pixel * .5,
+          point.dy - stemHeight - pixel * 2,
+          pixel,
+          pixel,
+        ),
         petal,
       );
     }

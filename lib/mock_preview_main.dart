@@ -70,7 +70,7 @@ class _PixelMapPreviewScreenState extends State<PixelMapPreviewScreen> {
           child: Text(
             _showDebug
                 ? 'Debug: footprint Bit, rifugio e cartello; assi del chunk.'
-                : 'Mock: fiume, rive, bosco, sentiero, ponte, rifugio e Bit.',
+                : 'Mock: fiume, rive, bosco, sentiero, traccia, rifugio e Bit.',
             textAlign: TextAlign.center,
           ),
         ),

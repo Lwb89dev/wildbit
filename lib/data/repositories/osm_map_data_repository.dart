@@ -10,6 +10,7 @@ import '../../domain/repositories/map_data_repository.dart';
 import '../../storage/database.dart';
 import '../osm/feature_cache_codec.dart';
 import '../osm/map_cell_grid.dart';
+import '../osm/overpass_endpoints.dart';
 import '../osm/overpass_parser.dart';
 import '../osm/overpass_query_builder.dart';
 import '../test_data/test_region.dart';
@@ -30,11 +31,6 @@ class OsmMapDataRepository implements MapDataRepository {
   final bool offlinePreview;
   final bool mixedPreview;
 
-  static const _endpoints = [
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter',
-    'https://overpass.private.coffee/api/interpreter',
-  ];
   static const _maxCacheAge = Duration(days: 30);
   static const _maxResponseBytes = 25 * 1024 * 1024;
 
@@ -51,7 +47,7 @@ class OsmMapDataRepository implements MapDataRepository {
   final WildBitDatabase _database;
   final http.Client _httpClient;
   Future<MapFeatureCollection>? _activeLoad;
-  final _endpointCooldownUntil = <String, DateTime>{};
+  final _endpoints = OverpassEndpoints.instance;
 
   /// Read by the presentation layer after [loadFeatures]. Cached data remains
   /// usable offline; this is only set when a cell without cache cannot reach
@@ -60,7 +56,10 @@ class OsmMapDataRepository implements MapDataRepository {
 
   @override
   Future<MapFeatureCollection> loadFeatures(GeoBounds bounds) async {
-    if (offlinePreview) {
+    // mixedPreview is a variant of offlinePreview, not an independent mode —
+    // requesting it implies offlinePreview even if the caller didn't also
+    // set that flag.
+    if (offlinePreview || mixedPreview) {
       lastLoadError = null;
       return mixedPreview ? mixedPreviewFeatures : testRegionFeatures;
     }
@@ -182,12 +181,11 @@ class OsmMapDataRepository implements MapDataRepository {
 
   Future<MapFeatureCollection> _fetchQueryFromOverpass(String query) async {
     Object? lastError;
-    for (final endpoint in _endpoints) {
-      final cooldown = _endpointCooldownUntil[endpoint];
-      if (cooldown != null && cooldown.isAfter(DateTime.now())) {
+    for (final endpoint in OverpassEndpoints.all) {
+      if (_endpoints.isCoolingDown(endpoint)) {
         debugPrint(
           'WildBit Overpass: salto ${Uri.parse(endpoint).host} '
-          '(inattivo fino alle ${cooldown.toIso8601String()})',
+          '(inattivo fino alle ${_endpoints.cooldownUntil(endpoint)!.toIso8601String()})',
         );
         continue;
       }
@@ -236,9 +234,9 @@ class OsmMapDataRepository implements MapDataRepository {
         // Public Overpass instances need recovery time. A short circuit here
         // prevents every GPS/camera refresh from waiting through the same
         // dead endpoint chain again.
-        final seconds = error.toString().contains('502') ? 45 : 25;
-        _endpointCooldownUntil[endpoint] = DateTime.now().add(
-          Duration(seconds: seconds),
+        _endpoints.markFailed(
+          endpoint,
+          serverOverloaded: error.toString().contains('502'),
         );
         debugPrint(
           'WildBit Overpass: ${Uri.parse(endpoint).host} errore $error',

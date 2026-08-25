@@ -14,4 +14,5 @@ enum MapFeatureKind {
   building,
   road,
   trail,
+  barrier,
 }

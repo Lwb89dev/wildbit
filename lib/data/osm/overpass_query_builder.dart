@@ -22,7 +22,9 @@ abstract final class OverpassQueryBuilder {
       'way["natural"="bare_rock"]($bbox);',
       'way["natural"="scree"]($bbox);',
       'way["natural"="glacier"]($bbox);',
-      'way["highway"~"^(path|footway|track|steps)\$"]($bbox);',
+      'way["highway"~"^(path|footway|track|steps|bridleway|via_ferrata)\$"]($bbox);',
+      'way["ford"]($bbox);',
+      'way["barrier"~"^(fence|wall|hedge|retaining_wall|gate|lift_gate|bollard|cable_barrier|chain)\$"]($bbox);',
       'way["highway"~"^(residential|service|unclassified|tertiary|secondary|primary)\$"]($bbox);',
       for (final selector in _poiSelectors) 'node$selector($bbox);',
     ];
@@ -51,6 +53,8 @@ abstract final class OverpassQueryBuilder {
     '["natural"="spring"]',
     '["amenity"="drinking_water"]',
     '["natural"="peak"]',
+    '["ford"]',
+    '["barrier"~"^(gate|bollard|stile|turnstile)\$"]',
   ];
 
   /// Buildings and complex POIs share one optional context request. Keeping

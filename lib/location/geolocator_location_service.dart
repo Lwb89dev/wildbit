@@ -43,9 +43,16 @@ class GeolocatorLocationService implements LocationService {
       // late after permission/settings changes. Do not block permission or a
       // direct GNSS request on that advisory check.
       try {
-        await _gnssChannel.invokeMethod<bool>('isLocationEnabled');
+        final enabled = await _gnssChannel
+            .invokeMethod<bool>('isLocationEnabled')
+            .timeout(const Duration(seconds: 2));
+        if (enabled == false) return false;
       } on PlatformException {
         // The native channel is optional; LocationManager remains the source.
+      } on TimeoutException {
+        // A stalled optional channel must never hold up the permission flow.
+      } on MissingPluginException {
+        // Desktop/test engines do not expose the Android channel.
       }
     } else if (!await Geolocator.isLocationServiceEnabled()) {
       return false;
@@ -77,21 +84,30 @@ class GeolocatorLocationService implements LocationService {
     // immediately so recenter/search never wait for a cold satellite lock.
     if (Platform.isAndroid) {
       try {
-        final raw = await _gnssChannel.invokeMethod<Map>('lastKnownLocation');
+        final raw = await _gnssChannel
+            .invokeMethod<Map>('lastKnownLocation')
+            .timeout(const Duration(seconds: 2));
         debugPrint('WildBit GNSS: cache nativa=${raw != null}');
         final nativeFix = _fromNativeLocation(raw);
         if (nativeFix != null) {
-          debugPrint('WildBit GNSS: posizione nativa ${nativeFix.position}');
+          debugPrint(
+            'WildBit GNSS: posizione nativa ottenuta '
+            '(accuracy=${nativeFix.accuracyMeters}m)',
+          );
           return nativeFix;
         }
       } on PlatformException catch (error) {
         debugPrint('WildBit GNSS: canale nativo $error');
         // Fall through to the plugin's LocationManager-backed path.
+      } on MissingPluginException {
+        // Fall through to geolocator on engines without the optional channel.
+      } on TimeoutException {
+        debugPrint('WildBit GNSS: canale nativo in timeout');
       }
     }
     final lastKnown = await Geolocator.getLastKnownPosition(
       forceAndroidLocationManager: Platform.isAndroid,
-    );
+    ).timeout(const Duration(seconds: 2), onTimeout: () => null);
     if (lastKnown != null) return _toGeoFix(lastKnown);
     if (_latestFix != null) return _latestFix;
 
@@ -103,7 +119,7 @@ class GeolocatorLocationService implements LocationService {
       final fresh = await Geolocator.getCurrentPosition(
         locationSettings: _singleFixSettings,
       );
-      debugPrint('WildBit GNSS: fix fresco ${fresh.latitude},${fresh.longitude}');
+      debugPrint('WildBit GNSS: fix fresco ottenuto (accuracy=${fresh.accuracy}m)');
       return _toGeoFix(fresh);
     } on TimeoutException {
       return null;

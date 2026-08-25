@@ -16,19 +16,32 @@ import '../performance/map_rendering_budget.dart';
 /// This is intentionally a separate late composition pass: terrain objects
 /// may occlude Bit, but navigational labels must remain readable above them.
 class OsmPixelRouteLabelLayer extends StatelessWidget {
-  const OsmPixelRouteLabelLayer({super.key, required this.features});
+  const OsmPixelRouteLabelLayer({
+    super.key,
+    required this.features,
+    this.projectionCache,
+  });
 
   final MapFeatureCollection features;
+  final ProjectedLineCache? projectionCache;
 
   @override
   Widget build(BuildContext context) {
+    final camera = MapCamera.of(context);
+    final cache = projectionCache ?? ProjectedLineCache();
+    cache.beginView(
+      '${identityHashCode(features)}:${camera.center.latitude.toStringAsFixed(6)}:'
+      '${camera.center.longitude.toStringAsFixed(6)}:'
+      '${camera.zoom.toStringAsFixed(3)}:${camera.rotation.toStringAsFixed(2)}',
+    );
     return RepaintBoundary(
       child: IgnorePointer(
         child: CustomPaint(
           size: Size.infinite,
           painter: _RouteLabelPainter(
-            camera: MapCamera.of(context),
+            camera: camera,
             features: features,
+            projectionCache: cache,
           ),
         ),
       ),
@@ -37,10 +50,15 @@ class OsmPixelRouteLabelLayer extends StatelessWidget {
 }
 
 class _RouteLabelPainter extends CustomPainter {
-  const _RouteLabelPainter({required this.camera, required this.features});
+  const _RouteLabelPainter({
+    required this.camera,
+    required this.features,
+    required this.projectionCache,
+  });
 
   final MapCamera camera;
   final MapFeatureCollection features;
+  final ProjectedLineCache projectionCache;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -54,14 +72,16 @@ class _RouteLabelPainter extends CustomPainter {
       final content = RouteLabelContent.forLine(line, camera.zoom);
       if (content == null) continue;
 
-      final points = OsmLineProjector.projectSimplified(
+      final points = projectionCache.project(
         line,
         camera.latLngToScreenOffset,
-        minimumDistancePixels: math.max(
-          MapRenderingBudget.minLinePointDistancePixels,
-          18 - camera.zoom,
+        minimumDistancePixels: MapRenderingBudget.routePointDistancePixels(
+          line,
+          camera.zoom,
         ),
+        maximumPoints: MapRenderingBudget.routeMaximumPoints(line, camera.zoom),
       );
+      if (!OsmLineProjector.overlapsViewport(points, size)) continue;
       final anchor = RouteLabelLayout.anchorForPath(points, size);
       if (anchor == null) continue;
       final painter = TextPainter(
@@ -81,7 +101,11 @@ class _RouteLabelPainter extends CustomPainter {
       final id = line.metadata.osmWayId ?? '${OsmLineProjector.seedFor(line)}';
       visuals[id] = _RouteLabelVisual(
         painter,
-        colors: _colorsFor(content.membership, content.priority < 0),
+        colors: _colorsFor(
+          content.membership,
+          restricted: content.priority == -1,
+          conditional: content.conditional,
+        ),
       );
       candidates.add(
         RouteLabelCandidate(
@@ -130,11 +154,15 @@ class _RouteLabelPainter extends CustomPainter {
   }
 
   _RouteLabelColors _colorsFor(
-    HikingRouteMembership? membership,
-    bool restricted,
-  ) {
+    HikingRouteMembership? membership, {
+    required bool restricted,
+    required bool conditional,
+  }) {
     if (restricted) {
       return const _RouteLabelColors(Color(0xFF872B2B), Color(0xFFFFD5C8));
+    }
+    if (conditional) {
+      return const _RouteLabelColors(Color(0xFF9B6A18), Color(0xFFFFE7A3));
     }
     return switch (membership?.network) {
       'iwn' => const _RouteLabelColors(Color(0xFF6E2830), Color(0xFFFFD7CF)),

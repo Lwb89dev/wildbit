@@ -40,6 +40,10 @@ void main() {
           metrics.contentHeight * metrics.scaleCorrection,
           closeTo(BitFrameMetrics.targetVisualHeight, .001),
         );
+        expect(
+          metrics.contentWidth * metrics.horizontalScaleCorrection,
+          closeTo(BitFrameMetrics.targetVisualWidth, .001),
+        );
         expect(metrics.verticalCorrection, closeTo(6, .001));
       }
     }

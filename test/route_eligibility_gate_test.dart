@@ -36,6 +36,26 @@ void main() {
     expect(result.reasons, contains('continuità non verificata'));
   });
 
+  test('conditional access never becomes an automatically eligible route', () {
+    final result = RouteEligibilityGate.evaluate(
+      const RouteMetadata(
+        access: 'yes',
+        footAccess: 'yes',
+        sacScale: 'hiking',
+        trailVisibility: 'good',
+        openingHours: 'May-Oct',
+      ),
+      evidence: const RouteEvidence(
+        hasContinuousGeometry: true,
+        dataIsFresh: true,
+        hasManualRouteReview: true,
+      ),
+    );
+
+    expect(result.status, RouteProposalStatus.needsVerification);
+    expect(result.reasons, contains('accesso condizionale da verificare'));
+  });
+
   test('only complete reviewed evidence can be proposed', () {
     final result = RouteEligibilityGate.evaluate(
       const RouteMetadata(

@@ -72,7 +72,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     try {
       final decoded = Nip19().decode(nsec);
       if (decoded['type'] != 'nsec') throw const FormatException();
-      final pubkey = KeyApi().getPublicKey(decoded['data'] as String);
+      final privateKey = decoded['data'] as String;
+      final pubkey = KeyApi().getPublicKey(privateKey);
       final identity = NostrIdentity(
         pubkeyHex: pubkey,
         npub: Nip19().npubEncode(pubkey),
@@ -80,10 +81,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await context.read<DatabaseKeyManager>().linkNsecIdentity(identity, nsec);
       if (mounted) setState(() => _nostrIdentity = identity);
     } catch (_) {
-      if (mounted)
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('nsec non valido.')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('nsec non valido.')));
     }
   }
 
@@ -312,7 +313,7 @@ class _NostrPage extends _OnboardingPage {
           ),
           const SizedBox(height: 8),
           Text(
-            'Facoltativa: serve per condividere i tuoi percorsi. Amber è il metodo consigliato: la chiave privata non entra mai in WildBit.',
+            'Facoltativa: serve per condividere i tuoi percorsi. Amber è il metodo consigliato; puoi anche collegare un nsec, conservato solo nel keystore sicuro.',
             style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
@@ -389,7 +390,7 @@ class _NostrPage extends _OnboardingPage {
           ),
         ],
       ),
-    );
+    ).whenComplete(controller.dispose);
   }
 }
 

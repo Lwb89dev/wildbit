@@ -27,6 +27,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
   String _activeQuery = '';
   LatLng? _position;
   double _radiusKm = 12;
+  bool _usingCachedResults = false;
 
   @override
   void initState() {
@@ -40,11 +41,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
     super.dispose();
   }
 
-  Future<void> _loadTrails({String? query}) async {
+  Future<void> _loadTrails({String? query, bool forceRefresh = false}) async {
     final requestedQuery = query ?? _searchController.text;
     setState(() {
       _isLoading = true;
       _error = null;
+      _usingCachedResults = false;
     });
 
     final fix = await widget.locationService.getCurrentPosition();
@@ -58,10 +60,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
     }
 
     try {
-      final trails = await context.read<OsmTrailRepository>().findNearby(
+      final repository = context.read<OsmTrailRepository>();
+      final trails = await repository.findNearby(
         position: fix.position,
         query: requestedQuery,
         radiusKm: _radiusKm,
+        forceRefresh: forceRefresh,
       );
       if (!mounted) return;
       setState(() {
@@ -69,6 +73,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
         _activeQuery = requestedQuery.trim();
         _trails = trails;
         _isLoading = false;
+        _usingCachedResults = repository.lastResultWasStale;
       });
     } catch (_) {
       if (!mounted) return;
@@ -92,8 +97,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
         title: const Text('Esplora sentieri'),
         actions: [
           IconButton(
-            tooltip: 'Aggiorna',
-            onPressed: _isLoading ? null : _loadTrails,
+          tooltip: 'Aggiorna',
+          onPressed: _isLoading ? null : () => _loadTrails(forceRefresh: true),
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -114,6 +119,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   Text(
                     'Consulta tratti OpenStreetMap entro ${_radiusKm.round()} km da te. Non sono percorsi consigliati.',
                   ),
+                  if (_usingCachedResults) ...[
+                    const SizedBox(height: 8),
+                    const _LocalResultsNotice(),
+                  ],
                   const SizedBox(height: 14),
                   Row(
                     children: [
@@ -215,6 +224,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
             : _distance.as(LengthUnit.Meter, position, trail.position);
         final eligibility = trail.eligibility;
         final blocked = eligibility.status == RouteProposalStatus.doNotOffer;
+        final curated = trail.isCuratedRoute;
         return Card(
           child: ListTile(
             leading: CircleAvatar(
@@ -224,17 +234,26 @@ class _ExploreScreenState extends State<ExploreScreen> {
               foregroundColor: blocked
                   ? Theme.of(context).colorScheme.onErrorContainer
                   : WildBitColors.forestGreen,
-              child: Icon(blocked ? Icons.block : Icons.warning_amber_rounded),
+              child: Icon(
+                blocked
+                    ? Icons.block
+                    : curated
+                        ? Icons.route
+                        : Icons.warning_amber_rounded,
+              ),
             ),
             title: Text(trail.name),
             subtitle: Text(
               [
+                if (curated) _networkLabel(trail.route!.network),
                 if (trail.ref != null && trail.ref != trail.name) trail.ref!,
+                if (trail.lengthKm != null)
+                  '${trail.lengthKm!.toStringAsFixed(1)} km di percorso',
                 if (meters != null) _formatDistance(meters),
                 blocked
                     ? 'Non proporre: ${eligibility.reasons.first}'
                     : 'Da verificare: ${eligibility.reasons.first}',
-              ].join(' · '),
+              ].whereType<String>().join(' · '),
             ),
           ),
         );
@@ -246,6 +265,36 @@ class _ExploreScreenState extends State<ExploreScreen> {
     if (meters < 1000) return '${meters.round()} m';
     return '${(meters / 1000).toStringAsFixed(1)} km';
   }
+
+  String? _networkLabel(String? network) => switch (network) {
+    'iwn' => 'Rete internazionale',
+    'nwn' => 'Rete nazionale',
+    'rwn' => 'Rete regionale',
+    'lwn' => 'Rete locale',
+    _ => 'Percorso segnalato',
+  };
+}
+
+class _LocalResultsNotice extends StatelessWidget {
+  const _LocalResultsNotice();
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.secondaryContainer,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      child: Row(
+        children: [
+          Icon(Icons.offline_bolt_outlined, size: 17),
+          SizedBox(width: 7),
+          Expanded(child: Text('Risultati salvati localmente · verifica la data')),
+        ],
+      ),
+    ),
+  );
 }
 
 class _MessageState extends StatelessWidget {

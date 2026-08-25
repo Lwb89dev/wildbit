@@ -9,6 +9,7 @@ import '../../domain/entities/saved_track.dart';
 import '../../domain/repositories/track_repository.dart';
 import '../../gpx/gpx_file_service.dart';
 import '../../map_rendering/layers/hd_terrain_layer.dart';
+import '../track/track_share_dialog.dart';
 
 class TrackDetailScreen extends StatefulWidget {
   const TrackDetailScreen({super.key, required this.trackId});
@@ -34,11 +35,18 @@ class _TrackDetailScreenState extends State<TrackDetailScreen> {
           appBar: AppBar(
             title: Text(track?.name ?? '...'),
             actions: [
-              if (track != null)
+              if (track != null) ...[
                 IconButton(
+                  tooltip: 'Condividi su Nostr',
+                  icon: const Icon(Icons.public),
+                  onPressed: () => showTrackShareDialog(context, track),
+                ),
+                IconButton(
+                  tooltip: 'Esporta GPX',
                   icon: const Icon(Icons.share),
                   onPressed: () => _gpxFileService.exportAndShare(track),
                 ),
+              ],
             ],
           ),
           body: track == null

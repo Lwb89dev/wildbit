@@ -111,4 +111,50 @@ void main() {
       orderedEquals(largeEdges.map((edge) => edge.variant)),
     );
   });
+
+  test('normal always points away from water regardless of ring winding', () {
+    const clockwise = [
+      Offset(0, 0),
+      Offset(30, 0),
+      Offset(30, 20),
+      Offset(0, 20),
+    ];
+    const counterClockwise = [
+      Offset(0, 0),
+      Offset(0, 20),
+      Offset(30, 20),
+      Offset(30, 0),
+    ];
+    for (final polygon in [clockwise, counterClockwise]) {
+      final placements = composer.compose(
+        polygon: polygon,
+        material: WaterEdgeMaterial.mud,
+        chunkSeed: 9,
+      );
+      expect(
+        placements.every(
+          (edge) =>
+              !_contains(polygon, edge.position + edge.normal * 2) &&
+              _contains(polygon, edge.position - edge.normal * 4),
+        ),
+        isTrue,
+      );
+    }
+  });
+}
+
+bool _contains(List<Offset> polygon, Offset point) {
+  var inside = false;
+  for (
+    var index = 0, previous = polygon.length - 1;
+    index < polygon.length;
+    previous = index++
+  ) {
+    final a = polygon[index];
+    final b = polygon[previous];
+    if ((a.dy > point.dy) == (b.dy > point.dy)) continue;
+    final x = (b.dx - a.dx) * (point.dy - a.dy) / (b.dy - a.dy) + a.dx;
+    if (point.dx < x) inside = !inside;
+  }
+  return inside;
 }

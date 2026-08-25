@@ -6,6 +6,7 @@ import '../domain/entities/geo_bounds.dart';
 import '../domain/entities/offline_region.dart';
 import '../domain/enums/offline_area_status.dart';
 import '../domain/repositories/offline_region_repository.dart';
+import 'offline_tile_cache.dart';
 
 /// Downloads every OSM grid cell covering an area and marks it available
 /// offline. Resuming after an interrupted download is "free": cells already
@@ -15,11 +16,14 @@ class OfflineDownloadManager {
   OfflineDownloadManager({
     required OfflineRegionRepository areaRepository,
     required OsmMapDataRepository mapDataRepository,
+    OfflineTileCache? tileCache,
   })  : _areaRepository = areaRepository,
-        _mapDataRepository = mapDataRepository;
+        _mapDataRepository = mapDataRepository,
+        _tileCache = tileCache ?? OfflineTileCache();
 
   final OfflineRegionRepository _areaRepository;
   final OsmMapDataRepository _mapDataRepository;
+  final OfflineTileCache _tileCache;
 
   Future<int> requestDownload({required String name, required GeoBounds bounds}) async {
     final id = await _areaRepository.create(
@@ -45,9 +49,21 @@ class OfflineDownloadManager {
         await _areaRepository.updateStatus(
           id,
           status: OfflineAreaStatus.downloading,
-          progress: (index + 1) / cells.length,
+          // OSM feature cells are the first half; raster map + hiking overlay
+          // tiles are downloaded in the second half below.
+          progress: cells.isEmpty ? .5 : (index + 1) / cells.length * .5,
         );
       }
+      await _tileCache.downloadBounds(
+        bounds,
+        onProgress: (completed, total) async {
+          await _areaRepository.updateStatus(
+            id,
+            status: OfflineAreaStatus.downloading,
+            progress: .5 + (total == 0 ? .5 : completed / total * .5),
+          );
+        },
+      );
       await _areaRepository.updateStatus(id, status: OfflineAreaStatus.completed, progress: 1);
     } catch (_) {
       await _areaRepository.updateStatus(id, status: OfflineAreaStatus.failed);

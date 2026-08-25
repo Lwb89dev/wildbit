@@ -5,7 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 
 import '../../domain/entities/map_feature_collection.dart';
+import '../../domain/enums/map_feature_kind.dart';
 import '../composition/pixel_bridge_geometry.dart';
+import '../composition/pixel_bridge_placement.dart';
+import '../composition/osm_water_polygon_projector.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Batched bridge pass. A bridge is drawn only for an explicit OSM bridge
@@ -94,6 +97,11 @@ class _BridgePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final waterPolygons = [
+      for (final area in features.areas)
+        if (area.kind == MapFeatureKind.water)
+          OsmWaterPolygonProjector.project(area, camera.latLngToScreenOffset),
+    ].where((polygon) => polygon.length >= 3).toList(growable: false);
     final bridges = features.lines.where(
       (line) =>
           line.metadata.hasConfirmedBridge &&
@@ -101,9 +109,24 @@ class _BridgePainter extends CustomPainter {
           MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
     );
     for (final bridge in bridges) {
+      var start = camera.latLngToScreenOffset(bridge.points.first);
+      var end = camera.latLngToScreenOffset(bridge.points.last);
+      final crossingCenter = Offset.lerp(start, end, .5)!;
+      final crossingDirection = end - start;
+      for (final polygon in waterPolygons) {
+        final placement = PixelBridgePlacement.fromWaterPolygon(
+          polygon: polygon,
+          center: crossingCenter,
+          direction: crossingDirection,
+        );
+        if (placement == null) continue;
+        start = placement.start;
+        end = placement.end;
+        break;
+      }
       final geometry = PixelBridgeGeometry.fromProjected(
-        start: camera.latLngToScreenOffset(bridge.points.first),
-        end: camera.latLngToScreenOffset(bridge.points.last),
+        start: start,
+        end: end,
         zoom: camera.zoom,
       );
       if (geometry == null) continue;

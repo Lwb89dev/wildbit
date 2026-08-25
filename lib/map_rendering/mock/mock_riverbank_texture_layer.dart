@@ -14,8 +14,15 @@ class MockRiverbankTextureLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const PixelWaterPolygonLayer(
     polygon: MockValleyWaterGeometry.riverPolygon,
-    material: WaterEdgeMaterial.grass,
+    material: WaterEdgeMaterial.mud,
     chunkSeed: 741,
-    edgeSpacing: 32,
+    // The mock river descends through the valley; animation must follow its
+    // longitudinal axis instead of sliding across its width.
+    flowDirection: Offset(0, 1),
+    // Mud tiles provide the bank transition; the geometric outline is only a
+    // subtle containment hint and is no longer the shoreline artwork itself.
+    edgeSpacing: 8,
+    edgeScale: .65,
+    maxEdgePlacements: 96,
   );
 }

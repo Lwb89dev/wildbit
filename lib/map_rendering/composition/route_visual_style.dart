@@ -6,7 +6,7 @@ import '../../domain/entities/trail_classification.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../performance/map_rendering_budget.dart';
 
-enum RouteTextureFamily { trail, track, paved }
+enum RouteTextureFamily { trail, track, paved, rock, sand, ford }
 
 class RouteVisualStyle {
   const RouteVisualStyle({
@@ -18,6 +18,8 @@ class RouteVisualStyle {
     required this.difficulty,
     required this.access,
     required this.visibility,
+    required this.isTunnel,
+    required this.isConditional,
   });
 
   final RouteTextureFamily family;
@@ -28,6 +30,8 @@ class RouteVisualStyle {
   final TrailDifficulty difficulty;
   final TrailAccessStatus access;
   final TrailVisibilityStatus visibility;
+  final bool isTunnel;
+  final bool isConditional;
 
   static RouteVisualStyle forLine(LineFeature line, double zoom) {
     final family = _family(line);
@@ -36,11 +40,17 @@ class RouteVisualStyle {
       RouteTextureFamily.trail => 6.0,
       RouteTextureFamily.track => 8.0,
       RouteTextureFamily.paved => 9.0,
+      RouteTextureFamily.rock => 6.4,
+      RouteTextureFamily.sand => 6.0,
+      RouteTextureFamily.ford => 7.0,
     };
     final minimum = switch (family) {
       RouteTextureFamily.trail => 1.2,
       RouteTextureFamily.track => 1.5,
       RouteTextureFamily.paved => 1.6,
+      RouteTextureFamily.rock => 1.2,
+      RouteTextureFamily.sand => 1.2,
+      RouteTextureFamily.ford => 1.3,
     };
     final width = math.max(minimum, baseWidth * scale);
     final classification = TrailClassification.fromMetadata(line.metadata);
@@ -53,15 +63,24 @@ class RouteVisualStyle {
         RouteTextureFamily.trail => const Color(0xFFD2A563),
         RouteTextureFamily.track => const Color(0xFFAA7C49),
         RouteTextureFamily.paved => const Color(0xFF77736B),
+        RouteTextureFamily.rock => const Color(0xFF8A7964),
+        RouteTextureFamily.sand => const Color(0xFFD2B274),
+        RouteTextureFamily.ford => const Color(0xFF6C8790),
       },
       outlineColor: switch (family) {
         RouteTextureFamily.trail => const Color(0xFF70512E),
         RouteTextureFamily.track => const Color(0xFF5E4933),
         RouteTextureFamily.paved => const Color(0xFF494842),
+        RouteTextureFamily.rock => const Color(0xFF514A42),
+        RouteTextureFamily.sand => const Color(0xFF806541),
+        RouteTextureFamily.ford => const Color(0xFF3D5960),
       },
       difficulty: classification.difficulty,
       access: classification.access,
       visibility: classification.visibility,
+      isTunnel:
+          line.metadata.tunnelTag == 'yes' || line.metadata.tunnelTag == 'true',
+      isConditional: line.metadata.hasConditionalAccess,
     );
   }
 
@@ -76,7 +95,22 @@ class RouteVisualStyle {
   };
 
   static RouteTextureFamily _family(LineFeature line) {
-    if (line.kind == MapFeatureKind.trail) return RouteTextureFamily.trail;
+    if (line.kind == MapFeatureKind.trail) {
+      final metadata = line.metadata;
+      if (metadata.fordTag == 'yes' || metadata.fordTag == 'true') {
+        return RouteTextureFamily.ford;
+      }
+      final surface = metadata.surface?.toLowerCase();
+      if (metadata.highwayTag == 'steps' ||
+          metadata.highwayTag == 'via_ferrata' ||
+          const {'rock', 'rocky', 'scree', 'stone'}.contains(surface)) {
+        return RouteTextureFamily.rock;
+      }
+      if (const {'sand', 'mud', 'dirt', 'earth', 'grass'}.contains(surface)) {
+        return RouteTextureFamily.sand;
+      }
+      return RouteTextureFamily.trail;
+    }
     const paved = {
       'asphalt',
       'concrete',

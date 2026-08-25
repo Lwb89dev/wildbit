@@ -69,6 +69,7 @@ dependencies:
     path: third_party/amberflutter
   nostr_tools: ^1.0.9
   web_socket_channel: ^2.4.0
+  sensors_plus: ^7.1.0
 
 dev_dependencies:
   flutter_test:

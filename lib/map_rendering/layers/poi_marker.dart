@@ -9,7 +9,11 @@ String? _assetFor(PoiType type, int _) => switch (type) {
   PoiType.guidepost => 'assets/map/mock/structures/guidepost_multi.png',
   PoiType.campsite => 'assets/map/mock/structures/trail_marker_low.png',
   PoiType.summit => 'assets/map/mock/structures/boulder.png',
-  PoiType.parking || PoiType.waterSource || PoiType.tree => null,
+  PoiType.parking ||
+  PoiType.waterSource ||
+  PoiType.tree ||
+  PoiType.ford ||
+  PoiType.barrier => null,
 };
 
 /// A compact, elevated marker that belongs to the illustrated map rather than

@@ -15,8 +15,8 @@ import '../../domain/enums/poi_type.dart';
 /// (De)serializes [MapFeatureCollection] for on-disk caching. This is a data
 /// layer concern only — the domain entities themselves stay JSON-agnostic.
 abstract final class FeatureCacheCodec {
-  // Version 11 also preserves the exact shelter class used by artwork rules.
-  static const currentFormatVersion = 11;
+  // Version 12 preserves surface and obstacle tags used by route artwork.
+  static const currentFormatVersion = 15;
 
   static String encode(MapFeatureCollection features) {
     return jsonEncode({
@@ -56,6 +56,16 @@ abstract final class FeatureCacheCodec {
                     'network': route.network,
                   },
               ],
+              'highwayTag': l.metadata.highwayTag,
+              'trackType': l.metadata.trackType,
+              'waterwayTag': l.metadata.waterwayTag,
+              'flowDirection': l.metadata.flowDirection,
+              'fordTag': l.metadata.fordTag,
+              'tunnelTag': l.metadata.tunnelTag,
+              'barrierTag': l.metadata.barrierTag,
+              'accessConditional': l.metadata.accessConditional,
+              'footConditional': l.metadata.footConditional,
+              'openingHours': l.metadata.openingHours,
             },
           },
       ],
@@ -167,6 +177,16 @@ abstract final class FeatureCacheCodec {
               network: route['network'] as String?,
             ),
       ],
+      highwayTag: raw['highwayTag'] as String?,
+      trackType: raw['trackType'] as String?,
+      waterwayTag: raw['waterwayTag'] as String?,
+      flowDirection: raw['flowDirection'] as String?,
+      fordTag: raw['fordTag'] as String?,
+      tunnelTag: raw['tunnelTag'] as String?,
+      barrierTag: raw['barrierTag'] as String?,
+      accessConditional: raw['accessConditional'] as String?,
+      footConditional: raw['footConditional'] as String?,
+      openingHours: raw['openingHours'] as String?,
     );
   }
 

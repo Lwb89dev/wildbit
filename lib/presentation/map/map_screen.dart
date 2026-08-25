@@ -18,11 +18,13 @@ import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/entities/poi.dart';
 import '../../domain/enums/poi_type.dart';
 import '../../domain/routing/route_topology_graph.dart';
+import '../../location/compass_heading_service.dart';
 import '../../location/location_service.dart';
 import '../../map_rendering/bit/bit_animation_controller.dart';
 import '../../map_rendering/bit/bit_map_layer.dart';
 import '../../map_rendering/layers/osm_pixel_bridge_layer.dart';
 import '../../map_rendering/layers/osm_pixel_biome_layer.dart';
+import '../../map_rendering/layers/osm_pixel_barrier_layer.dart';
 import '../../map_rendering/layers/osm_pixel_coastline_layer.dart';
 import '../../map_rendering/layers/osm_pixel_contour_layer.dart';
 import '../../map_rendering/layers/osm_pixel_geology_layer.dart';
@@ -38,8 +40,15 @@ import '../../map_rendering/layers/osm_pixel_waterway_layer.dart';
 import '../../map_rendering/layers/pixel_terrain_base_layer.dart';
 import '../../map_rendering/layers/pixel_map_legend.dart';
 import '../../map_rendering/layers/pixel_position_marker.dart';
+import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
+import '../../map_rendering/performance/map_rendering_budget.dart';
+import '../../map_rendering/performance/map_frame_performance_monitor.dart';
 import '../../map_rendering/composition/coastline_topology_composer.dart';
+import '../../map_rendering/composition/osm_line_projector.dart';
+import '../../map_rendering/composition/projected_depth_order.dart';
 import '../../services/kokoro/wildbit_voice_service.dart';
+import '../../services/track_recorder.dart';
+import 'compass_fab.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key, required this.locationService});
@@ -50,13 +59,16 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final _mapController = MapController();
   final _bitLayerKey = GlobalKey<BitMapLayerState>();
   final _bitRenderedPosition = ValueNotifier<LatLng?>(null);
+  final _lineProjectionCache = ProjectedLineCache();
+  final _frameMonitor = MapFramePerformanceMonitor();
   late final _bitController = BitAnimationController();
   OsmMapDataRepository? _dataRepository;
   Timer? _fetchDebounce;
+  Timer? _interactionIdle;
   int _featureRequestId = 0;
   LatLng? _lastGpsFeatureFetch;
   final List<GeoBounds> _loadedFeatureRegions = [];
@@ -90,6 +102,52 @@ class _MapScreenState extends State<MapScreen> {
   static const _poiDistance = Distance();
   final _announcedPoiIds = <String>{};
 
+  final _compassService = CompassHeadingService();
+  StreamSubscription<double>? _compassSub;
+  double _mapRotationDegrees = 0;
+  bool _headingModeActive = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _compassSub = _compassService.headingStream.listen(_onCompassHeading);
+    if (kDebugMode) _frameMonitor.start();
+  }
+
+  void _onCompassHeading(double headingDegrees) {
+    if (!_headingModeActive) return;
+    _mapController.rotate(-headingDegrees);
+  }
+
+  void _toggleHeadingMode() {
+    setState(() => _headingModeActive = !_headingModeActive);
+    if (_headingModeActive) {
+      _compassService.start();
+    } else {
+      _compassService.stop();
+      _mapController.rotate(0);
+    }
+  }
+
+  // Backgrounding the app (or the screen locking) must not leave the
+  // magnetometer/accelerometer sampling with nothing on screen to show for
+  // it; heading mode resumes on its own once the app is visible again.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      _interactionIdle?.cancel();
+      _fetchDebounce?.cancel();
+      MapRenderingBudget.setMapInteracting(false);
+    }
+    if (!_headingModeActive) return;
+    if (state == AppLifecycleState.resumed) {
+      _compassService.start();
+    } else {
+      _compassService.stop();
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -102,8 +160,14 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _fetchDebounce?.cancel();
+    _interactionIdle?.cancel();
+    MapRenderingBudget.setMapInteracting(false);
     _bitRenderedPosition.dispose();
+    _frameMonitor.dispose();
+    _compassSub?.cancel();
+    _compassService.dispose();
     super.dispose();
   }
 
@@ -236,6 +300,24 @@ class _MapScreenState extends State<MapScreen> {
       const Duration(milliseconds: 600),
       _fetchForCurrentViewport,
     );
+  }
+
+  void _setMapInteracting(bool interacting) {
+    _interactionIdle?.cancel();
+    final changed = MapRenderingBudget.mapInteracting != interacting;
+    MapRenderingBudget.setMapInteracting(interacting);
+    if (changed && mounted) setState(() {});
+    if (interacting) {
+      _interactionIdle = Timer(const Duration(milliseconds: 180), () {
+        if (!mounted) return;
+        MapRenderingBudget.setMapInteracting(false);
+        setState(() {});
+        // Do not query Overpass while the camera is still moving. The first
+        // fetch after the gesture is idle also gives the renderer one quiet
+        // frame to restore its full decorative budget.
+        _scheduleFetch();
+      });
+    }
   }
 
   void _onPositionUpdate(GeoFix point) {
@@ -379,6 +461,13 @@ class _MapScreenState extends State<MapScreen> {
                       '${_features.pois.where((p) => p.type == PoiType.tree).length} alberi',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
+                    ValueListenableBuilder<MapFrameStats>(
+                      valueListenable: _frameMonitor.stats,
+                      builder: (context, frameStats, child) => Text(
+                        'Frame: ${_frameStatsLabel(frameStats)}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
                     if (_dataRepository?.lastLoadError != null)
                       Text(
                         'Fetch OSM: ${_dataRepository!.lastLoadError}',
@@ -394,6 +483,16 @@ class _MapScreenState extends State<MapScreen> {
         },
       ),
     );
+  }
+
+  String _frameStatsLabel(MapFrameStats stats) {
+    if (stats.sampleCount == 0) return 'in attesa di campioni';
+    final averageBuild = (stats.averageBuildMicros / 1000).toStringAsFixed(1);
+    final averageRaster = (stats.averageRasterMicros / 1000).toStringAsFixed(1);
+    final worst = (stats.worstFrameMicros / 1000).toStringAsFixed(1);
+    final slowRate = (stats.slowFrameRate * 100).toStringAsFixed(0);
+    return 'build ${averageBuild}ms · raster ${averageRaster}ms · '
+        'max ${worst}ms · lenti $slowRate%';
   }
 
   void _openPoiDetails(Poi poi) {
@@ -442,6 +541,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     final visibleFeatures = _visibleFeatures;
+    final recorder = context.read<TrackRecorderController>();
     return Scaffold(
       body: Stack(
         children: [
@@ -453,9 +553,17 @@ class _MapScreenState extends State<MapScreen> {
               minZoom: 3,
               maxZoom: 19,
               onPositionChanged: (camera, hasGesture) {
+                if (hasGesture) _setMapInteracting(true);
+                if (camera.rotation != _mapRotationDegrees) {
+                  setState(() => _mapRotationDegrees = camera.rotation);
+                }
                 if (hasGesture) {
                   if (_followUser) setState(() => _followUser = false);
-                  _scheduleFetch();
+                  // A manual two-finger rotate overrides heading-follow —
+                  // otherwise the next compass sample immediately fights it.
+                  if (_headingModeActive) {
+                    setState(() => _headingModeActive = false);
+                  }
                 }
               },
             ),
@@ -471,9 +579,33 @@ class _MapScreenState extends State<MapScreen> {
               // foreground vegetation, matching the intended depth order.
               OsmPixelGeologyLayer(features: visibleFeatures),
               OsmPixelContourLayer(features: visibleFeatures),
-              OsmPixelUrbanLayer(features: visibleFeatures),
-              OsmPixelRouteLayer(features: visibleFeatures),
+              // Building footprints use the same screen-space depth rule as
+              // vegetation: the first pass stays behind Bit.
+              OsmPixelUrbanLayer(
+                features: visibleFeatures,
+                depthPivot: _bitRenderedPosition,
+                slice: ProjectedDepthSlice.behindPivot,
+              ),
+              OsmPixelRouteLayer(
+                features: visibleFeatures,
+                projectionCache: _lineProjectionCache,
+              ),
               OsmPixelBridgeLayer(features: visibleFeatures),
+              // The live recorded track follows the same camera projection as
+              // OSM routes and stays between navigation geometry and Bit.
+              ListenableBuilder(
+                listenable: recorder,
+                builder: (context, _) =>
+                    PixelRecordedTrackLayer(points: recorder.points),
+              ),
+              // Barriers use the same projected depth split as trees. A
+              // fence behind Bit is occluded by him; a fence in front remains
+              // visible over him, including after map rotation.
+              OsmPixelBarrierLayer(
+                features: visibleFeatures,
+                depthPivot: _bitRenderedPosition,
+                slice: ProjectedDepthSlice.behindPivot,
+              ),
               // Bit sits above navigational geometry but below foreground
               // vegetation, so trunks and shrubs can occlude his feet.
               if (_lastFix != null)
@@ -501,9 +633,25 @@ class _MapScreenState extends State<MapScreen> {
                   onPositionUpdate: _onPositionUpdate,
                 ),
               ),
+              // The second footprint pass lets a foreground building cover
+              // Bit when its geographic anchor is closer to the viewer.
+              OsmPixelUrbanLayer(
+                features: visibleFeatures,
+                depthPivot: _bitRenderedPosition,
+                slice: ProjectedDepthSlice.inFrontOfPivot,
+              ),
+              if (_lastFix != null)
+                OsmPixelBarrierLayer(
+                  features: visibleFeatures,
+                  depthPivot: _bitRenderedPosition,
+                  slice: ProjectedDepthSlice.inFrontOfPivot,
+                ),
               OsmPixelForegroundVegetationLayer(features: visibleFeatures),
               OsmPixelFlowerLayer(features: visibleFeatures),
-              OsmPixelRouteLabelLayer(features: visibleFeatures),
+              OsmPixelRouteLabelLayer(
+                features: visibleFeatures,
+                projectionCache: _lineProjectionCache,
+              ),
               OsmPixelPoiLayer(
                 features: visibleFeatures,
                 onPoiTap: _openPoiDetails,
@@ -527,6 +675,15 @@ class _MapScreenState extends State<MapScreen> {
             mapDataError: _mapDataError,
             usingLocalPreview: _usingLocalPreview,
             onLayersTap: _openLayersSheet,
+          ),
+          Positioned(
+            right: 12,
+            bottom: 208,
+            child: CompassFab(
+              rotationDegrees: _mapRotationDegrees,
+              headingModeActive: _headingModeActive,
+              onTap: _toggleHeadingMode,
+            ),
           ),
           _ZoomControls(
             onZoomIn: () => _zoomBy(1),
@@ -659,6 +816,8 @@ class _PoiDetailsSheet extends StatelessWidget {
     PoiType.waterSource => 'Fonte d’acqua',
     PoiType.summit => 'Cima',
     PoiType.tree => 'Albero censito',
+    PoiType.ford => 'Guado',
+    PoiType.barrier => 'Barriera',
   };
 
   static IconData _typeIcon(PoiType type) => switch (type) {
@@ -670,6 +829,8 @@ class _PoiDetailsSheet extends StatelessWidget {
     PoiType.waterSource => Icons.water_drop_outlined,
     PoiType.summit => Icons.filter_hdr,
     PoiType.tree => Icons.park_outlined,
+    PoiType.ford => Icons.waterfall_chart_outlined,
+    PoiType.barrier => Icons.block,
   };
 
   static List<Widget> _metadataFacts(Poi poi) {
@@ -858,10 +1019,17 @@ class _Pill extends StatelessWidget {
 }
 
 class _RoundIconButton extends StatelessWidget {
-  const _RoundIconButton({required this.icon, required this.onTap});
+  const _RoundIconButton({
+    required this.icon,
+    required this.onTap,
+    this.size = 34,
+    this.iconSize = 18,
+  });
 
   final IconData icon;
   final VoidCallback onTap;
+  final double size;
+  final double iconSize;
 
   @override
   Widget build(BuildContext context) {
@@ -871,9 +1039,12 @@ class _RoundIconButton extends StatelessWidget {
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Icon(icon, size: 18, color: WildBitColors.forestGreen),
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: Center(
+            child: Icon(icon, size: iconSize, color: WildBitColors.forestGreen),
+          ),
         ),
       ),
     );
@@ -886,6 +1057,11 @@ class _ZoomControls extends StatelessWidget {
   final VoidCallback onZoomIn;
   final VoidCallback onZoomOut;
 
+  // Matches CompassFab's 44px diameter so the whole right-side button
+  // column reads as one family of controls instead of two different sizes.
+  static const _buttonSize = 44.0;
+  static const _iconSize = 22.0;
+
   @override
   Widget build(BuildContext context) {
     return Positioned(
@@ -893,9 +1069,19 @@ class _ZoomControls extends StatelessWidget {
       bottom: 100,
       child: Column(
         children: [
-          _RoundIconButton(icon: Icons.add, onTap: onZoomIn),
+          _RoundIconButton(
+            icon: Icons.add,
+            onTap: onZoomIn,
+            size: _buttonSize,
+            iconSize: _iconSize,
+          ),
           const SizedBox(height: 8),
-          _RoundIconButton(icon: Icons.remove, onTap: onZoomOut),
+          _RoundIconButton(
+            icon: Icons.remove,
+            onTap: onZoomOut,
+            size: _buttonSize,
+            iconSize: _iconSize,
+          ),
         ],
       ),
     );

@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 /// Semantic material selected from OSM tags and local terrain data.
-enum WaterEdgeMaterial { grass, rock, sand }
+enum WaterEdgeMaterial { grass, rock, sand, mud }
 
 /// One deterministically placed shoreline module. [normal] points away from
 /// the water polygon, allowing sprites to sit on land instead of in water.
@@ -48,7 +48,6 @@ class WaterEdgeComposer {
     if (polygon.length < 3 || maxPlacements == 0 || fixedPlacements == 0) {
       return const [];
     }
-    final clockwise = _signedArea(polygon) > 0;
     final perimeter = _perimeter(polygon);
     if (perimeter == 0 || spacing <= 0) return const [];
     final desiredCount = math.max(1, (perimeter / spacing).ceil());
@@ -66,9 +65,17 @@ class WaterEdgeComposer {
       final location = _locationAtDistance(polygon, distance);
       if (location == null) continue;
       final tangent = location.tangent;
-      final normal = clockwise
-          ? Offset(-tangent.dy, tangent.dx)
-          : Offset(tangent.dy, -tangent.dx);
+      final leftNormal = Offset(-tangent.dy, tangent.dx);
+      final sampleDistance = math.min(2.0, math.max(.75, spacing * .12));
+      // Ring winding is not reliable for OSM multipolygons. Pick the normal
+      // whose sample point is outside the water instead of alternating the
+      // mud/sand side whenever the source way reverses direction.
+      final normal = _contains(
+            polygon,
+            location.position + leftNormal * sampleDistance,
+          )
+          ? -leftNormal
+          : leftNormal;
       placements.add(
         WaterEdgePlacement(
           position: location.position + normal * 3,
@@ -115,14 +122,22 @@ class WaterEdgeComposer {
     return total;
   }
 
-  double _signedArea(List<Offset> polygon) {
-    var area = 0.0;
-    for (var index = 0; index < polygon.length; index++) {
+  bool _contains(List<Offset> polygon, Offset point) {
+    var inside = false;
+    for (
+      var index = 0, previous = polygon.length - 1;
+      index < polygon.length;
+      previous = index++
+    ) {
       final a = polygon[index];
-      final b = polygon[(index + 1) % polygon.length];
-      area += a.dx * b.dy - b.dx * a.dy;
+      final b = polygon[previous];
+      final crosses = (a.dy > point.dy) != (b.dy > point.dy);
+      if (!crosses) continue;
+      final x =
+          (b.dx - a.dx) * (point.dy - a.dy) / (b.dy - a.dy) + a.dx;
+      if (point.dx < x) inside = !inside;
     }
-    return area / 2;
+    return inside;
   }
 
   int _variant(int seed, int edge, int sample) =>

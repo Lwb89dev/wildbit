@@ -23,6 +23,14 @@ void main() {
           metadata: const RouteMetadata(
             osmWayId: '1',
             ref: '105',
+            highwayTag: 'path',
+            trackType: 'grade3',
+            waterwayTag: 'river',
+            flowDirection: 'backward',
+            fordTag: 'yes',
+            barrierTag: 'fence',
+            accessConditional: 'no @ (winter)',
+            openingHours: 'May-Oct',
             hikingRoutes: [
               HikingRouteMembership(
                 relationId: '700',
@@ -40,6 +48,14 @@ void main() {
 
     expect(restored.lines.single.nodeIds, ['1', '2']);
     expect(restored.lines.single.metadata.ref, '105');
+    expect(restored.lines.single.metadata.highwayTag, 'path');
+    expect(restored.lines.single.metadata.trackType, 'grade3');
+    expect(restored.lines.single.metadata.waterwayTag, 'river');
+    expect(restored.lines.single.metadata.flowDirection, 'backward');
+    expect(restored.lines.single.metadata.fordTag, 'yes');
+    expect(restored.lines.single.metadata.barrierTag, 'fence');
+    expect(restored.lines.single.metadata.accessConditional, 'no @ (winter)');
+    expect(restored.lines.single.metadata.openingHours, 'May-Oct');
     final route = restored.lines.single.metadata.hikingRoutes.single;
     expect(route.relationId, '700');
     expect(route.ref, 'E5');

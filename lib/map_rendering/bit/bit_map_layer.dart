@@ -22,7 +22,7 @@ class BitMapLayer extends StatefulWidget {
     required this.controller,
     this.onPositionUpdate,
     this.renderedPosition,
-    this.pixelSize = 72,
+    this.pixelSize = 32,
   });
 
   final LocationService locationService;
@@ -53,16 +53,35 @@ class BitMapLayerState extends State<BitMapLayer>
   DateTime _targetSetAt = DateTime.now();
   DateTime _lastDepthPublishedAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  LatLng? get currentPosition => _rendered;
+  LatLng? get currentPosition => _rendered ?? _target;
 
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
-    _subscription = widget.locationService.positionStream.listen(_onFix);
-    widget.locationService.getCurrentPosition().then((point) {
+    unawaited(_startLocation());
+  }
+
+  /// Permission is deliberately acquired before opening the native stream.
+  /// On Android this avoids a plugin-side provider/settings probe (and its
+  /// optional Google fused path) when the user has not granted location yet.
+  Future<void> _startLocation() async {
+    try {
+      if (!await widget.locationService.ensurePermission()) return;
+      if (!mounted) return;
+      _subscription = widget.locationService.positionStream.listen(
+        _onFix,
+        onError: (Object error, StackTrace stack) {
+          debugPrint('WildBit GPS stream: $error');
+        },
+      );
+      final point = await widget.locationService.getCurrentPosition();
       if (point != null) _onFix(point);
-    });
+    } catch (error, stack) {
+      // Location is optional: the map remains usable without a fix and the
+      // status pill can continue to say “Ricerca GPS in corso”.
+      debugPrint('WildBit GPS startup: $error\n$stack');
+    }
   }
 
   void _onFix(GeoFix point) {
@@ -79,9 +98,17 @@ class BitMapLayerState extends State<BitMapLayer>
       headingDegrees: point.headingDegrees,
     );
 
+    final isFirstFix = _rendered == null;
     _previous = _rendered ?? point.position;
     _target = point.position;
     _targetSetAt = DateTime.now();
+    if (isFirstFix) {
+      // Do not leave an empty map marker-sized hole until the first ticker
+      // callback. The next fixes still use the normal smooth interpolation.
+      _rendered = point.position;
+      widget.renderedPosition?.value = point.position;
+      if (mounted) setState(() {});
+    }
     widget.onPositionUpdate?.call(point);
   }
 
@@ -122,12 +149,14 @@ class BitMapLayerState extends State<BitMapLayer>
 
   @override
   Widget build(BuildContext context) {
-    final rendered = _rendered;
+    // The target is a safe visual fallback between the first GPS callback
+    // and the first interpolation tick; normally _rendered is already set.
+    final rendered = _rendered ?? _target;
     if (rendered == null) return const SizedBox.shrink();
 
     final camera = MapCamera.of(context);
-    final pixelSize = (42 * math.pow(2, camera.zoom - 16))
-        .clamp(22.0, 72.0)
+    final pixelSize = (32 * math.pow(2, camera.zoom - 16))
+        .clamp(18.0, 56.0)
         .toDouble();
     final offset = camera.latLngToScreenOffset(rendered);
     final boxHeight = pixelSize * 1.5;

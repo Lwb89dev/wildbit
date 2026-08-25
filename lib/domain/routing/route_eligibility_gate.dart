@@ -42,6 +42,9 @@ abstract final class RouteEligibilityGate {
     if (metadata.access == null && metadata.footAccess == null) {
       missing.add('accesso pedonale non mappato');
     }
+    if (metadata.hasConditionalAccess) {
+      missing.add('accesso condizionale da verificare');
+    }
     if (metadata.sacScale == null) {
       missing.add('difficoltà non mappata');
     }

@@ -13,6 +13,14 @@ import '../../domain/enums/poi_type.dart';
 /// Pixel detail is progressive enhancement: exceeding these limits must lower
 /// detail, never make a phone miss frames or overheat.
 abstract final class MapRenderingBudget {
+  static bool _mapInteracting = false;
+
+  /// True while the camera is being panned, pinched or rotated. Decorative
+  /// geometry temporarily uses a smaller deterministic budget in this state.
+  static bool get mapInteracting => _mapInteracting;
+
+  static void setMapInteracting(bool value) => _mapInteracting = value;
+
   static final Expando<_GeographicExtent> _areaExtents =
       Expando<_GeographicExtent>('wildbit-area-extent');
   static final Expando<_GeographicExtent> _lineExtents =
@@ -23,6 +31,32 @@ abstract final class MapRenderingBudget {
   // lead to a wrong trail choice. Their geometry is simplified progressively
   // by OsmPixelRouteLayer instead.
   static const minLinePointDistancePixels = 2.5;
+
+  /// Paint-time geometry LOD for linear features. The route is never removed;
+  /// only redundant intermediate vertices are collapsed. Numbered or
+  /// relation-backed hiking routes retain more bends at overview zooms so a
+  /// junction cannot visually turn into a misleading straight segment.
+  static double routePointDistancePixels(LineFeature line, double zoom) {
+    final base = (18 - zoom).clamp(minLinePointDistancePixels, 14.0).toDouble();
+    final isImportantTrail =
+        line.kind == MapFeatureKind.trail &&
+        (line.metadata.ref != null || line.metadata.hikingRoutes.isNotEmpty);
+    if (!isImportantTrail) return base;
+    return math.min(base, (8 - zoom * .25).clamp(3.2, 8.0).toDouble());
+  }
+
+  static int routeMaximumPoints(LineFeature line, double zoom) {
+    final important =
+        line.kind == MapFeatureKind.trail &&
+        (line.metadata.ref != null || line.metadata.hikingRoutes.isNotEmpty);
+    final normal = zoom >= 14
+        ? (important ? 2048 : 1024)
+        : zoom >= 10
+        ? (important ? 768 : 384)
+        : (important ? 320 : 180);
+    if (!_mapInteracting) return normal;
+    return math.min(normal, important ? 384 : 192);
+  }
 
   /// Shared pixel-art scale curve. Decorative sprites never reach a
   /// sub-pixel size at overview zooms and never grow without a ceiling when
@@ -44,12 +78,38 @@ abstract final class MapRenderingBudget {
     double closeZoom = 15,
   }) {
     if (zoom <= overviewZoom) return overview;
-    if (zoom >= closeZoom) return close;
     final t = ((zoom - overviewZoom) / (closeZoom - overviewZoom)).clamp(
       0.0,
       1.0,
     );
-    return (overview + (close - overview) * t).round();
+    final progressive = (overview + (close - overview) * t).round();
+    if (!_mapInteracting) return progressive;
+    return math.min(progressive, overview + ((close - overview) * .18).round());
+  }
+
+  /// Returns a deterministic prefix of a stable rank ordering. Decorative
+  /// sprites therefore enter/leave the scene because of an explicit LOD
+  /// budget, never because the camera happened to reorder an input list.
+  ///
+  /// The source is copied before sorting, so feature collections remain
+  /// immutable and the method is safe to call from a paint-time projection.
+  static List<T> stableDecorativeSubset<T>(
+    Iterable<T> source, {
+    required int count,
+    required int Function(T item) rank,
+  }) {
+    final indexed = [
+      for (final entry in source.toList(growable: false).indexed)
+        (index: entry.$1, item: entry.$2, rank: rank(entry.$2)),
+    ];
+    if (count >= indexed.length) {
+      return [for (final entry in indexed) entry.item];
+    }
+    indexed.sort((a, b) {
+      final rankOrder = a.rank.compareTo(b.rank);
+      return rankOrder != 0 ? rankOrder : a.index.compareTo(b.index);
+    });
+    return [for (final entry in indexed.take(math.max(0, count))) entry.item];
   }
 
   static double biomeDensity(MapFeatureKind kind) => switch (kind) {
@@ -64,7 +124,9 @@ abstract final class MapRenderingBudget {
     PoiType.shelter ||
     PoiType.viewpoint ||
     PoiType.guidepost ||
-    PoiType.summit => 0,
+    PoiType.summit ||
+    PoiType.ford ||
+    PoiType.barrier => 0,
     PoiType.waterSource || PoiType.campsite => 1,
     PoiType.parking => 2,
     PoiType.tree => 3,
@@ -86,6 +148,8 @@ abstract final class MapRenderingBudget {
       PoiType.summit => 1.05,
       PoiType.parking || PoiType.waterSource => .88,
       PoiType.tree => 1.0,
+      PoiType.ford => 1.08,
+      PoiType.barrier => .96,
     };
     return (base * multiplier).clamp(15.0, 48.0).toDouble();
   }
@@ -100,6 +164,7 @@ abstract final class MapRenderingBudget {
     PoiType.campsite => 15,
     PoiType.parking => 16,
     PoiType.tree => double.infinity,
+    PoiType.ford || PoiType.barrier => 14,
   };
 
   static bool areaMayBeVisible(AreaFeature area, LatLngBounds viewport) {

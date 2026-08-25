@@ -7,12 +7,14 @@ class RouteLabelContent {
     required this.text,
     required this.priority,
     required this.hasReference,
+    required this.conditional,
     this.membership,
   });
 
   final String text;
   final int priority;
   final bool hasReference;
+  final bool conditional;
   final HikingRouteMembership? membership;
 
   static RouteLabelContent? forLine(LineFeature line, double zoom) {
@@ -24,11 +26,20 @@ class RouteLabelContent {
     final classification = TrailClassification.fromMetadata(line.metadata);
     final difficulty = classification.difficulty.label;
     final restricted = classification.access == TrailAccessStatus.restricted;
+    final conditional = line.metadata.hasConditionalAccess;
 
     if (zoom < 12 ||
-        (!restricted && ref == null && difficulty == null && name == null) ||
-        (!restricted && ref == null && zoom < 13) ||
-        (!restricted && ref == null && difficulty == null && zoom < 13.5)) {
+        (!restricted &&
+            !conditional &&
+            ref == null &&
+            difficulty == null &&
+            name == null) ||
+        (!restricted && !conditional && ref == null && zoom < 13) ||
+        (!restricted &&
+            !conditional &&
+            ref == null &&
+            difficulty == null &&
+            zoom < 13.5)) {
       return null;
     }
 
@@ -39,6 +50,7 @@ class RouteLabelContent {
         : null;
     final parts = <String>[
       if (restricted) 'VIETATO',
+      if (conditional && !restricted) 'CONDIZIONALE',
       ?ref,
       ?visibleDifficulty,
       ?visibleName,
@@ -48,8 +60,11 @@ class RouteLabelContent {
       text: parts.join(' · '),
       priority: restricted
           ? -1
+          : conditional
+          ? -2
           : membership?.displayPriority ?? (ref != null ? 5 : 6),
       hasReference: ref != null,
+      conditional: conditional,
       membership: membership,
     );
   }

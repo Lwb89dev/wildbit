@@ -18,6 +18,16 @@ class RouteMetadata {
     this.footAccess,
     this.ref,
     this.hikingRoutes = const [],
+    this.highwayTag,
+    this.trackType,
+    this.waterwayTag,
+    this.flowDirection,
+    this.fordTag,
+    this.tunnelTag,
+    this.barrierTag,
+    this.accessConditional,
+    this.footConditional,
+    this.openingHours,
   });
 
   final String? osmWayId;
@@ -31,10 +41,28 @@ class RouteMetadata {
   final String? footAccess;
   final String? ref;
   final List<HikingRouteMembership> hikingRoutes;
+  final String? highwayTag;
+  final String? trackType;
+  final String? waterwayTag;
+
+  /// Explicit `flow_direction`/`waterway:flow_direction` value. Null means
+  /// that the OSM way order is the only available visual cue.
+  final String? flowDirection;
+  final String? fordTag;
+  final String? tunnelTag;
+  final String? barrierTag;
+  final String? accessConditional;
+  final String? footConditional;
+  final String? openingHours;
 
   /// Only an explicit affirmative OSM bridge value allows bridge artwork.
   /// Unknown values deliberately do not become a passable-looking bridge.
   bool get hasConfirmedBridge => bridgeTag == 'yes';
+
+  bool get hasConditionalAccess =>
+      accessConditional != null ||
+      footConditional != null ||
+      openingHours != null;
 
   static RouteMetadata fromOsmTags(
     Map<String, String> tags, {
@@ -53,11 +81,32 @@ class RouteMetadata {
       footAccess: _value(tags['foot']),
       ref: _value(tags['ref']),
       hikingRoutes: hikingRoutes,
+      highwayTag: _value(tags['highway']),
+      trackType: _value(tags['tracktype']),
+      waterwayTag: _value(tags['waterway']),
+      flowDirection: _flowDirection(tags),
+      fordTag: _value(tags['ford']),
+      tunnelTag: _value(tags['tunnel']),
+      barrierTag: _value(tags['barrier']),
+      accessConditional: _value(tags['access:conditional']),
+      footConditional: _value(tags['foot:conditional']),
+      openingHours: _value(tags['opening_hours']),
     );
   }
 
   static String? _value(String? value) =>
       value == null || value.trim().isEmpty ? null : value.trim();
+
+  static String? _flowDirection(Map<String, String> tags) {
+    final value = _value(
+      tags['flow_direction'] ?? tags['waterway:flow_direction'],
+    )?.toLowerCase();
+    return switch (value) {
+      'forward' || 'downstream' => 'forward',
+      'backward' || 'upstream' => 'backward',
+      _ => null,
+    };
+  }
 
   /// Parses only an unambiguous metre measurement: `1.2` or `1.2 m`.
   /// Feet, ranges, approximations and free-form values stay unknown rather

@@ -18,9 +18,14 @@ import '../performance/map_rendering_budget.dart';
 /// Texture assets are repeated through image shaders; no widget is allocated
 /// for an individual OSM line segment while the user pans the map.
 class OsmPixelRouteLayer extends StatefulWidget {
-  const OsmPixelRouteLayer({super.key, required this.features});
+  const OsmPixelRouteLayer({
+    super.key,
+    required this.features,
+    this.projectionCache,
+  });
 
   final MapFeatureCollection features;
+  final ProjectedLineCache? projectionCache;
 
   @override
   State<OsmPixelRouteLayer> createState() => _OsmPixelRouteLayerState();
@@ -32,10 +37,14 @@ class _OsmPixelRouteLayerState extends State<OsmPixelRouteLayer> {
     'assets/map/mock/terrain/trail_base_2.png',
     'assets/map/mock/terrain/track_base_1.png',
     'assets/map/mock/terrain/track_base_2.png',
+    'assets/map/mock/terrain/rock_base.png',
+    'assets/map/mock/terrain/sand_base.png',
+    'assets/map/mock/terrain/ford_stones.png',
   ];
 
   List<ui.Image> _images = const [];
   Future<void>? _loading;
+  late final _localProjectionCache = ProjectedLineCache();
 
   @override
   void didChangeDependencies() {
@@ -76,19 +85,28 @@ class _OsmPixelRouteLayerState extends State<OsmPixelRouteLayer> {
 
   @override
   Widget build(BuildContext context) {
+    final camera = MapCamera.of(context);
+    final projectionCache = widget.projectionCache ?? _localProjectionCache;
+    projectionCache.beginView(_viewKey(camera, widget.features));
     return RepaintBoundary(
       child: IgnorePointer(
         child: CustomPaint(
           size: Size.infinite,
           painter: _RoutePainter(
-            camera: MapCamera.of(context),
+            camera: camera,
             features: widget.features,
             images: _images,
+            projectionCache: projectionCache,
           ),
         ),
       ),
     );
   }
+
+  String _viewKey(MapCamera camera, MapFeatureCollection features) =>
+      '${identityHashCode(features)}:${camera.center.latitude.toStringAsFixed(6)}:'
+      '${camera.center.longitude.toStringAsFixed(6)}:'
+      '${camera.zoom.toStringAsFixed(3)}:${camera.rotation.toStringAsFixed(2)}';
 }
 
 class _RoutePainter extends CustomPainter {
@@ -96,11 +114,13 @@ class _RoutePainter extends CustomPainter {
     required this.camera,
     required this.features,
     required this.images,
+    required this.projectionCache,
   });
 
   final MapCamera camera;
   final MapFeatureCollection features;
   final List<ui.Image> images;
+  final ProjectedLineCache projectionCache;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -134,17 +154,19 @@ class _RoutePainter extends CustomPainter {
             return aOrder.compareTo(bOrder);
           });
     for (final line in lines) {
-      final points = OsmLineProjector.projectSimplified(
+      final points = projectionCache.project(
         line,
         camera.latLngToScreenOffset,
         // At small scales preserve every line but collapse its geometry more
         // aggressively. The route itself must never disappear just because
         // more neighbouring ways entered the viewport.
-        minimumDistancePixels: math.max(
-          MapRenderingBudget.minLinePointDistancePixels,
-          18 - camera.zoom,
+        minimumDistancePixels: MapRenderingBudget.routePointDistancePixels(
+          line,
+          camera.zoom,
         ),
+        maximumPoints: MapRenderingBudget.routeMaximumPoints(line, camera.zoom),
       );
+      if (!OsmLineProjector.overlapsViewport(points, size)) continue;
       final seed = OsmLineProjector.seedFor(line);
       final style = RouteVisualStyle.forLine(line, camera.zoom);
       _paintContinuousLine(
@@ -187,7 +209,34 @@ class _RoutePainter extends CustomPainter {
     MapFeatureKind kind,
     RouteVisualStyle style,
   ) {
-    if (kind != MapFeatureKind.trail || points.length < 2) return;
+    if (points.length < 2) return;
+    if (style.isTunnel) {
+      _paintDashedLine(
+        canvas,
+        points,
+        paint: Paint()
+          ..color = const Color(0xFF303A3A)
+          ..strokeWidth = math.max(1.5, style.width * .26)
+          ..strokeCap = StrokeCap.square
+          ..isAntiAlias = false,
+        dash: 5,
+        gap: 5,
+      );
+    }
+    if (style.isConditional) {
+      _paintDashedLine(
+        canvas,
+        points,
+        paint: Paint()
+          ..color = const Color(0xFFE4A43B)
+          ..strokeWidth = math.max(1.4, style.width * .22)
+          ..strokeCap = StrokeCap.square
+          ..isAntiAlias = false,
+        dash: 2,
+        gap: 5,
+      );
+    }
+    if (kind != MapFeatureKind.trail) return;
     final difficultyColor = style.difficultyColor;
     if (difficultyColor != null && camera.zoom >= 13) {
       _paintDashedLine(
@@ -268,7 +317,7 @@ class _RoutePainter extends CustomPainter {
     }
   }
 
-  static const _assetsCount = 4;
+  static const _assetsCount = 7;
 
   void _paintFallbackLine(
     Canvas canvas,
@@ -303,7 +352,14 @@ class _RoutePainter extends CustomPainter {
 
   int _imageIndex(RouteTextureFamily family, int seed, int segment) {
     final variant = (seed + segment).abs() % 2;
-    return family == RouteTextureFamily.track ? 2 + variant : variant;
+    return switch (family) {
+      RouteTextureFamily.trail => variant,
+      RouteTextureFamily.track => 2 + variant,
+      RouteTextureFamily.rock => 4,
+      RouteTextureFamily.sand => 5,
+      RouteTextureFamily.ford => 6,
+      RouteTextureFamily.paved => 0,
+    };
   }
 
   void _paintSegment(

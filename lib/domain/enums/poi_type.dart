@@ -7,4 +7,6 @@ enum PoiType {
   waterSource,
   summit,
   tree,
+  ford,
+  barrier,
 }

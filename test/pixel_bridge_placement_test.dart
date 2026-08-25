@@ -1,0 +1,41 @@
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:wildbit/map_rendering/composition/pixel_bridge_placement.dart';
+
+void main() {
+  test('anchors both bridge ends outside the water polygon', () {
+    const polygon = <Offset>[
+      Offset(10, 0),
+      Offset(30, 0),
+      Offset(30, 40),
+      Offset(10, 40),
+    ];
+    final placement = PixelBridgePlacement.fromWaterPolygon(
+      polygon: polygon,
+      center: const Offset(20, 20),
+      direction: const Offset(1, 0),
+      shoreMargin: 2,
+    );
+
+    expect(placement, isNotNull);
+    expect(placement!.start.dx, 8);
+    expect(placement.end.dx, 32);
+    expect(placement.start.dy, 20);
+    expect(placement.end.dy, 20);
+  });
+
+  test('rejects an axis that does not cross the water', () {
+    final placement = PixelBridgePlacement.fromWaterPolygon(
+      polygon: const [
+        Offset(10, 0),
+        Offset(30, 0),
+        Offset(30, 40),
+        Offset(10, 40),
+      ],
+      center: const Offset(5, 20),
+      direction: const Offset(0, 1),
+    );
+
+    expect(placement, isNull);
+  });
+}

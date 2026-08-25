@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'mock_valley_water_geometry.dart';
+
 /// Places the first real pixel-art vegetation assets in the fixed mock valley.
 /// Placement uses the same ground anchors declared by the asset catalogue.
 class MockEnvironmentSpriteLayer extends StatelessWidget {
@@ -184,19 +186,24 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
     clipBehavior: Clip.hardEdge,
     children: [
       for (final sprite in _sprites)
-        Positioned(
-          left: sprite.footX - sprite.anchorX,
-          top: sprite.footY - sprite.anchorY,
-          width: sprite.width,
-          height: sprite.height,
-          child: Image.asset(
-            sprite.assetPath,
-            filterQuality: FilterQuality.none,
-            isAntiAlias: false,
+        if (!_insideWater(Offset(sprite.footX, sprite.footY)))
+          Positioned(
+            left: sprite.footX - sprite.anchorX,
+            top: sprite.footY - sprite.anchorY,
+            width: sprite.width,
+            height: sprite.height,
+            child: Image.asset(
+              sprite.assetPath,
+              filterQuality: FilterQuality.none,
+              isAntiAlias: false,
+            ),
           ),
-        ),
     ],
   );
+
+  static bool _insideWater(Offset point) {
+    return MockValleyWaterGeometry.containsWater(point);
+  }
 }
 
 class _PlacedSprite {

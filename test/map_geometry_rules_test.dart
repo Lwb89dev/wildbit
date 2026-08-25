@@ -77,6 +77,22 @@ void main() {
     );
   });
 
+  test('keeps the same decorative subset when the input order changes', () {
+    const source = [7, 2, 9, 4, 1];
+    final first = MapRenderingBudget.stableDecorativeSubset(
+      source,
+      count: 3,
+      rank: (value) => value,
+    );
+    final reordered = MapRenderingBudget.stableDecorativeSubset(
+      source.reversed,
+      count: 3,
+      rank: (value) => value,
+    );
+    expect(first, [1, 2, 4]);
+    expect(reordered, first);
+  });
+
   test('keeps biomes visually distinct', () {
     expect(
       MapRenderingBudget.biomeDensity(MapFeatureKind.forest),

@@ -9,6 +9,15 @@ void main() {
       'elements': [
         {
           'type': 'way',
+          'id': 803,
+          'tags': {'barrier': 'fence'},
+          'geometry': [
+            {'lat': 46.0, 'lon': 11.0},
+            {'lat': 46.001, 'lon': 11.001},
+          ],
+        },
+        {
+          'type': 'way',
           'id': 42,
           'tags': {
             'highway': 'path',
@@ -21,6 +30,10 @@ void main() {
             'access': 'permissive',
             'foot': 'yes',
             'ref': '105',
+            'tracktype': 'grade3',
+            'ford': 'yes',
+            'access:conditional': 'no @ (winter)',
+            'opening_hours': 'May-Oct',
           },
           'geometry': [
             {'lat': 46.0, 'lon': 11.0},
@@ -31,14 +44,27 @@ void main() {
       ],
     });
 
-    final metadata = collection.lines.single.metadata;
+    final metadata = collection.lines
+        .firstWhere((line) => line.metadata.osmWayId == '42')
+        .metadata;
     expect(metadata.osmWayId, '42');
     expect(metadata.hasConfirmedBridge, isTrue);
     expect(metadata.widthMeters, .8);
     expect(metadata.sacScale, 'mountain_hiking');
     expect(metadata.trailVisibility, 'intermediate');
     expect(metadata.ref, '105');
-    expect(collection.lines.single.nodeIds, ['100', '101']);
+    expect(metadata.highwayTag, 'path');
+    expect(metadata.trackType, 'grade3');
+    expect(metadata.fordTag, 'yes');
+    expect(metadata.hasConditionalAccess, isTrue);
+    expect(metadata.accessConditional, 'no @ (winter)');
+    expect(metadata.openingHours, 'May-Oct');
+    expect(
+      collection.lines
+          .firstWhere((line) => line.metadata.osmWayId == '42')
+          .nodeIds,
+      ['100', '101'],
+    );
   });
 
   test('does not guess ambiguous width or bridge state', () {
@@ -153,6 +179,46 @@ void main() {
     expect(collection.pois[1].metadata.openingHours, 'Jun-Sep 08:00-20:00');
   });
 
+  test('parses node guados and barriers without treating them as trails', () {
+    final collection = OverpassParser.parse({
+      'elements': [
+        {
+          'type': 'node',
+          'id': 801,
+          'lat': 46.1,
+          'lon': 11.1,
+          'tags': {'ford': 'yes'},
+        },
+        {
+          'type': 'node',
+          'id': 802,
+          'lat': 46.2,
+          'lon': 11.2,
+          'tags': {'barrier': 'gate'},
+        },
+        {
+          'type': 'way',
+          'id': 803,
+          'tags': {'barrier': 'fence'},
+          'geometry': [
+            {'lat': 46.3, 'lon': 11.3},
+            {'lat': 46.301, 'lon': 11.301},
+          ],
+          'nodes': [900, 901],
+        },
+      ],
+    });
+
+    expect(collection.lines.single.kind, MapFeatureKind.barrier);
+    expect(collection.lines.single.metadata.barrierTag, 'fence');
+    expect(collection.pois.map((poi) => poi.type), [
+      PoiType.ford,
+      PoiType.barrier,
+    ]);
+    expect(collection.pois[0].name, 'Guado');
+    expect(collection.pois[1].name, 'Barriera');
+  });
+
   test('keeps a hut way as both building footprint and semantic POI', () {
     final collection = OverpassParser.parse({
       'elements': [
@@ -237,6 +303,25 @@ void main() {
 
     expect(line.kind.name, 'waterway');
     expect(line.metadata.osmWayId, '44');
+  });
+
+  test('preserves explicit downstream direction for animated waterways', () {
+    final line = OverpassParser.parse({
+      'elements': [
+        {
+          'type': 'way',
+          'id': 46,
+          'tags': {'waterway': 'river', 'flow_direction': 'backward'},
+          'geometry': [
+            {'lat': 46.0, 'lon': 11.0},
+            {'lat': 46.001, 'lon': 11.001},
+          ],
+        },
+      ],
+    }).lines.single;
+
+    expect(line.metadata.waterwayTag, 'river');
+    expect(line.metadata.flowDirection, 'backward');
   });
 
   test('keeps a coastline as directed geographic context, not a route', () {

@@ -17,6 +17,17 @@ void main() {
     expect(query, contains('out body geom;'));
     expect(
       query,
+      contains('highway"~"^(path|footway|track|steps|bridleway|via_ferrata)'),
+    );
+    expect(query, contains('way["ford"]'));
+    expect(query, contains('way["barrier"~"^(fence|wall|hedge|retaining_wall'));
+    expect(query, contains('node["ford"]'));
+    expect(
+      query,
+      contains('node["barrier"~"^(gate|bollard|stile|turnstile)\$"]'),
+    );
+    expect(
+      query,
       contains('relation["type"="route"]["route"~"^(hiking|foot)\$"]'),
     );
     expect(query, contains('out body;'));

@@ -11,9 +11,15 @@ quindi costruire una geometria renderizzabile dalla semantica OSM.
 4. Una catena chiusa è un’isola: il renderer compone tutte le isole con
    `evenOdd`, lasciando le terre come fori nel mare.
 5. Una catena aperta riempie soltanto il lato destro, conforme alla convenzione
-   OSM (terra a sinistra, acqua a destra).
-6. Rami ambigui, assenza di node ID e mismatch geometria/node ID vengono
-   registrati e non vengono ricomposti artificialmente.
+   OSM (terra a sinistra, acqua a destra). La fascia d’acqua viene costruita
+   con un offset locale su ogni vertice, non con una sola normale agli estremi:
+   baie, promontori e frammenti tagliati dal viewport non possono quindi
+   richiudersi accidentalmente verso terra.
+6. Rami ambigui, assenza di node ID, mismatch geometria/node ID e ring chiusi
+   degeneri vengono registrati e non vengono ricomposti artificialmente.
+7. Prima della rotazione della camera, le coordinate proiettate vengono
+   riunite nel world-copy più vicino al viewport: un’isola o una costa che
+   attraversa l’antimeridiano non genera segmenti attraverso mezzo globo.
 
 Questa geometria è **solo cartografica**. Non è usata per ricerca percorsi,
 navigazione o valutazioni di sicurezza.

@@ -56,6 +56,18 @@ void main() {
     expect(topology.chains.single.isClosed, isTrue);
   });
 
+  test('rejects a closed coastline with a repeated interior node', () {
+    final topology = CoastlineTopologyComposer.compose([
+      _coast('degenerate', ['1', '2', '3', '2', '1']),
+    ]);
+
+    expect(topology.chains, isEmpty);
+    expect(
+      topology.issues.single.kind,
+      CoastlineTopologyIssueKind.invalidClosedRing,
+    );
+  });
+
   test('rejects geometry that cannot be matched to OSM node references', () {
     final invalid = LineFeature(
       kind: MapFeatureKind.coastline,

@@ -1,20 +1,58 @@
 import 'package:flutter/material.dart';
 
+import '../composition/pixel_bridge_placement.dart';
+import 'mock_valley_water_geometry.dart';
+
 /// Real foreground structures. Their feet are anchored in logical map pixels,
 /// so replacing the mock scene with geographic placements needs no layout API.
 class MockStructureSpriteLayer extends StatelessWidget {
   const MockStructureSpriteLayer({super.key});
 
   @override
-  Widget build(BuildContext context) => Stack(
-    clipBehavior: Clip.hardEdge,
-    children: const [
-      _AnchoredSprite('assets/map/mock/structures/bridge_foot_horizontal_v2.png', 198, 123, 24, 20, 48, 24),
-      _AnchoredSprite('assets/map/mock/structures/hut_bivouac.png', 57, 62, 16, 30, 32, 32),
-      _AnchoredSprite('assets/map/mock/structures/guidepost_multi.png', 104, 147, 8, 22, 16, 24),
-      _AnchoredSprite('assets/map/mock/structures/trail_marker_low.png', 132, 104, 4, 10, 8, 12),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final bridge = PixelBridgePlacement.fromWaterPolygon(
+      polygon: MockValleyWaterGeometry.riverPolygon,
+      center: const Offset(205, 123),
+      direction: const Offset(1, 0),
+      shoreMargin: 5,
+    );
+    return Stack(
+      clipBehavior: Clip.hardEdge,
+      children: [
+        if (bridge != null)
+          _BridgeSprite(placement: bridge),
+        // Full-size alpine hut: its footprint reads as a real shelter rather
+        // than a small marker and keeps the ground anchor at the doorway.
+        const _AnchoredSprite('assets/map/mock/structures/hut_alpine.png', 57, 62, 26, 50, 52, 52),
+        const _AnchoredSprite('assets/map/mock/structures/hut_bivouac.png', 93, 86, 14, 27, 28, 28),
+        const _AnchoredSprite('assets/map/mock/structures/guidepost_multi.png', 104, 147, 8, 22, 16, 24),
+        const _AnchoredSprite('assets/map/mock/structures/trail_marker_low.png', 132, 104, 4, 10, 8, 12),
+      ],
+    );
+  }
+}
+
+class _BridgeSprite extends StatelessWidget {
+  const _BridgeSprite({required this.placement});
+
+  final PixelBridgePlacement placement;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = placement.length;
+    return Positioned(
+      left: placement.start.dx,
+      top: placement.start.dy - 12,
+      width: width,
+      height: 24,
+      child: Image.asset(
+        'assets/map/mock/structures/bridge_foot_horizontal_v2.png',
+        fit: BoxFit.fill,
+        filterQuality: FilterQuality.none,
+        isAntiAlias: false,
+      ),
+    );
+  }
 }
 
 class _AnchoredSprite extends StatelessWidget {

@@ -65,6 +65,13 @@ class TrackRecorderController extends ChangeNotifier {
     if (state != RecorderState.recording) return;
     state = RecorderState.paused;
     _pausedAt = DateTime.now();
+    // A pause must actually disconnect from GPS — not just freeze the
+    // elapsed-time counter — otherwise the phone keeps polling
+    // bestForNavigation-accuracy GPS (and silently keeps appending points to
+    // the "paused" track) for as long as the app is left open, which is a
+    // real battery drain if someone pauses and forgets about it.
+    _subscription?.cancel();
+    _subscription = null;
     notifyListeners();
   }
 
@@ -74,6 +81,7 @@ class TrackRecorderController extends ChangeNotifier {
     final pausedAt = _pausedAt;
     if (pausedAt != null) _pausedAccumulated += DateTime.now().difference(pausedAt);
     _pausedAt = null;
+    _subscription = _locationService.positionStream.listen(_onFix);
     notifyListeners();
   }
 

@@ -19,6 +19,7 @@ class PixelWaterPolygonLayer extends StatefulWidget {
     this.edgeSpacing = 32,
     this.edgeScale = 1,
     this.maxEdgePlacements,
+    this.flowDirection,
   });
 
   final List<Offset> polygon;
@@ -27,6 +28,10 @@ class PixelWaterPolygonLayer extends StatefulWidget {
   final double edgeSpacing;
   final double edgeScale;
   final int? maxEdgePlacements;
+
+  /// Longitudinal flow axis in the projected coordinate space. A lake leaves
+  /// this null; a river polygon supplies its downstream tangent.
+  final Offset? flowDirection;
 
   @override
   State<PixelWaterPolygonLayer> createState() => _PixelWaterPolygonLayerState();
@@ -43,13 +48,13 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _startFlow();
+    if (widget.flowDirection != null) _startFlow();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _startFlow();
+      if (widget.flowDirection != null) _startFlow();
     } else {
       _flowTimer?.cancel();
       _flowTimer = null;
@@ -73,18 +78,21 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
 
   @override
   Widget build(BuildContext context) {
-    final edges = WaterEdgeComposer(
-      spacing: widget.edgeSpacing,
-      maxPlacements: widget.maxEdgePlacements,
-    ).compose(
-      polygon: widget.polygon,
-      material: widget.material,
-      chunkSeed: widget.chunkSeed,
-    );
+    final edges =
+        WaterEdgeComposer(
+          spacing: widget.edgeSpacing,
+          maxPlacements: widget.maxEdgePlacements,
+        ).compose(
+          polygon: widget.polygon,
+          material: widget.material,
+          chunkSeed: widget.chunkSeed,
+        );
     final shoreAsset = switch (widget.material) {
       WaterEdgeMaterial.grass => 'assets/map/mock/terrain/shore_grass.png',
       WaterEdgeMaterial.rock => 'assets/map/mock/terrain/shore_rock_detail.png',
-      WaterEdgeMaterial.sand => 'assets/map/mock/terrain/shore_sand.png',
+      WaterEdgeMaterial.sand =>
+        'assets/map/mock/terrain/shore_sand_bank.png',
+      WaterEdgeMaterial.mud => 'assets/map/mock/terrain/shore_mud_bank.png',
     };
 
     return Stack(
@@ -92,24 +100,66 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
       children: [
         AnimatedBuilder(
           animation: _flowPhase,
-          builder: (context, child) => ClipPath(
+          builder: (context, _) => ClipPath(
             clipper: _PolygonClipper(widget.polygon),
-            child: ClipRect(
-              child: Transform.translate(
-                offset: Offset(-16 * _flowPhase.value, 0),
-                child: child,
-              ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // The animated texture is intentionally translated along the
+                // river axis. Keep a static water fill underneath it so a
+                // missing asset can never expose the terrain layer.
+                const ColoredBox(color: Color(0xFF28698A)),
+                ClipRect(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final viewportWidth = constraints.maxWidth.isFinite
+                          ? constraints.maxWidth
+                          : 256.0;
+                      final viewportHeight = constraints.maxHeight.isFinite
+                          ? constraints.maxHeight
+                          : 256.0;
+                      // The child is deliberately larger than the clip.
+                      // Without this overscan, translating a repeated
+                      // DecorationImage exposes the solid fill at its
+                      // leading edge once per flow tick.
+                      const overscan = 32.0;
+                      final textureWidth = viewportWidth + overscan * 2;
+                      final textureHeight = viewportHeight + overscan * 2;
+                      return OverflowBox(
+                        alignment: Alignment.center,
+                        minWidth: textureWidth,
+                        maxWidth: textureWidth,
+                        minHeight: textureHeight,
+                        maxHeight: textureHeight,
+                        child: Transform.translate(
+                          offset: _flowOffset,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              image: DecorationImage(
+                                image: AssetImage(_waterAsset),
+                                repeat: ImageRepeat.repeat,
+                                filterQuality: FilterQuality.none,
+                              ),
+                            ),
+                            child: SizedBox(
+                              width: textureWidth,
+                              height: textureHeight,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              image: DecorationImage(
-                image: AssetImage(_waterAsset),
-                repeat: ImageRepeat.repeat,
-                filterQuality: FilterQuality.none,
-              ),
-            ),
-            child: SizedBox.expand(),
+        ),
+        CustomPaint(
+          size: Size.infinite,
+          painter: _WaterBoundaryPainter(
+            polygon: widget.polygon,
+            material: widget.material,
           ),
         ),
         for (final edge in edges)
@@ -119,7 +169,11 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
             width: 16 * widget.edgeScale,
             height: 16 * widget.edgeScale,
             child: Transform.rotate(
-              angle: math.atan2(edge.tangent.dy, edge.tangent.dx),
+              // Shore modules are authored with land on the left and water
+              // on the right.  Align that local +X water direction with the
+              // actual inward normal; using the tangent flips the bank on
+              // alternating segments of a curved/reversed OSM ring.
+              angle: math.atan2(-edge.normal.dy, -edge.normal.dx),
               alignment: Alignment.center,
               child: Image.asset(
                 shoreAsset,
@@ -135,10 +189,12 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
           for (var index = 0; index < edges.length; index++)
             if ((index + edges[index].variant) % 5 == 0)
               Positioned(
-                left: edges[index].position.dx +
+                left:
+                    edges[index].position.dx +
                     edges[index].normal.dx * 8 * widget.edgeScale -
                     7 * widget.edgeScale,
-                top: edges[index].position.dy +
+                top:
+                    edges[index].position.dy +
                     edges[index].normal.dy * 8 * widget.edgeScale -
                     12 * widget.edgeScale,
                 width: 14 * widget.edgeScale,
@@ -157,6 +213,70 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
     final variant = widget.chunkSeed.abs() % 3 + 1;
     return 'assets/map/mock/terrain/water_still_$variant.png';
   }
+
+  Offset get _flowOffset {
+    final direction = widget.flowDirection;
+    if (direction == null || direction.distance == 0) return Offset.zero;
+    final normalized = direction / direction.distance;
+    return normalized * (16 * _flowPhase.value);
+  }
+}
+
+class _WaterBoundaryPainter extends CustomPainter {
+  const _WaterBoundaryPainter({required this.polygon, required this.material});
+
+  final List<Offset> polygon;
+  final WaterEdgeMaterial material;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (polygon.length < 3 || size.isEmpty) return;
+    final path = Path()..addPolygon(polygon, true);
+    final inner = switch (material) {
+      WaterEdgeMaterial.grass => const Color(0xFF708342),
+      WaterEdgeMaterial.rock => const Color(0xFF777169),
+      WaterEdgeMaterial.sand => const Color(0xFFD8AE68),
+      WaterEdgeMaterial.mud => const Color(0xFF725238),
+    };
+    final outer = switch (material) {
+      // A green containment outline between a muddy bank and the water reads
+      // as exposed grass. Keep the water-facing edge in the same earth family.
+      WaterEdgeMaterial.mud => const Color(0xFF503522),
+      WaterEdgeMaterial.sand => const Color(0xFFB4874A),
+      _ => const Color(0xFF294A46),
+    };
+    if (material != WaterEdgeMaterial.mud) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = outer
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..strokeJoin = StrokeJoin.round
+          ..isAntiAlias = false,
+      );
+    }
+    if (material != WaterEdgeMaterial.mud) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = inner
+          ..style = PaintingStyle.stroke
+          // A continuous underlay closes the sub-pixel gaps between adjacent
+          // 16px modules. The sprites remain the visible pixel-art detail.
+          ..strokeWidth = switch (material) {
+            WaterEdgeMaterial.sand => 3.5,
+            _ => 1.2,
+          }
+          ..strokeJoin = StrokeJoin.round
+          ..isAntiAlias = false,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WaterBoundaryPainter oldDelegate) =>
+      oldDelegate.polygon != polygon || oldDelegate.material != material;
 }
 
 class _PolygonClipper extends CustomClipper<Path> {

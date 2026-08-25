@@ -1,20 +1,48 @@
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
+import '../composition/projected_depth_order.dart';
+import '../composition/structure_footprint.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// A deliberately quiet urban backdrop. Buildings provide orientation without
 /// turning the map into a grey raster block or competing with trails.
 class OsmPixelUrbanLayer extends StatelessWidget {
-  const OsmPixelUrbanLayer({super.key, required this.features});
+  const OsmPixelUrbanLayer({
+    super.key,
+    required this.features,
+    this.depthPivot,
+    this.slice = ProjectedDepthSlice.all,
+  });
 
   final MapFeatureCollection features;
+  final ValueListenable<LatLng?>? depthPivot;
+  final ProjectedDepthSlice slice;
 
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
+    if (depthPivot != null) {
+      return ValueListenableBuilder<LatLng?>(
+        valueListenable: depthPivot!,
+        builder: (context, pivot, _) => _buildLayer(camera, pivot),
+      );
+    }
+    return _buildLayer(camera, null);
+  }
+
+  Widget _buildLayer(MapCamera camera, LatLng? pivot) {
+    // Before the first GPS fix there is no meaningful depth pivot. Keep one
+    // complete background pass and suppress the foreground duplicate.
+    if (pivot == null && slice == ProjectedDepthSlice.inFrontOfPivot) {
+      return const SizedBox.expand();
+    }
     final buildings = features.areas
         .where(
           (area) =>
@@ -22,35 +50,46 @@ class OsmPixelUrbanLayer extends StatelessWidget {
               MapRenderingBudget.areaMayBeVisible(area, camera.visibleBounds),
         )
         .toList(growable: false)
-      ..sort((a, b) => _centroidLatitude(b).compareTo(_centroidLatitude(a)));
+      ..sort((a, b) => _sortKey(a).compareTo(_sortKey(b)));
     if (buildings.isEmpty) return const SizedBox.expand();
-    return IgnorePointer(
-      child: LayoutBuilder(
-        builder: (context, constraints) => SizedBox(
-          width: constraints.maxWidth,
-          height: constraints.maxHeight,
-          child: CustomPaint(
-            painter: _UrbanPainter(camera: camera, buildings: buildings),
+    final limited = buildings.length <= 240
+        ? buildings
+        : buildings.take(240).toList(growable: false);
+    final child = LayoutBuilder(
+      builder: (context, constraints) => SizedBox(
+        width: constraints.maxWidth,
+        height: constraints.maxHeight,
+        child: CustomPaint(
+          painter: _UrbanPainter(
+            camera: camera,
+            buildings: limited,
+            depthPivot: pivot,
+            slice: slice,
           ),
         ),
       ),
     );
+    return IgnorePointer(child: child);
   }
 
-  static double _centroidLatitude(AreaFeature area) {
-    if (area.ring.isEmpty) return 0;
-    return area.ring
-            .map((point) => point.latitude)
-            .reduce((a, b) => a + b) /
-        area.ring.length;
-  }
+  static String _sortKey(AreaFeature area) =>
+      (area.sourceId ?? '') +
+      ':' +
+      StructureFootprint.centroid(area.ring).latitude.toStringAsFixed(7);
 }
 
 class _UrbanPainter extends CustomPainter {
-  const _UrbanPainter({required this.camera, required this.buildings});
+  const _UrbanPainter({
+    required this.camera,
+    required this.buildings,
+    required this.depthPivot,
+    required this.slice,
+  });
 
   final MapCamera camera;
   final List<AreaFeature> buildings;
+  final LatLng? depthPivot;
+  final ProjectedDepthSlice slice;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -61,12 +100,25 @@ class _UrbanPainter extends CustomPainter {
     );
     final detail = ((camera.zoom - 12) / 3).clamp(0.0, 1.0);
     final extrusion = (1.5 + 2.5 * detail) * scale;
+    final pivotFoot = depthPivot == null
+        ? null
+        : camera.latLngToScreenOffset(depthPivot!);
     for (final area in buildings) {
-      final ring = area.ring;
-      if (ring.length < 3) continue;
+      final ring = StructureFootprint.sanitize(area.ring);
+      if (ring == null) continue;
       final raw = [
         for (final point in ring) camera.latLngToScreenOffset(point),
       ];
+      if (pivotFoot != null &&
+          !ProjectedDepthOrder.belongsToSlice(
+            objectFoot: camera.latLngToScreenOffset(
+              StructureFootprint.centroid(ring),
+            ),
+            pivotFoot: pivotFoot,
+            slice: slice,
+          )) {
+        continue;
+      }
       // Snap the polygon as one rigid object. Snapping every vertex
       // independently changed its silhouette at fractional zoom values.
       final snapDelta = _snap(raw.first) - raw.first;
@@ -110,8 +162,8 @@ class _UrbanPainter extends CustomPainter {
   Offset _snap(Offset point) =>
       Offset(point.dx.roundToDouble(), point.dy.roundToDouble());
 
-  Path _path(List<Offset> points) {
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
+  ui.Path _path(List<Offset> points) {
+    final path = ui.Path()..moveTo(points.first.dx, points.first.dy);
     for (final point in points.skip(1)) {
       path.lineTo(point.dx, point.dy);
     }
@@ -129,7 +181,7 @@ class _UrbanPainter extends CustomPainter {
       center += point;
     }
     center /= projected.length.toDouble();
-    final inset = Path();
+    final inset = ui.Path();
     for (var i = 0; i < projected.length; i++) {
       final point = Offset.lerp(center, projected[i], .78)!;
       if (i == 0) {
@@ -162,5 +214,7 @@ class _UrbanPainter extends CustomPainter {
   bool shouldRepaint(_UrbanPainter oldDelegate) =>
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
-      oldDelegate.buildings != buildings;
+      oldDelegate.buildings != buildings ||
+      oldDelegate.depthPivot != depthPivot ||
+      oldDelegate.slice != slice;
 }

@@ -33,6 +33,7 @@ class PixelMapLegend extends StatelessWidget {
           _LegendItem(Color(0xFFD69A2D), 'T1–T6'),
           _LegendItem(Color(0xFFD53A35), 'Accesso vietato', dashed: true),
           _LegendItem(Color(0xFFE9D9A2), 'Traccia debole', dotted: true),
+          _LegendItem(Color(0xFFE4A43B), 'Condizionale', dotted: true),
         ],
       ),
     ),

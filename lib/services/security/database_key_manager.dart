@@ -65,14 +65,47 @@ class DatabaseKeyManager {
     return true;
   }
 
+  /// True when this looks like a fresh install (or a restore onto a new
+  /// device) that inherited Nostr-link metadata — via Android's default
+  /// Auto Backup of SharedPreferences — but not the actual database key,
+  /// which lives only in this device's Keystore and does not survive an
+  /// uninstall. The caller should offer Amber recovery via
+  /// [recoverKeyFromAmber] before ever calling [resolveKey], which would
+  /// otherwise silently generate a new key that can't open a restored
+  /// backup encrypted with the original one.
+  Future<bool> hasRecoverableIdentity() async {
+    if (await _secureStorage.read(key: _cachedKeyStorageKey) != null) {
+      return false;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_wrappedKeyPrefsKey) != null &&
+        prefs.getString(_linkedPubkeyPrefsKey) != null;
+  }
+
+  /// Recovers the original database key from its NIP-44-wrapped copy via
+  /// Amber, caching it locally on success so later launches use
+  /// [resolveKey]'s normal fast path again. Returns null if there is
+  /// nothing to recover or Amber declines/fails to decrypt.
+  Future<String?> recoverKeyFromAmber(AmberSignerService signer) async {
+    final prefs = await SharedPreferences.getInstance();
+    final wrapped = prefs.getString(_wrappedKeyPrefsKey);
+    final pubkey = prefs.getString(_linkedPubkeyPrefsKey);
+    if (wrapped == null || pubkey == null) return null;
+    final recovered = await signer.decryptToSelf(wrapped, pubkey);
+    if (recovered == null) return null;
+    await _secureStorage.write(key: _cachedKeyStorageKey, value: recovered);
+    return recovered;
+  }
+
   Future<void> unlinkNostrIdentity() async {
+    await _secureStorage.delete(key: nsecStorageKey);
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_wrappedKeyPrefsKey);
     await prefs.remove(_linkedPubkeyPrefsKey);
     await prefs.remove(_linkedNpubPrefsKey);
   }
 
-  /// Stores an explicitly user-entered nsec only in platform secure storage.
+  /// Stores an explicitly entered nsec only in platform secure storage.
   /// It is never written to SharedPreferences or included in backups.
   Future<void> linkNsecIdentity(NostrIdentity identity, String nsec) async {
     await _secureStorage.write(key: nsecStorageKey, value: nsec);

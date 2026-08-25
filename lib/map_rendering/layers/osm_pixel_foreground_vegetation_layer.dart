@@ -75,9 +75,9 @@ class _OsmPixelForegroundVegetationLayerState
 
   Future<ui.Image> _resolveImage(String asset) {
     final completer = Completer<ui.Image>();
-    final stream = AssetImage(asset).resolve(
-      createLocalImageConfiguration(context),
-    );
+    final stream = AssetImage(
+      asset,
+    ).resolve(createLocalImageConfiguration(context));
     late ImageStreamListener listener;
     listener = ImageStreamListener(
       (image, _) {
@@ -139,10 +139,7 @@ class _OsmPixelForegroundVegetationLayerState
     return List.unmodifiable(result);
   }
 
-  List<_VegetationPoint> _sample(
-    AreaFeature area,
-    int remaining,
-  ) {
+  List<_VegetationPoint> _sample(AreaFeature area, int remaining) {
     if (area.ring.length < 3 || remaining <= 0) return const [];
     var south = area.ring.first.latitude;
     var north = south;
@@ -156,7 +153,11 @@ class _OsmPixelForegroundVegetationLayerState
     }
     final random = math.Random(_seed(area));
     final result = <_VegetationPoint>[];
-    for (var attempt = 0; attempt < remaining * 8 && result.length < remaining; attempt++) {
+    for (
+      var attempt = 0;
+      attempt < remaining * 8 && result.length < remaining;
+      attempt++
+    ) {
       final position = LatLng(
         south + random.nextDouble() * (north - south),
         west + random.nextDouble() * (east - west),
@@ -169,16 +170,15 @@ class _OsmPixelForegroundVegetationLayerState
       if (random.nextDouble() > MapRenderingBudget.biomeDensity(area.kind)) {
         continue;
       }
-      final edgeScale = MapGeometryRules.nearPolygonBoundary(
-        position,
-        area.ring,
-        thresholdDegrees: .0003,
-      )
+      final edgeScale =
+          MapGeometryRules.nearPolygonBoundary(
+            position,
+            area.ring,
+            thresholdDegrees: .0003,
+          )
           ? .7
           : 1.0;
-      result.add(
-        _VegetationPoint(position, random.nextInt(3), edgeScale),
-      );
+      result.add(_VegetationPoint(position, random.nextInt(3), edgeScale));
     }
     return result;
   }
@@ -220,22 +220,16 @@ class _OsmPixelForegroundVegetationLayerState
   }
 
   int _signature(MapFeatureCollection features) => Object.hash(
-        Object.hashAll(
-          features.areas.map((area) => area.sourceId ?? _seed(area)),
-        ),
-        Object.hashAll(
-          features.lines.map((line) => OsmLineProjector.seedFor(line)),
-        ),
-        Object.hashAll(features.pois.map((poi) => poi.id)),
-      );
+    Object.hashAll(features.areas.map((area) => area.sourceId ?? _seed(area))),
+    Object.hashAll(
+      features.lines.map((line) => OsmLineProjector.seedFor(line)),
+    ),
+    Object.hashAll(features.pois.map((poi) => poi.id)),
+  );
 }
 
 class _VegetationPoint {
-  const _VegetationPoint(
-    this.position,
-    this.variant,
-    this.scaleMultiplier,
-  );
+  const _VegetationPoint(this.position, this.variant, this.scaleMultiplier);
 
   final LatLng position;
   final int variant;
@@ -255,7 +249,17 @@ class _VegetationPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final points = candidates
+    final budgeted = MapRenderingBudget.stableDecorativeSubset(
+      candidates,
+      count: MapRenderingBudget.decorativeCount(
+        camera.zoom,
+        overview: 80,
+        close: candidates.length,
+      ),
+      rank: (point) =>
+          point.position.latitude.hashCode ^ point.position.longitude.hashCode,
+    );
+    final points = budgeted
         .where((point) => camera.visibleBounds.contains(point.position))
         .toList(growable: false);
     // South is visually closer on a north-up map. Paint it last so foreground
@@ -300,12 +304,7 @@ class _VegetationPainter extends CustomPainter {
       );
       canvas.drawImageRect(
         image,
-        Rect.fromLTWH(
-          0,
-          0,
-          image.width.toDouble(),
-          image.height.toDouble(),
-        ),
+        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
         target,
         paint,
       );

@@ -8,6 +8,7 @@ import 'data/test_data/test_region.dart';
 import 'location/geolocator_location_service.dart';
 import 'location/location_service.dart';
 import 'location/simulated_location_service.dart';
+import 'presentation/onboarding/key_recovery_gate.dart';
 import 'services/security/database_key_manager.dart';
 
 class _BitSplashGate extends StatefulWidget {
@@ -63,17 +64,63 @@ LocationService _buildLocationService() {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final locationService = _buildLocationService();
-  // Resolved before runApp: the database must open already encrypted, so
-  // the key can never be created (or read) later than the database itself.
-  final databaseKey = await DatabaseKeyManager().resolveKey();
+  runApp(_KeyResolutionRoot(locationService: locationService));
+}
 
-  runApp(
-    WildBitProviders(
-      locationService: locationService,
-      databaseKey: databaseKey,
-      child: _BitSplashGate(
-        child: WildBitApp(locationService: locationService),
-      ),
-    ),
-  );
+/// Resolves the database key before anything else runs — the database must
+/// open already encrypted, so the key can never be created (or read) later
+/// than the database itself. Most launches resolve instantly from the
+/// device's own cache; a reinstall/restore that carried over Nostr-link
+/// metadata without the matching key (Keystore never survives an uninstall)
+/// is routed through [KeyRecoveryGate] first instead of silently generating
+/// a new key that couldn't open a restored backup.
+class _KeyResolutionRoot extends StatefulWidget {
+  const _KeyResolutionRoot({required this.locationService});
+
+  final LocationService locationService;
+
+  @override
+  State<_KeyResolutionRoot> createState() => _KeyResolutionRootState();
+}
+
+class _KeyResolutionRootState extends State<_KeyResolutionRoot> {
+  final _keyManager = DatabaseKeyManager();
+  String? _databaseKey;
+  bool _showRecoveryGate = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  Future<void> _resolve() async {
+    if (await _keyManager.hasRecoverableIdentity()) {
+      if (mounted) setState(() => _showRecoveryGate = true);
+      return;
+    }
+    final key = await _keyManager.resolveKey();
+    if (mounted) setState(() => _databaseKey = key);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final key = _databaseKey;
+    if (key != null) {
+      return WildBitProviders(
+        locationService: widget.locationService,
+        databaseKey: key,
+        child: _BitSplashGate(
+          child: WildBitApp(locationService: widget.locationService),
+        ),
+      );
+    }
+    if (_showRecoveryGate) {
+      return KeyRecoveryGate(
+        keyManager: _keyManager,
+        onKeyResolved: (key) => setState(() => _databaseKey = key),
+      );
+    }
+    return const ColoredBox(color: Color(0xFF142A25));
+  }
 }

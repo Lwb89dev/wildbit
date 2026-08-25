@@ -11,6 +11,11 @@ import '../../domain/enums/offline_area_status.dart';
 import '../../domain/repositories/offline_region_repository.dart';
 import '../../location/location_service.dart';
 import '../../offline/offline_download_manager.dart';
+import '../../offline/offline_tile_cache.dart';
+import '../../offline/offline_tile_plan.dart';
+import '../../offline/offline_tile_provider.dart';
+import '../../offline/offline_region_package.dart';
+import '../../offline/offline_storage_service.dart';
 
 class OfflineScreen extends StatefulWidget {
   const OfflineScreen({super.key, required this.locationService});
@@ -23,6 +28,12 @@ class OfflineScreen extends StatefulWidget {
 
 class _OfflineScreenState extends State<OfflineScreen> {
   final _mapController = MapController();
+  LatLng _center = testRegionCenter;
+  bool _locating = true;
+  final _tileCache = OfflineTileCache();
+  final _storage = OfflineStorageService();
+  String? _tileCacheDirectory;
+  int? _availableBytes;
 
   late Future<List<OfflineRegion>> _areasFuture;
 
@@ -30,6 +41,33 @@ class _OfflineScreenState extends State<OfflineScreen> {
   void initState() {
     super.initState();
     _reload();
+    _centerOnLocation();
+    _loadTileCacheDirectory();
+    _loadAvailableStorage();
+  }
+
+  Future<void> _loadTileCacheDirectory() async {
+    final directory = await _tileCache.rootDirectory;
+    if (mounted) setState(() => _tileCacheDirectory = directory.path);
+  }
+
+  Future<void> _loadAvailableStorage() async {
+    final bytes = await _storage.availableBytes();
+    if (mounted) setState(() => _availableBytes = bytes);
+  }
+
+  Future<void> _centerOnLocation() async {
+    try {
+      if (!await widget.locationService.ensurePermission()) return;
+      final fix = await widget.locationService.getCurrentPosition();
+      if (fix == null || !mounted) return;
+      setState(() => _center = fix.position);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _mapController.move(fix.position, 13);
+      });
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
   }
 
   void _reload() {
@@ -43,17 +81,73 @@ class _OfflineScreenState extends State<OfflineScreen> {
       northEast: LatLng(visible.north, visible.east),
     );
 
-    final manager = context.read<OfflineDownloadManager>();
-    await manager.requestDownload(
-      name:
-          'Area visibile ${visible.center.latitude.toStringAsFixed(2)}, ${visible.center.longitude.toStringAsFixed(2)}',
-      bounds: bounds,
-    );
+    try {
+      final tiles = OfflineTilePlan.estimate(bounds);
+      final bytes = _tileCache.estimatedBytes(bounds);
+      await _ensureSpace(bytes);
+      if (!mounted) return;
+      final manager = context.read<OfflineDownloadManager>();
+      await manager.requestDownload(
+        name:
+            'Area visibile ${visible.center.latitude.toStringAsFixed(2)}, ${visible.center.longitude.toStringAsFixed(2)}',
+        bounds: bounds,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Download avviato: $tiles tile × 2 overlay · ${_formatBytes(bytes)}',
+            ),
+          ),
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message.toString())),
+        );
+      }
+    }
     setState(_reload);
     // Refresh again shortly after so in-progress downloads show live status.
     Future.delayed(const Duration(seconds: 1), () {
       if (mounted) setState(_reload);
     });
+  }
+
+  Future<void> _downloadLocalPackage() async {
+    final package = OfflineRegionPackage.local(_center);
+    try {
+      await _ensureSpace(_tileCache.estimatedBytes(package.bounds));
+      if (!mounted) return;
+      await context.read<OfflineDownloadManager>().requestDownload(
+        name: package.name,
+        bounds: package.bounds,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${package.name} avviato')),
+        );
+        setState(_reload);
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message.toString())),
+        );
+      }
+    }
+  }
+
+  Future<void> _ensureSpace(int requiredBytes) async {
+    final available = await _storage.availableBytes();
+    if (mounted && available != null) setState(() => _availableBytes = available);
+    if (available != null && available < requiredBytes) {
+      throw StateError(
+        'Spazio insufficiente: servono ${_formatBytes(requiredBytes)}, '
+        'disponibili ${_formatBytes(available)}',
+      );
+    }
   }
 
   Future<void> _delete(int id) async {
@@ -71,8 +165,20 @@ class _OfflineScreenState extends State<OfflineScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final storageLabel = _availableBytes == null
+        ? ''
+        : ' · ${_formatBytes(_availableBytes!)} liberi';
     return Scaffold(
-      appBar: AppBar(title: const Text('Offline')),
+      appBar: AppBar(
+        title: const Text('Offline'),
+        actions: [
+          IconButton(
+            tooltip: 'Centra sul GPS',
+            onPressed: _centerOnLocation,
+            icon: const Icon(Icons.my_location),
+          ),
+        ],
+      ),
       body: RefreshIndicator(
         onRefresh: () async => setState(_reload),
         child: Column(
@@ -84,14 +190,25 @@ class _OfflineScreenState extends State<OfflineScreen> {
                   FlutterMap(
                     mapController: _mapController,
                     options: MapOptions(
-                      initialCenter: testRegionCenter,
+                      initialCenter: _center,
                       initialZoom: 13,
+                      minZoom: 11,
+                      maxZoom: 16,
+                      onPositionChanged: (_, _) {
+                        if (mounted) setState(() {});
+                      },
                     ),
                     children: [
                       TileLayer(
                         urlTemplate:
                             'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                         userAgentPackageName: 'com.wildbit.wildbit',
+                        tileProvider: _tileCacheDirectory == null
+                            ? null
+                            : OfflineTileProvider(
+                                source: OfflineTileSource.osm,
+                                cacheDirectory: _tileCacheDirectory!,
+                              ),
                       ),
                       // Public Waymarked Trails overlay: unlike the base map,
                       // this highlights the hiking network the user is about
@@ -100,6 +217,12 @@ class _OfflineScreenState extends State<OfflineScreen> {
                         urlTemplate:
                             'https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png',
                         userAgentPackageName: 'com.wildbit.wildbit',
+                        tileProvider: _tileCacheDirectory == null
+                            ? null
+                            : OfflineTileProvider(
+                                source: OfflineTileSource.hiking,
+                                cacheDirectory: _tileCacheDirectory!,
+                              ),
                       ),
                     ],
                   ),
@@ -112,12 +235,14 @@ class _OfflineScreenState extends State<OfflineScreen> {
                       ),
                     ),
                   ),
-                  const Positioned(
+                  Positioned(
                     left: 16,
                     right: 16,
                     bottom: 10,
                     child: Text(
-                      'Sposta e zooma: l’overlay mostra i sentieri da scaricare nell’area visibile.',
+                      _locating
+                          ? 'Ricerca GPS in corso…'
+                          : 'Sposta e zooma: overlay sentieri$storageLabel',
                       textAlign: TextAlign.center,
                     ),
                   ),
@@ -129,8 +254,9 @@ class _OfflineScreenState extends State<OfflineScreen> {
                 future: _areasFuture,
                 builder: (context, snapshot) {
                   final areas = snapshot.data;
-                  if (areas == null)
+                  if (areas == null) {
                     return const Center(child: CircularProgressIndicator());
+                  }
                   if (areas.isEmpty) return const _EmptyState();
 
                   return ListView.builder(
@@ -147,12 +273,31 @@ class _OfflineScreenState extends State<OfflineScreen> {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _downloadVisibleArea,
-        icon: const Icon(Icons.download),
-        label: const Text('Scarica area visibile'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'offline-local-package',
+            onPressed: _downloadLocalPackage,
+            icon: const Icon(Icons.hiking),
+            label: const Text('Pacchetto locale'),
+          ),
+          const SizedBox(height: 10),
+          FloatingActionButton.extended(
+            heroTag: 'offline-visible-area',
+            onPressed: _downloadVisibleArea,
+            icon: const Icon(Icons.download),
+            label: const Text('Scarica area visibile'),
+          ),
+        ],
       ),
     );
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).ceil()} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }
 

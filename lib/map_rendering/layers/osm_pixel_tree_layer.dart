@@ -43,6 +43,11 @@ class OsmPixelTreeLayer extends StatefulWidget {
 }
 
 class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
+  // Candidates are richer than the paint budget. This prevents a large OSM
+  // forest loaded first from starving smaller polygons while keeping the
+  // number of sprites actually drawn bounded by the LOD budget below.
+  static const _treeCandidateLimit = 600;
+  static const _treePaintLimit = 360;
   static const _treeAssets = [
     'assets/map/mock/objects/tree_deciduous_s.png',
     'assets/map/mock/objects/tree_conifer.png',
@@ -198,13 +203,21 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
           _TreePaintItem(tree.position, _seedForId(tree.id), 1.0),
     ];
     final generated = <_GeneratedTree>[];
-    var areaIndex = 0;
-    for (final area in features.areas.where(
-      (area) =>
-          area.kind == MapFeatureKind.forest ||
-          area.kind == MapFeatureKind.park,
-    )) {
-      if (generated.length >= 360 || area.ring.length < 3) break;
+    final forestAreas = features.areas
+        .where(
+          (area) =>
+              area.kind == MapFeatureKind.forest ||
+              area.kind == MapFeatureKind.park,
+        )
+        .toList(growable: false);
+    final perArea = forestAreas.isEmpty
+        ? 0
+        : math.max(24, (_treeCandidateLimit / forestAreas.length).ceil());
+    for (var areaIndex = 0; areaIndex < forestAreas.length; areaIndex++) {
+      final area = forestAreas[areaIndex];
+      if (generated.length >= _treeCandidateLimit || area.ring.length < 3) {
+        break;
+      }
       var south = area.ring.first.latitude;
       var north = south;
       var west = area.ring.first.longitude;
@@ -215,10 +228,13 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         west = math.min(west, point.longitude);
         east = math.max(east, point.longitude);
       }
-      final random = math.Random(_areaSeed(area) ^ (areaIndex++ * 7919));
+      final random = math.Random(_areaSeed(area));
+      var areaCount = 0;
       for (
         var attempt = 0;
-        attempt < 1800 && generated.length < 360;
+        attempt < perArea * 12 &&
+            generated.length < _treeCandidateLimit &&
+            areaCount < perArea;
         attempt++
       ) {
         final point = LatLng(
@@ -240,6 +256,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         generated.add(
           _GeneratedTree(point, random.nextInt(1 << 30), edgeScale),
         );
+        areaCount++;
       }
     }
     _generatedTrees = generated;
@@ -352,6 +369,27 @@ class _ForegroundObjectPainter extends CustomPainter {
     // Do not pre-filter by geographic point. The sprite may still overlap the
     // viewport while its anchor is just outside it; target-rect clipping below
     // is stable and removes the edge pop visible during zoom.
+    final generatedTreeSubset = MapRenderingBudget.stableDecorativeSubset(
+      generatedTrees,
+      count: MapRenderingBudget.decorativeCount(
+        camera.zoom,
+        overview: 120,
+        close: math.min(
+          generatedTrees.length,
+          _OsmPixelTreeLayerState._treePaintLimit,
+        ),
+      ),
+      rank: (tree) => tree.seed,
+    );
+    final generatedRockSubset = MapRenderingBudget.stableDecorativeSubset(
+      generatedRocks,
+      count: MapRenderingBudget.decorativeCount(
+        camera.zoom,
+        overview: 40,
+        close: generatedRocks.length,
+      ),
+      rank: (rock) => rock.seed,
+    );
     final items = <_ForegroundPaintItem>[
       for (final tree in mappedTrees)
         _ForegroundPaintItem.tree(
@@ -360,14 +398,14 @@ class _ForegroundObjectPainter extends CustomPainter {
           tree.scaleMultiplier,
           camera.latLngToScreenOffset(tree.position),
         ),
-      for (final tree in generatedTrees)
+      for (final tree in generatedTreeSubset)
         _ForegroundPaintItem.tree(
           tree.position,
           tree.seed,
           tree.scaleMultiplier,
           camera.latLngToScreenOffset(tree.position),
         ),
-      for (final rock in generatedRocks)
+      for (final rock in generatedRockSubset)
         _ForegroundPaintItem.rock(
           rock.position,
           rock.seed,

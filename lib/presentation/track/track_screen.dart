@@ -2,16 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:provider/provider.dart';
 
-import '../../app/theme/wildbit_theme.dart';
 import '../../data/test_data/test_region.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/saved_track.dart';
 import '../../domain/enums/track_source.dart';
 import '../../map_rendering/layers/hd_terrain_layer.dart';
-import '../../services/nostr/amber_signer_service.dart';
-import '../../services/nostr/track_share_service.dart';
-import '../../services/security/database_key_manager.dart';
+import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
 import '../../services/track_recorder.dart';
+import 'track_share_dialog.dart';
 
 class TrackScreen extends StatelessWidget {
   const TrackScreen({super.key});
@@ -50,16 +48,7 @@ class _LiveMap extends StatelessWidget {
         const HdTerrainLayer(
           features: MapFeatureCollection(areas: [], lines: [], pois: []),
         ),
-        PolylineLayer(
-          polylines: [
-            if (recorder.points.length >= 2)
-              Polyline(
-                points: [for (final p in recorder.points) p.position],
-                color: WildBitColors.ochre,
-                strokeWidth: 4,
-              ),
-          ],
-        ),
+        PixelRecordedTrackLayer(points: recorder.points),
       ],
     );
   }
@@ -107,107 +96,8 @@ class _StatsAndControls extends StatelessWidget {
       points: List.unmodifiable(recorder.points),
     );
     final id = await recorder.stopAndSave(name: track.name);
-    if (id != null && context.mounted) _shareDialog(context, track);
+    if (id != null && context.mounted) showTrackShareDialog(context, track);
   }
-
-  void _shareDialog(BuildContext context, SavedTrack track) {
-    var publishing = false;
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Condividi su Nostr'),
-          content: SizedBox(
-            width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SizedBox(
-                  height: 150,
-                  child: FlutterMap(
-                    options: MapOptions(
-                      initialCenter: track.points.first.position,
-                      initialZoom: 14,
-                    ),
-                    children: [
-                      const HdTerrainLayer(
-                        features: MapFeatureCollection(
-                          areas: [],
-                          lines: [],
-                          pois: [],
-                        ),
-                      ),
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                            points: [for (final p in track.points) p.position],
-                            color: WildBitColors.ochre,
-                            strokeWidth: 4,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '${(track.distanceMeters / 1000).toStringAsFixed(2)} km · ${_formatDuration(Duration(seconds: track.durationSeconds))} · passo ${_pace(track)}',
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'La traccia GPS esatta sarà pubblica sui relay Nostr.',
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: publishing ? null : () => Navigator.pop(dialogContext),
-              child: const Text('Non condividere'),
-            ),
-            FilledButton.icon(
-              onPressed: publishing
-                  ? null
-                  : () async {
-                      setDialogState(() => publishing = true);
-                      try {
-                        await TrackShareService(
-                          keyManager: context.read<DatabaseKeyManager>(),
-                          amber: context.read<AmberSignerService>(),
-                        ).publish(track);
-                        if (context.mounted) Navigator.pop(dialogContext);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Percorso pubblicato su Nostr.'),
-                          ),
-                        );
-                      } catch (e) {
-                        if (context.mounted)
-                          ScaffoldMessenger.of(
-                            context,
-                          ).showSnackBar(SnackBar(content: Text('$e')));
-                        setDialogState(() => publishing = false);
-                      }
-                    },
-              icon: publishing
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.public),
-              label: Text(publishing ? 'Pubblicazione…' : 'Pubblica'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _pace(SavedTrack track) => track.distanceMeters <= 0
-      ? '—'
-      : '${(track.durationSeconds * 1000 / track.distanceMeters ~/ 60)} min/km';
 
   @override
   Widget build(BuildContext context) {

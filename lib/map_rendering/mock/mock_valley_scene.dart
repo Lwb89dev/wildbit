@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 
 import 'mock_environment_sprite_layer.dart';
 import 'mock_low_rock_sprite_layer.dart';
+import 'mock_lake_texture_layer.dart';
 import 'mock_riverbank_texture_layer.dart';
 import 'mock_structure_sprite_layer.dart';
 import 'mock_terrain_texture_layer.dart';
 import 'mock_trail_texture_layer.dart';
+import 'mock_bit_sprite_layer.dart';
+import 'mock_recorded_track_layer.dart';
 
 /// A fixed 256×256 logical-pixel scene used to validate WildBit's composition
 /// rules before real OSM chunks and final sprites are introduced.
@@ -13,9 +16,10 @@ import 'mock_trail_texture_layer.dart';
 /// This is deliberately a scene renderer, not a map widget: its only job is
 /// to make layering, anchors and occlusion visible and testable in isolation.
 class MockValleyScene extends StatelessWidget {
-  const MockValleyScene({super.key, this.showDebug = false});
+  const MockValleyScene({super.key, this.showDebug = false, this.showLake = false});
 
   final bool showDebug;
+  final bool showLake;
 
   @override
   Widget build(BuildContext context) {
@@ -27,6 +31,7 @@ class MockValleyScene extends StatelessWidget {
         child: Stack(
           children: [
             const MockTerrainTextureLayer(),
+            if (showLake) const MockLakeTextureLayer(),
             const MockRiverbankTextureLayer(),
             const MockLowRockSpriteLayer(),
             CustomPaint(
@@ -45,8 +50,10 @@ class MockValleyScene extends StatelessWidget {
               ),
             ),
             const MockTrailTextureLayer(),
+            const MockRecordedTrackLayer(),
             const MockEnvironmentSpriteLayer(),
             const MockStructureSpriteLayer(),
+            const MockBitSpriteLayer(),
             CustomPaint(
               size: const Size(
                 MockValleyPainter.logicalSize,
@@ -58,7 +65,7 @@ class MockValleyScene extends StatelessWidget {
                 paintMapDetails: false,
                 paintTrailAndBridge: false,
                 paintSilhouetteVegetation: false,
-                paintPoiAndDynamic: true,
+                paintPoiAndDynamic: false,
                 paintStaticPoi: false,
               ),
             ),
@@ -85,6 +92,7 @@ class MockValleyPainter extends CustomPainter {
   static const logicalSize = 256.0;
 
   final bool showDebug;
+
   /// Flat-colour fallback for the terrain texture layer. This remains useful
   /// in isolated painter tests, but the live mock now uses native pixel tiles.
   final bool paintTerrainBase;
@@ -94,6 +102,7 @@ class MockValleyPainter extends CustomPainter {
   final bool paintTrailAndBridge;
   final bool paintSilhouetteVegetation;
   final bool paintPoiAndDynamic;
+
   /// Real huts and guideposts live in [MockStructureSpriteLayer].
   final bool paintStaticPoi;
 
@@ -130,7 +139,6 @@ class MockValleyPainter extends CustomPainter {
       );
       _paintRiver(canvas);
       _paintMeadowTexture(canvas);
-
     }
 
     if (paintMapDetails) {
@@ -140,7 +148,6 @@ class MockValleyPainter extends CustomPainter {
 
       // 3. Background vegetation.
       _paintFlowersAndReeds(canvas);
-
     }
 
     if (paintTrailAndBridge) {
@@ -177,8 +184,8 @@ class MockValleyPainter extends CustomPainter {
       ..cubicTo(177, 36, 218, 67, 192, 101)
       ..cubicTo(165, 136, 219, 169, 192, 205)
       ..cubicTo(177, 224, 191, 244, 178, 256)
-      ..lineTo(256, 256)
-      ..lineTo(256, 0)
+      ..lineTo(232, 256)
+      ..lineTo(232, 0)
       ..close();
     canvas.drawPath(river, _paint(_water));
 
@@ -300,9 +307,9 @@ class MockValleyPainter extends CustomPainter {
 
   void _paintBridge(Canvas canvas) {
     // A horizontal pedestrian bridge crosses the stream at y=120.
-    canvas.drawRect(const Rect.fromLTWH(178, 115, 42, 12), _paint(_shadow));
-    canvas.drawRect(const Rect.fromLTWH(176, 111, 42, 12), _paint(_wood));
-    for (var x = 178; x < 218; x += 6) {
+    canvas.drawRect(const Rect.fromLTWH(176, 115, 64, 12), _paint(_shadow));
+    canvas.drawRect(const Rect.fromLTWH(174, 111, 64, 12), _paint(_wood));
+    for (var x = 176; x < 238; x += 6) {
       canvas.drawRect(Rect.fromLTWH(x.toDouble(), 112, 2, 10), _paint(_trail));
     }
   }

@@ -10,6 +10,7 @@ import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
 import '../../domain/enums/poi_type.dart';
 import '../composition/poi_label_layout.dart';
+import '../composition/shelter_sprite_metrics.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Batched POI/structure pass with geographic depth and Canvas semantics.
@@ -200,30 +201,43 @@ class _PoiPainter extends CustomPainter {
         _paintGlyph(canvas, foot, markerSize, poi.type);
         continue;
       }
-      final imageScale = math.min(
-        markerSize / image.width,
-        markerSize / image.height,
-      );
-      final width = image.width * imageScale;
-      final height = image.height * imageScale;
+      final destination = poi.type == PoiType.shelter
+          ? ShelterSpriteMetrics.destination(
+              foot: foot,
+              markerSize: markerSize,
+              imageWidth: image.width,
+              imageHeight: image.height,
+              shelterType: poi.metadata.shelterType,
+            )
+          : _squareDestination(foot, markerSize, image);
       canvas.drawOval(
         Rect.fromCenter(
-          center: foot.translate(0, -1),
-          width: width * .72,
-          height: math.max(2, height * .13),
+          center: Offset(destination.center.dx, foot.dy - 1),
+          width: destination.width * .72,
+          height: math.max(2, destination.height * .13),
         ),
         Paint()..color = const Color(0x55202C21),
       );
       canvas.drawImageRect(
         image,
         Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-        Rect.fromLTWH(foot.dx - width / 2, foot.dy - height, width, height),
+        destination,
         imagePaint,
       );
     }
     for (final label in _composePoiLabels(camera, _visiblePois, size)) {
       _paintLabel(canvas, label);
     }
+  }
+
+  Rect _squareDestination(Offset foot, double markerSize, ui.Image image) {
+    final imageScale = math.min(
+      markerSize / image.width,
+      markerSize / image.height,
+    );
+    final width = image.width * imageScale;
+    final height = image.height * imageScale;
+    return Rect.fromLTWH(foot.dx - width / 2, foot.dy - height, width, height);
   }
 
   void _paintLabel(Canvas canvas, _PoiLabelVisual label) {
@@ -253,7 +267,11 @@ class _PoiPainter extends CustomPainter {
     PoiType.guidepost => 'assets/map/mock/structures/guidepost_multi.png',
     PoiType.campsite => 'assets/map/mock/structures/trail_marker_low.png',
     PoiType.summit => 'assets/map/mock/structures/boulder.png',
-    PoiType.parking || PoiType.waterSource || PoiType.tree => null,
+    PoiType.parking ||
+    PoiType.waterSource ||
+    PoiType.tree ||
+    PoiType.ford ||
+    PoiType.barrier => null,
   };
 
   void _paintGlyph(
@@ -325,6 +343,42 @@ class _PoiPainter extends CustomPainter {
             6 * pixel,
           ),
           glyph,
+        );
+      case PoiType.ford:
+        glyph.color = const Color(0xFF426E7B);
+        canvas.drawRect(
+          Rect.fromLTWH(
+            center.dx - 4 * pixel,
+            center.dy - pixel,
+            3 * pixel,
+            2 * pixel,
+          ),
+          glyph,
+        );
+        canvas.drawRect(
+          Rect.fromLTWH(
+            center.dx + pixel,
+            center.dy + pixel,
+            3 * pixel,
+            2 * pixel,
+          ),
+          glyph,
+        );
+      case PoiType.barrier:
+        glyph.color = const Color(0xFF9D3E32);
+        canvas.drawRect(
+          Rect.fromLTWH(
+            center.dx - 4 * pixel,
+            center.dy - pixel,
+            8 * pixel,
+            2 * pixel,
+          ),
+          glyph,
+        );
+        canvas.drawLine(
+          center.translate(-3 * pixel, -3 * pixel),
+          center.translate(3 * pixel, 3 * pixel),
+          glyph..strokeWidth = math.max(1, pixel),
         );
         canvas.drawRect(
           Rect.fromLTWH(

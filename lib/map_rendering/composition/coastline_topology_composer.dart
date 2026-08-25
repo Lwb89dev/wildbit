@@ -23,6 +23,7 @@ enum CoastlineTopologyIssueKind {
   missingNodeReferences,
   geometryNodeCountMismatch,
   ambiguousContinuation,
+  invalidClosedRing,
 }
 
 class CoastlineTopologyIssue {
@@ -76,7 +77,27 @@ abstract final class CoastlineTopologyComposer {
         );
         continue;
       }
-      valid.add(_MutableChain.fromLine(line, wayId));
+      final candidate = _MutableChain.fromLine(line, wayId);
+      if (candidate.isClosed) {
+        // A valid island ring contains at least three distinct nodes before
+        // repeating its first node. Repeated interior nodes create a
+        // self-touching/degenerate fill and are safer to omit than to turn
+        // into a false sea hole.
+        final ringNodes = candidate.nodeIds
+            .take(candidate.nodeIds.length - 1)
+            .toList(growable: false);
+        if (ringNodes.length < 3 ||
+            ringNodes.toSet().length != ringNodes.length) {
+          issues.add(
+            CoastlineTopologyIssue(
+              wayId: wayId,
+              kind: CoastlineTopologyIssueKind.invalidClosedRing,
+            ),
+          );
+          continue;
+        }
+      }
+      valid.add(candidate);
     }
 
     final remaining = List<_MutableChain>.from(valid);

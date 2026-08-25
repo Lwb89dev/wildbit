@@ -3,8 +3,8 @@ import 'package:flutter/scheduler.dart';
 import 'dart:math' as math;
 
 import 'bit_animation_controller.dart';
-import 'bit_frame_metrics.dart';
 import 'bit_motion_state.dart';
+import 'bit_normalized_sprite.dart';
 import 'bit_sprite_atlas.dart';
 
 /// Bit himself: the animated sprite shown at the user's GPS position.
@@ -24,6 +24,7 @@ class _BitCursorState extends State<BitCursor>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
   Duration _lastElapsed = Duration.zero;
+  bool _precacheStarted = false;
 
   @override
   void initState() {
@@ -41,6 +42,18 @@ class _BitCursorState extends State<BitCursor>
   void dispose() {
     _ticker.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_precacheStarted) return;
+    _precacheStarted = true;
+    // Decode the first stable pose before the animation can switch to its
+    // first map frame. The normalized sprite still keeps a previous-frame
+    // fallback for later asynchronous frame loads.
+    precacheImage(AssetImage(BitSpriteAtlas.standing), context);
+    precacheImage(AssetImage(BitSpriteAtlas.mapFrame(1)), context);
   }
 
   String _currentFramePath() {
@@ -65,13 +78,6 @@ class _BitCursorState extends State<BitCursor>
         final phase = controller.motionPhase;
         final stride = isWalking ? math.sin(phase) : 0.0;
         final verticalOffset = isWalking ? stride * 1.25 : 0.0;
-        final tilt = isWalking ? math.sin(phase) * .025 : 0.0;
-        final metrics = BitFrameMetrics.forFrame(
-          controller.state,
-          controller.frameIndex,
-        );
-        final normalizedOffset =
-            metrics.verticalCorrection / 150 * widget.pixelSize * 1.5;
         return RepaintBoundary(
           child: SizedBox(
             width: widget.pixelSize,
@@ -92,22 +98,13 @@ class _BitCursorState extends State<BitCursor>
                   ),
                 ),
                 Transform.translate(
-                  offset: Offset(0, verticalOffset + normalizedOffset),
-                  child: Transform.rotate(
-                    angle: tilt,
-                    alignment: Alignment.bottomCenter,
-                    child: Transform.scale(
-                      scale: metrics.scaleCorrection,
-                      alignment: Alignment.topCenter,
-                      child: Image.asset(
-                        _currentFramePath(),
-                        width: widget.pixelSize,
-                        height: widget.pixelSize * 1.5,
-                        fit: BoxFit.contain,
-                        filterQuality: FilterQuality.none,
-                        gaplessPlayback: true,
-                      ),
-                    ),
+                  offset: Offset(0, verticalOffset),
+                  child: BitNormalizedSprite(
+                    assetPath: _currentFramePath(),
+                    state: controller.state,
+                    frameIndex: controller.frameIndex,
+                    width: widget.pixelSize,
+                    height: widget.pixelSize * 1.5,
                   ),
                 ),
               ],

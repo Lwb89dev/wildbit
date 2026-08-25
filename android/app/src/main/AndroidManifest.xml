@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.ACCESS_LOCATION_EXTRA_COMMANDS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <!-- Android 13+ requires this for the "GPS attivo" foreground-service
+         notification to actually show. GPS itself works without it — this
+         only affects whether the persistent notification is visible. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="WildBit"
         android:name="${applicationName}"

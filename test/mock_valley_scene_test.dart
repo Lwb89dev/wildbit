@@ -31,4 +31,20 @@ void main() {
 
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('interactive mock composes a closed lake without exceptions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: SizedBox(
+          width: 640,
+          height: 640,
+          child: MockValleyScene(showLake: true),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(tester.takeException(), isNull);
+  });
 }

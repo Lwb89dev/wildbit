@@ -35,7 +35,8 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
     'assets/map/mock/terrain/water_still_3.png',
     'assets/map/mock/terrain/shore_grass.png',
     'assets/map/mock/terrain/shore_rock_detail.png',
-    'assets/map/mock/terrain/shore_sand.png',
+    'assets/map/mock/terrain/shore_sand_bank.png',
+    'assets/map/mock/terrain/shore_mud_bank.png',
     'assets/map/mock/objects/shrub_riverside.png',
   ];
 
@@ -208,7 +209,9 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
         }
       }
     }
-    return WaterEdgeMaterial.grass;
+    // Closed water areas represent lakes/ponds in the current feature model;
+    // use a sandy transition unless an adjacent rock area overrides it.
+    return WaterEdgeMaterial.sand;
   }
 }
 
@@ -293,7 +296,10 @@ class _WaterBatchPainter extends CustomPainter {
           'assets/map/mock/terrain/shore_grass.png',
         WaterEdgeMaterial.rock =>
           'assets/map/mock/terrain/shore_rock_detail.png',
-        WaterEdgeMaterial.sand => 'assets/map/mock/terrain/shore_sand.png',
+        WaterEdgeMaterial.sand =>
+          'assets/map/mock/terrain/shore_sand_bank.png',
+        WaterEdgeMaterial.mud =>
+          'assets/map/mock/terrain/shore_mud_bank.png',
       };
       final shore = images[shoreAsset];
       for (var index = 0; index < render.edges.length; index++) {
@@ -303,9 +309,12 @@ class _WaterBatchPainter extends CustomPainter {
             edge.position,
             3 * scale,
             Paint()
-              ..color = render.material == WaterEdgeMaterial.rock
-                  ? const Color(0xFF70695E)
-                  : const Color(0xFF567D3E),
+              ..color = switch (render.material) {
+                WaterEdgeMaterial.rock => const Color(0xFF70695E),
+                WaterEdgeMaterial.sand => const Color(0xFFD8AE68),
+                WaterEdgeMaterial.mud => const Color(0xFF725238),
+                WaterEdgeMaterial.grass => const Color(0xFF567D3E),
+              },
           );
         } else {
           _drawSprite(
@@ -397,32 +406,42 @@ class _WaterBatchPainter extends CustomPainter {
       WaterEdgeMaterial.grass => const Color(0xFF6F803D),
       WaterEdgeMaterial.rock => const Color(0xFF777169),
       WaterEdgeMaterial.sand => const Color(0xFFD8AE68),
+      WaterEdgeMaterial.mud => const Color(0xFF725238),
     };
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = const Color(0xFF294A46)
-        ..style = PaintingStyle.stroke
-        ..strokeJoin = StrokeJoin.bevel
-        ..strokeWidth = 6 * scale
-        ..isAntiAlias = false,
-    );
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = materialColor
-        ..style = PaintingStyle.stroke
-        ..strokeJoin = StrokeJoin.bevel
-        ..strokeWidth = 3.8 * scale
-        ..isAntiAlias = false,
-    );
+    final outerColor = switch (material) {
+      WaterEdgeMaterial.mud => const Color(0xFF503522),
+      WaterEdgeMaterial.sand => const Color(0xFFB4874A),
+      _ => const Color(0xFF294A46),
+    };
+    if (material != WaterEdgeMaterial.mud) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = outerColor
+          ..style = PaintingStyle.stroke
+          ..strokeJoin = StrokeJoin.bevel
+          ..strokeWidth = 2.5 * scale
+          ..isAntiAlias = false,
+      );
+    }
+    if (material != WaterEdgeMaterial.mud) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = materialColor
+          ..style = PaintingStyle.stroke
+          ..strokeJoin = StrokeJoin.bevel
+          ..strokeWidth = 1.5 * scale
+          ..isAntiAlias = false,
+      );
+    }
     canvas.drawPath(
       path,
       Paint()
         ..color = const Color(0xFFB9E1DC)
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.bevel
-        ..strokeWidth = math.max(1, 1.35 * scale)
+        ..strokeWidth = math.max(1, .6 * scale)
         ..isAntiAlias = false,
     );
   }
