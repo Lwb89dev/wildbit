@@ -341,16 +341,11 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   }
 
   bool _blockedByStructure(LatLng point, MapFeatureCollection features) {
-    return MapGeometryRules.insideAnyAreaKind(
-          point,
-          features.areas,
-          MapFeatureKind.building,
-        ) ||
-        MapGeometryRules.nearAnyAreaBoundary(
-          point,
-          features.areas,
-          MapFeatureKind.building,
-        );
+    return MapGeometryRules.insideOrNearAnyAreaKind(
+      point,
+      features.areas,
+      MapFeatureKind.building,
+    );
   }
 }
 

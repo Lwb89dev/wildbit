@@ -388,19 +388,6 @@ abstract final class OverpassParser {
   };
 
   static MapFeatureKind? _lineKindForTags(Map<String, String> tags) {
-    if (const {
-      'fence',
-      'wall',
-      'hedge',
-      'retaining_wall',
-      'gate',
-      'lift_gate',
-      'bollard',
-      'cable_barrier',
-      'chain',
-    }.contains(tags['barrier'])) {
-      return MapFeatureKind.barrier;
-    }
     if (tags['natural'] == 'coastline') return MapFeatureKind.coastline;
     if (const {
       'river',
@@ -420,14 +407,6 @@ abstract final class OverpassParser {
   static PoiType? _poiTypeForTags(Map<String, String> tags) {
     if (tags['ford'] == 'yes' || tags['ford'] == 'true') {
       return PoiType.ford;
-    }
-    if (const {
-      'gate',
-      'bollard',
-      'stile',
-      'turnstile',
-    }.contains(tags['barrier'])) {
-      return PoiType.barrier;
     }
     if (tags['tourism'] == 'viewpoint') return PoiType.viewpoint;
     if (tags['tourism'] == 'alpine_hut' ||
@@ -459,6 +438,5 @@ abstract final class OverpassParser {
     PoiType.summit => 'Vetta',
     PoiType.tree => 'Albero',
     PoiType.ford => 'Guado',
-    PoiType.barrier => 'Barriera',
   };
 }

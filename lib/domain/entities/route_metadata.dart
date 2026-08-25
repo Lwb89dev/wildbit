@@ -24,7 +24,6 @@ class RouteMetadata {
     this.flowDirection,
     this.fordTag,
     this.tunnelTag,
-    this.barrierTag,
     this.accessConditional,
     this.footConditional,
     this.openingHours,
@@ -50,7 +49,6 @@ class RouteMetadata {
   final String? flowDirection;
   final String? fordTag;
   final String? tunnelTag;
-  final String? barrierTag;
   final String? accessConditional;
   final String? footConditional;
   final String? openingHours;
@@ -87,7 +85,6 @@ class RouteMetadata {
       flowDirection: _flowDirection(tags),
       fordTag: _value(tags['ford']),
       tunnelTag: _value(tags['tunnel']),
-      barrierTag: _value(tags['barrier']),
       accessConditional: _value(tags['access:conditional']),
       footConditional: _value(tags['foot:conditional']),
       openingHours: _value(tags['opening_hours']),

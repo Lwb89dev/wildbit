@@ -20,12 +20,8 @@ void main() {
       contains('highway"~"^(path|footway|track|steps|bridleway|via_ferrata)'),
     );
     expect(query, contains('way["ford"]'));
-    expect(query, contains('way["barrier"~"^(fence|wall|hedge|retaining_wall'));
     expect(query, contains('node["ford"]'));
-    expect(
-      query,
-      contains('node["barrier"~"^(gate|bollard|stile|turnstile)\$"]'),
-    );
+    expect(query, isNot(contains('barrier')));
     expect(
       query,
       contains('relation["type"="route"]["route"~"^(hiking|foot)\$"]'),

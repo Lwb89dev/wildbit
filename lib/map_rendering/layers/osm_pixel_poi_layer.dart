@@ -281,8 +281,7 @@ class _PoiPainter extends CustomPainter {
     PoiType.parking ||
     PoiType.waterSource ||
     PoiType.tree ||
-    PoiType.ford ||
-    PoiType.barrier => null,
+    PoiType.ford => null,
   };
 
   void _paintGlyph(
@@ -371,31 +370,6 @@ class _PoiPainter extends CustomPainter {
             center.dx + pixel,
             center.dy + pixel,
             3 * pixel,
-            2 * pixel,
-          ),
-          glyph,
-        );
-      case PoiType.barrier:
-        glyph.color = const Color(0xFF9D3E32);
-        canvas.drawRect(
-          Rect.fromLTWH(
-            center.dx - 4 * pixel,
-            center.dy - pixel,
-            8 * pixel,
-            2 * pixel,
-          ),
-          glyph,
-        );
-        canvas.drawLine(
-          center.translate(-3 * pixel, -3 * pixel),
-          center.translate(3 * pixel, 3 * pixel),
-          glyph..strokeWidth = math.max(1, pixel),
-        );
-        canvas.drawRect(
-          Rect.fromLTWH(
-            center.dx - 3 * pixel,
-            center.dy + pixel,
-            6 * pixel,
             2 * pixel,
           ),
           glyph,

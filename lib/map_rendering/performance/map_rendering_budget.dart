@@ -157,8 +157,7 @@ abstract final class MapRenderingBudget {
     PoiType.viewpoint ||
     PoiType.guidepost ||
     PoiType.summit ||
-    PoiType.ford ||
-    PoiType.barrier => 0,
+    PoiType.ford => 0,
     PoiType.waterSource || PoiType.campsite => 1,
     PoiType.parking => 2,
     PoiType.tree => 3,
@@ -181,7 +180,6 @@ abstract final class MapRenderingBudget {
       PoiType.parking || PoiType.waterSource => .88,
       PoiType.tree => 1.0,
       PoiType.ford => 1.08,
-      PoiType.barrier => .96,
     };
     return (base * multiplier).clamp(15.0, 48.0).toDouble();
   }
@@ -196,7 +194,7 @@ abstract final class MapRenderingBudget {
     PoiType.campsite => 15,
     PoiType.parking => 16,
     PoiType.tree => double.infinity,
-    PoiType.ford || PoiType.barrier => 14,
+    PoiType.ford => 14,
   };
 
   static bool areaMayBeVisible(AreaFeature area, LatLngBounds viewport) {

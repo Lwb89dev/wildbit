@@ -15,8 +15,8 @@ import '../../domain/enums/poi_type.dart';
 /// (De)serializes [MapFeatureCollection] for on-disk caching. This is a data
 /// layer concern only — the domain entities themselves stay JSON-agnostic.
 abstract final class FeatureCacheCodec {
-  // Version 12 preserves surface and obstacle tags used by route artwork.
-  static const currentFormatVersion = 16;
+  // Version 17 removes the retired barrier-tag payload from cached geometry.
+  static const currentFormatVersion = 17;
 
   static String encode(MapFeatureCollection features) {
     return jsonEncode({
@@ -63,7 +63,6 @@ abstract final class FeatureCacheCodec {
               'flowDirection': l.metadata.flowDirection,
               'fordTag': l.metadata.fordTag,
               'tunnelTag': l.metadata.tunnelTag,
-              'barrierTag': l.metadata.barrierTag,
               'accessConditional': l.metadata.accessConditional,
               'footConditional': l.metadata.footConditional,
               'openingHours': l.metadata.openingHours,
@@ -188,7 +187,6 @@ abstract final class FeatureCacheCodec {
       flowDirection: raw['flowDirection'] as String?,
       fordTag: raw['fordTag'] as String?,
       tunnelTag: raw['tunnelTag'] as String?,
-      barrierTag: raw['barrierTag'] as String?,
       accessConditional: raw['accessConditional'] as String?,
       footConditional: raw['footConditional'] as String?,
       openingHours: raw['openingHours'] as String?,

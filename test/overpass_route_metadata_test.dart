@@ -179,7 +179,7 @@ void main() {
     expect(collection.pois[1].metadata.openingHours, 'Jun-Sep 08:00-20:00');
   });
 
-  test('parses node guados and barriers without treating them as trails', () {
+  test('parses node guados and ignores retired barrier tags', () {
     final collection = OverpassParser.parse({
       'elements': [
         {
@@ -209,14 +209,9 @@ void main() {
       ],
     });
 
-    expect(collection.lines.single.kind, MapFeatureKind.barrier);
-    expect(collection.lines.single.metadata.barrierTag, 'fence');
-    expect(collection.pois.map((poi) => poi.type), [
-      PoiType.ford,
-      PoiType.barrier,
-    ]);
+    expect(collection.lines, isEmpty);
+    expect(collection.pois.map((poi) => poi.type), [PoiType.ford]);
     expect(collection.pois[0].name, 'Guado');
-    expect(collection.pois[1].name, 'Barriera');
   });
 
   test('keeps a hut way as both building footprint and semantic POI', () {

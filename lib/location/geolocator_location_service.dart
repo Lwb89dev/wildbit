@@ -35,35 +35,51 @@ class GeolocatorLocationService implements LocationService {
 
   @override
   Future<bool> ensurePermission() async {
+    // Ask for the runtime permission before checking whether the provider is
+    // switched on.  The old order returned false immediately when Android's
+    // LocationManager reported GPS disabled, so the onboarding button never
+    // reached Geolocator.requestPermission() and no Android dialog appeared.
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      try {
+        permission = await Geolocator.requestPermission();
+      } on PermissionDefinitionsNotFoundException {
+        // A broken/missing manifest must be visible to logs, not swallowed as
+        // a silent denial. The Android manifest in WildBit declares both fine
+        // and coarse location permissions.
+        debugPrint('WildBit GPS: definizioni permesso mancanti nel manifest');
+        return false;
+      } on PermissionDeniedException {
+        debugPrint('WildBit GPS: richiesta permesso rifiutata');
+        return false;
+      }
+    }
+    final granted =
+        permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse;
+    if (!granted) return false;
+
     // Do not call Geolocator.isLocationServiceEnabled() on Android: the
     // plugin may select FusedLocationClient and invoke Google Play Services.
-    // The native channel checks the platform LocationManager directly.
+    // The native channel checks the platform LocationManager directly, after
+    // permission has been granted. This result only controls the UI state;
+    // it must never suppress the permission dialog above.
     if (Platform.isAndroid) {
-      // This is diagnostic only: some Android devices report provider state
-      // late after permission/settings changes. Do not block permission or a
-      // direct GNSS request on that advisory check.
       try {
         final enabled = await _gnssChannel
             .invokeMethod<bool>('isLocationEnabled')
             .timeout(const Duration(seconds: 2));
-        if (enabled == false) return false;
+        return enabled != false;
       } on PlatformException {
         // The native channel is optional; LocationManager remains the source.
       } on TimeoutException {
-        // A stalled optional channel must never hold up the permission flow.
+        // A stalled optional channel must not block the already-granted flow.
       } on MissingPluginException {
         // Desktop/test engines do not expose the Android channel.
       }
-    } else if (!await Geolocator.isLocationServiceEnabled()) {
-      return false;
+      return true;
     }
-
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-    return permission == LocationPermission.always ||
-        permission == LocationPermission.whileInUse;
+    return Geolocator.isLocationServiceEnabled();
   }
 
   @override
@@ -119,7 +135,9 @@ class GeolocatorLocationService implements LocationService {
       final fresh = await Geolocator.getCurrentPosition(
         locationSettings: _singleFixSettings,
       );
-      debugPrint('WildBit GNSS: fix fresco ottenuto (accuracy=${fresh.accuracy}m)');
+      debugPrint(
+        'WildBit GNSS: fix fresco ottenuto (accuracy=${fresh.accuracy}m)',
+      );
       return _toGeoFix(fresh);
     } on TimeoutException {
       return null;

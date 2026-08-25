@@ -28,7 +28,6 @@ void main() {
             waterwayTag: 'river',
             flowDirection: 'backward',
             fordTag: 'yes',
-            barrierTag: 'fence',
             accessConditional: 'no @ (winter)',
             openingHours: 'May-Oct',
             hikingRoutes: [
@@ -53,7 +52,6 @@ void main() {
     expect(restored.lines.single.metadata.waterwayTag, 'river');
     expect(restored.lines.single.metadata.flowDirection, 'backward');
     expect(restored.lines.single.metadata.fordTag, 'yes');
-    expect(restored.lines.single.metadata.barrierTag, 'fence');
     expect(restored.lines.single.metadata.accessConditional, 'no @ (winter)');
     expect(restored.lines.single.metadata.openingHours, 'May-Oct');
     final route = restored.lines.single.metadata.hikingRoutes.single;

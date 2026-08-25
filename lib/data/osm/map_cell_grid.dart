@@ -16,41 +16,90 @@ abstract final class MapCellGrid {
         '${cell.southWest.longitude.toStringAsFixed(3)}';
   }
 
-  static GeoBounds _cellContaining(LatLng point) {
-    final swLat = (point.latitude / cellSizeDegrees).floor() * cellSizeDegrees;
-    final swLng = (point.longitude / cellSizeDegrees).floor() * cellSizeDegrees;
-    return GeoBounds(
-      southWest: LatLng(swLat, swLng),
-      northEast: LatLng(swLat + cellSizeDegrees, swLng + cellSizeDegrees),
-    );
-  }
-
   /// All grid cells that intersect [bounds], in south-to-north, west-to-east
   /// order.
   static List<GeoBounds> cellsCovering(GeoBounds bounds) {
-    final startCell = _cellContaining(bounds.southWest);
-    final latSteps =
-        ((bounds.northEast.latitude - startCell.southWest.latitude) /
-                cellSizeDegrees)
-            .ceil();
-    final lngSteps =
-        ((bounds.northEast.longitude - startCell.southWest.longitude) /
-                cellSizeDegrees)
-            .ceil();
+    final startLatitudeIndex = (bounds.southWest.latitude / cellSizeDegrees)
+        .floor();
+    final startLongitudeIndex = (bounds.southWest.longitude / cellSizeDegrees)
+        .floor();
+    // North/east are exclusive for tiling purposes. Without the tiny inward
+    // offset, a viewport ending exactly on a cell edge incorrectly adds a
+    // whole extra row/column. The previous <= step loops added one extra even
+    // away from boundaries, turning a normal GPS 2x2 request into 3x3.
+    const edgeEpsilon = 1e-10;
+    final endLatitudeIndex = math.max(
+      startLatitudeIndex,
+      ((bounds.northEast.latitude - edgeEpsilon) / cellSizeDegrees).floor(),
+    );
+    final endLongitudeIndex = math.max(
+      startLongitudeIndex,
+      ((bounds.northEast.longitude - edgeEpsilon) / cellSizeDegrees).floor(),
+    );
 
     return [
-      for (var latIndex = 0; latIndex <= math.max(latSteps, 0); latIndex++)
-        for (var lngIndex = 0; lngIndex <= math.max(lngSteps, 0); lngIndex++)
+      for (
+        var latIndex = startLatitudeIndex;
+        latIndex <= endLatitudeIndex;
+        latIndex++
+      )
+        for (
+          var lngIndex = startLongitudeIndex;
+          lngIndex <= endLongitudeIndex;
+          lngIndex++
+        )
           GeoBounds(
             southWest: LatLng(
-              startCell.southWest.latitude + latIndex * cellSizeDegrees,
-              startCell.southWest.longitude + lngIndex * cellSizeDegrees,
+              latIndex * cellSizeDegrees,
+              lngIndex * cellSizeDegrees,
             ),
             northEast: LatLng(
-              startCell.southWest.latitude + (latIndex + 1) * cellSizeDegrees,
-              startCell.southWest.longitude + (lngIndex + 1) * cellSizeDegrees,
+              (latIndex + 1) * cellSizeDegrees,
+              (lngIndex + 1) * cellSizeDegrees,
             ),
           ),
     ];
+  }
+
+  /// Cells intersecting [bounds], ordered from the viewport centre outwards.
+  ///
+  /// A GPS-centred viewport commonly straddles two or four cache cells.  The
+  /// default south-to-north order made the app download a southern neighbour
+  /// before the cell containing the user. If Overpass then rate-limited the
+  /// remaining requests, only terrain south of Bit became visible.
+  static List<GeoBounds> cellsCoveringNearestFirst(GeoBounds bounds) {
+    final cells = cellsCovering(bounds);
+    final centreLatitude =
+        (bounds.southWest.latitude + bounds.northEast.latitude) / 2;
+    final centreLongitude =
+        (bounds.southWest.longitude + bounds.northEast.longitude) / 2;
+    cells.sort((first, second) {
+      double squaredDistance(GeoBounds cell) {
+        final latitude =
+            (cell.southWest.latitude + cell.northEast.latitude) / 2;
+        final longitude =
+            (cell.southWest.longitude + cell.northEast.longitude) / 2;
+        final latitudeDelta = latitude - centreLatitude;
+        final longitudeDelta = longitude - centreLongitude;
+        return latitudeDelta * latitudeDelta + longitudeDelta * longitudeDelta;
+      }
+
+      final distanceOrder = squaredDistance(
+        first,
+      ).compareTo(squaredDistance(second));
+      if (distanceOrder != 0) return distanceOrder;
+      // Stable deterministic tie-breaker for viewports exactly on a boundary.
+      return keyFor(first).compareTo(keyFor(second));
+    });
+    return cells;
+  }
+
+  /// Whether every grid cell intersecting [bounds] is represented by one of
+  /// [loadedRegions]. A single successful neighbour must not make a whole
+  /// GPS-centred viewport look complete.
+  static bool isCoveredBy(GeoBounds bounds, Iterable<GeoBounds> loadedRegions) {
+    return cellsCovering(bounds).every(
+      (cell) => loadedRegions.any((region) => region.containsBounds(cell)),
+    );
   }
 }

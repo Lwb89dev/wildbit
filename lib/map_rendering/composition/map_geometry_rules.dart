@@ -11,8 +11,12 @@ abstract final class MapGeometryRules {
   static bool isWaterArea(AreaFeature area) =>
       area.kind == MapFeatureKind.water;
 
-  static bool insideAnyWater(LatLng point, Iterable<AreaFeature> areas) =>
-      areas.where(isWaterArea).any((area) => pointInArea(point, area));
+  static bool insideAnyWater(LatLng point, Iterable<AreaFeature> areas) {
+    for (final area in areas) {
+      if (isWaterArea(area) && pointInArea(point, area)) return true;
+    }
+    return false;
+  }
 
   static bool insideAnyAreaKind(
     LatLng point,
@@ -27,25 +31,66 @@ abstract final class MapGeometryRules {
     Iterable<AreaFeature> areas,
     MapFeatureKind kind, {
     double thresholdDegrees = .00008,
-  }) => areas
-      .where((area) => area.kind == kind)
-      .any(
-        (area) =>
-            nearPolygonBoundary(
+  }) {
+    for (final area in areas) {
+      if (area.kind != kind ||
+          !_extentForArea(area).isNear(point, thresholdDegrees)) {
+        continue;
+      }
+      if (nearPolygonBoundary(
+            point,
+            area.ring,
+            thresholdDegrees: thresholdDegrees,
+          ) ||
+          area.holes.any(
+            (hole) => nearPolygonBoundary(
               point,
-              area.ring,
+              hole,
               thresholdDegrees: thresholdDegrees,
-            ) ||
-            area.holes.any(
-              (hole) => nearPolygonBoundary(
-                point,
-                hole,
-                thresholdDegrees: thresholdDegrees,
-              ),
             ),
-      );
+          )) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Single-pass building collision used by procedural vegetation. The old
+  /// implementation traversed every city footprint twice per candidate
+  /// (inside, then boundary), multiplying thousands of buildings by hundreds
+  /// of generated sprites on the UI isolate.
+  static bool insideOrNearAnyAreaKind(
+    LatLng point,
+    Iterable<AreaFeature> areas,
+    MapFeatureKind kind, {
+    double thresholdDegrees = .00008,
+  }) {
+    for (final area in areas) {
+      if (area.kind != kind ||
+          !_extentForArea(area).isNear(point, thresholdDegrees)) {
+        continue;
+      }
+      if (pointInArea(point, area) ||
+          nearPolygonBoundary(
+            point,
+            area.ring,
+            thresholdDegrees: thresholdDegrees,
+          ) ||
+          area.holes.any(
+            (hole) => nearPolygonBoundary(
+              point,
+              hole,
+              thresholdDegrees: thresholdDegrees,
+            ),
+          )) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   static bool pointInArea(LatLng point, AreaFeature area) {
+    if (!_extentForArea(area).contains(point)) return false;
     if (!pointInPolygon(point, area.ring)) return false;
     return !area.holes.any((hole) => pointInPolygon(point, hole));
   }
@@ -104,6 +149,7 @@ abstract final class MapGeometryRules {
   }) {
     final thresholdSquared = thresholdDegrees * thresholdDegrees;
     for (final line in lines) {
+      if (!_extentForLine(line).isNear(point, thresholdDegrees)) continue;
       for (var i = 0; i + 1 < line.points.length; i++) {
         if (_distanceSquaredToSegment(
               point,
@@ -136,4 +182,56 @@ abstract final class MapGeometryRules {
     final py = p.latitude - (a.latitude + t * dy);
     return px * px + py * py;
   }
+
+  static final Expando<_Extent> _areaExtents = Expando<_Extent>(
+    'wildbit-geometry-area-extent',
+  );
+  static final Expando<_Extent> _lineExtents = Expando<_Extent>(
+    'wildbit-geometry-line-extent',
+  );
+
+  static _Extent _extentForArea(AreaFeature area) =>
+      _areaExtents[area] ??= _Extent.from(area.ring);
+
+  static _Extent _extentForLine(LineFeature line) =>
+      _lineExtents[line] ??= _Extent.from(line.points);
+}
+
+class _Extent {
+  const _Extent(this.south, this.north, this.west, this.east, this.isEmpty);
+
+  factory _Extent.from(List<LatLng> points) {
+    if (points.isEmpty) return const _Extent(0, 0, 0, 0, true);
+    var south = points.first.latitude;
+    var north = south;
+    var west = points.first.longitude;
+    var east = west;
+    for (final point in points.skip(1)) {
+      south = point.latitude < south ? point.latitude : south;
+      north = point.latitude > north ? point.latitude : north;
+      west = point.longitude < west ? point.longitude : west;
+      east = point.longitude > east ? point.longitude : east;
+    }
+    return _Extent(south, north, west, east, false);
+  }
+
+  final double south;
+  final double north;
+  final double west;
+  final double east;
+  final bool isEmpty;
+
+  bool contains(LatLng point) =>
+      !isEmpty &&
+      point.latitude >= south &&
+      point.latitude <= north &&
+      point.longitude >= west &&
+      point.longitude <= east;
+
+  bool isNear(LatLng point, double margin) =>
+      !isEmpty &&
+      point.latitude >= south - margin &&
+      point.latitude <= north + margin &&
+      point.longitude >= west - margin &&
+      point.longitude <= east + margin;
 }

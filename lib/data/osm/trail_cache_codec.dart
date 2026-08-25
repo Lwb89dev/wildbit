@@ -12,7 +12,8 @@ import 'package:latlong2/latlong.dart';
 /// stale results remain small, safe to display and independent of API JSON
 /// details.
 abstract final class TrailCacheCodec {
-  static const version = 1;
+  // Version 2 drops the retired barrier metadata from Explore cache entries.
+  static const version = 2;
 
   static String encode(List<HikingTrail> trails) =>
       jsonEncode({'version': version, 'trails': trails.map(_encode).toList()});
@@ -90,7 +91,6 @@ abstract final class TrailCacheCodec {
     'flowDirection': metadata.flowDirection,
     'fordTag': metadata.fordTag,
     'tunnelTag': metadata.tunnelTag,
-    'barrierTag': metadata.barrierTag,
     'accessConditional': metadata.accessConditional,
     'footConditional': metadata.footConditional,
     'openingHours': metadata.openingHours,
@@ -123,7 +123,6 @@ abstract final class TrailCacheCodec {
         flowDirection: value['flowDirection'] as String?,
         fordTag: value['fordTag'] as String?,
         tunnelTag: value['tunnelTag'] as String?,
-        barrierTag: value['barrierTag'] as String?,
         accessConditional: value['accessConditional'] as String?,
         footConditional: value['footConditional'] as String?,
         openingHours: value['openingHours'] as String?,

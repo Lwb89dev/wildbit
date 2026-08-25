@@ -8,5 +8,4 @@ enum PoiType {
   summit,
   tree,
   ford,
-  barrier,
 }

@@ -213,16 +213,11 @@ class _OsmPixelForegroundVegetationLayerState
   }
 
   bool _blockedByStructure(LatLng point) {
-    return MapGeometryRules.insideAnyAreaKind(
-          point,
-          widget.features.areas,
-          MapFeatureKind.building,
-        ) ||
-        MapGeometryRules.nearAnyAreaBoundary(
-          point,
-          widget.features.areas,
-          MapFeatureKind.building,
-        );
+    return MapGeometryRules.insideOrNearAnyAreaKind(
+      point,
+      widget.features.areas,
+      MapFeatureKind.building,
+    );
   }
 
   int _seed(AreaFeature area) {

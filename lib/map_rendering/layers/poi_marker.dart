@@ -12,8 +12,7 @@ String? _assetFor(PoiType type, int _) => switch (type) {
   PoiType.parking ||
   PoiType.waterSource ||
   PoiType.tree ||
-  PoiType.ford ||
-  PoiType.barrier => null,
+  PoiType.ford => null,
 };
 
 /// A compact, elevated marker that belongs to the illustrated map rather than
