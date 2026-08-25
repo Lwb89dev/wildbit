@@ -16,12 +16,62 @@ class PixelBridgePlacement {
 
   static PixelBridgePlacement? fromWaterPolygon({
     required List<Offset> polygon,
+    List<List<Offset>> holes = const [],
     required Offset center,
     required Offset direction,
     double shoreMargin = 4,
   }) {
     if (polygon.length < 3 || direction.distance < .001) return null;
     final axis = direction / direction.distance;
+    final intersections = <double>[
+      ..._intersections(polygon, center, axis),
+      for (final hole in holes) ..._intersections(hole, center, axis),
+    ]..sort();
+    if (intersections.length < 2) return null;
+
+    final unique = <double>[];
+    for (final value in intersections) {
+      if (unique.isEmpty || (value - unique.last).abs() > .01) {
+        unique.add(value);
+      }
+    }
+    final intervals = <({double start, double end})>[];
+    for (var index = 0; index + 1 < unique.length; index++) {
+      final first = unique[index];
+      final last = unique[index + 1];
+      if (last - first < .05) continue;
+      final sample = center + axis * ((first + last) / 2);
+      if (_insideWater(sample, polygon, holes)) {
+        intervals.add((start: first, end: last));
+      }
+    }
+    if (intervals.isEmpty) return null;
+    // Prefer the interval containing the bridge way's geographic midpoint.
+    // If OSM gives a midpoint just outside a shore, use the nearest interval
+    // rather than accidentally spanning a second bend of a concave lake.
+    final interval = intervals.firstWhere(
+      (candidate) => candidate.start <= 0 && candidate.end >= 0,
+      orElse: () => intervals.reduce(
+        (first, second) =>
+            first.start.abs() + first.end.abs() <
+                second.start.abs() + second.end.abs()
+            ? first
+            : second,
+      ),
+    );
+    final first = interval.start;
+    final last = interval.end;
+    return PixelBridgePlacement(
+      start: center + axis * (first - shoreMargin),
+      end: center + axis * (last + shoreMargin),
+    );
+  }
+
+  static List<double> _intersections(
+    List<Offset> polygon,
+    Offset center,
+    Offset axis,
+  ) {
     final intersections = <double>[];
     for (var index = 0; index < polygon.length; index++) {
       final a = polygon[index];
@@ -36,15 +86,33 @@ class PixelBridgePlacement {
         intersections.add(t);
       }
     }
-    if (intersections.length < 2) return null;
-    intersections.sort();
-    final first = intersections.first;
-    final last = intersections.last;
-    if (!first.isFinite || !last.isFinite || last - first < .05) return null;
-    return PixelBridgePlacement(
-      start: center + axis * (first - shoreMargin),
-      end: center + axis * (last + shoreMargin),
-    );
+    return intersections;
+  }
+
+  static bool _insideWater(
+    Offset point,
+    List<Offset> polygon,
+    List<List<Offset>> holes,
+  ) {
+    if (!_contains(polygon, point)) return false;
+    return !holes.any((hole) => _contains(hole, point));
+  }
+
+  static bool _contains(List<Offset> polygon, Offset point) {
+    var inside = false;
+    for (
+      var index = 0, previous = polygon.length - 1;
+      index < polygon.length;
+      previous = index++
+    ) {
+      final a = polygon[index];
+      final b = polygon[previous];
+      final crosses = (a.dy > point.dy) != (b.dy > point.dy);
+      if (!crosses) continue;
+      final x = (b.dx - a.dx) * (point.dy - a.dy) / (b.dy - a.dy) + a.dx;
+      if (point.dx < x) inside = !inside;
+    }
+    return inside;
   }
 
   static double _cross(Offset a, Offset b) => a.dx * b.dy - a.dy * b.dx;

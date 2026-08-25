@@ -41,4 +41,16 @@ void main() {
       isNull,
     );
   });
+
+  test('rejects a self-intersecting building footprint', () {
+    expect(
+      StructureFootprint.sanitize(const [
+        LatLng(46, 11),
+        LatLng(46.001, 11.001),
+        LatLng(46, 11.001),
+        LatLng(46.001, 11),
+      ]),
+      isNull,
+    );
+  });
 }

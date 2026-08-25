@@ -111,8 +111,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       final linked = await keyManager.linkNostrIdentity(identity, signer);
       if (!linked) {
-        if (mounted)
+        if (mounted) {
           _showSnack('Amber non ha potuto cifrare la chiave del database.');
+        }
         return;
       }
       if (mounted) setState(() => _nostrIdentity = identity);

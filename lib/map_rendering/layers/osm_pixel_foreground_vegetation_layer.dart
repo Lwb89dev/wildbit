@@ -162,8 +162,9 @@ class _OsmPixelForegroundVegetationLayerState
         south + random.nextDouble() * (north - south),
         west + random.nextDouble() * (east - west),
       );
-      if (!MapGeometryRules.pointInPolygon(position, area.ring) ||
+      if (!MapGeometryRules.pointInArea(position, area) ||
           MapGeometryRules.insideAnyWater(position, widget.features.areas) ||
+          _blockedByStructure(position) ||
           MapGeometryRules.nearAnyLine(position, widget.features.lines)) {
         continue;
       }
@@ -198,6 +199,7 @@ class _OsmPixelForegroundVegetationLayerState
         tree.position.longitude + lonOffset,
       );
       if (MapGeometryRules.insideAnyWater(point, widget.features.areas) ||
+          _blockedByStructure(point) ||
           MapGeometryRules.nearAnyLine(
             point,
             widget.features.lines,
@@ -208,6 +210,19 @@ class _OsmPixelForegroundVegetationLayerState
       result.add(_VegetationPoint(point, seed.abs() % 3, .86));
     }
     return result;
+  }
+
+  bool _blockedByStructure(LatLng point) {
+    return MapGeometryRules.insideAnyAreaKind(
+          point,
+          widget.features.areas,
+          MapFeatureKind.building,
+        ) ||
+        MapGeometryRules.nearAnyAreaBoundary(
+          point,
+          widget.features.areas,
+          MapFeatureKind.building,
+        );
   }
 
   int _seed(AreaFeature area) {
@@ -251,7 +266,7 @@ class _VegetationPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final budgeted = MapRenderingBudget.stableDecorativeSubset(
       candidates,
-      count: MapRenderingBudget.decorativeCount(
+      count: MapRenderingBudget.decorativeLodCount(
         camera.zoom,
         overview: 80,
         close: candidates.length,
@@ -259,9 +274,10 @@ class _VegetationPainter extends CustomPainter {
       rank: (point) =>
           point.position.latitude.hashCode ^ point.position.longitude.hashCode,
     );
-    final points = budgeted
-        .where((point) => camera.visibleBounds.contains(point.position))
-        .toList(growable: false);
+    // Keep anchors just outside the geographic viewport: their sprites can
+    // still overlap the screen while the camera moves. The target rectangle
+    // below performs the actual inexpensive culling.
+    final points = budgeted.toList(growable: false);
     // South is visually closer on a north-up map. Paint it last so foreground
     // shrubs naturally overlap background shrubs and tree trunks.
     points.sort((a, b) => b.position.latitude.compareTo(a.position.latitude));

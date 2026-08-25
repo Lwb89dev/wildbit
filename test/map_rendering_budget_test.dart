@@ -5,7 +5,10 @@ import 'package:wildbit/domain/enums/map_feature_kind.dart';
 import 'package:wildbit/map_rendering/performance/map_rendering_budget.dart';
 
 void main() {
-  tearDown(() => MapRenderingBudget.setMapInteracting(false));
+  tearDown(() {
+    MapRenderingBudget.setMapInteracting(false);
+    MapRenderingBudget.setMapVisible(true);
+  });
 
   test('temporarily lowers decorative and route work during gestures', () {
     final normalDecorative = MapRenderingBudget.decorativeCount(
@@ -13,10 +16,7 @@ void main() {
       overview: 4,
       close: 100,
     );
-    final normalRoutes = MapRenderingBudget.routeMaximumPoints(
-      _fakeTrail,
-      16,
-    );
+    final normalRoutes = MapRenderingBudget.routeMaximumPoints(_fakeTrail, 16);
 
     MapRenderingBudget.setMapInteracting(true);
     expect(
@@ -34,6 +34,30 @@ void main() {
       normalDecorative,
     );
     expect(MapRenderingBudget.mapInteracting, isFalse);
+  });
+
+  test('keeps decorative LOD density stable inside a zoom band', () {
+    final first = MapRenderingBudget.decorativeLodCount(
+      10.1,
+      overview: 20,
+      close: 100,
+    );
+    final second = MapRenderingBudget.decorativeLodCount(
+      10.4,
+      overview: 20,
+      close: 100,
+    );
+    expect(second, first);
+    expect(
+      MapRenderingBudget.decorativeLodCount(15, overview: 20, close: 100),
+      100,
+    );
+  });
+
+  test('tracks whether the mounted map tab is visible', () {
+    expect(MapRenderingBudget.mapVisible, isTrue);
+    MapRenderingBudget.setMapVisible(false);
+    expect(MapRenderingBudget.mapVisible, isFalse);
   });
 }
 

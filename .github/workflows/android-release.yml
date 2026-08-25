@@ -1,0 +1,55 @@
+name: Android release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      WILDBIT_RELEASE_STORE_PASSWORD: ${{ secrets.WILDBIT_RELEASE_STORE_PASSWORD }}
+      WILDBIT_RELEASE_KEY_ALIAS: ${{ secrets.WILDBIT_RELEASE_KEY_ALIAS }}
+      WILDBIT_RELEASE_KEY_PASSWORD: ${{ secrets.WILDBIT_RELEASE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restore release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.WILDBIT_RELEASE_KEYSTORE_B64 }}
+        run: |
+          test -n "$KEYSTORE_B64"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/wildbit-release.jks"
+          test -s "$RUNNER_TEMP/wildbit-release.jks"
+          echo "WILDBIT_RELEASE_STORE_FILE=$RUNNER_TEMP/wildbit-release.jks" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: dart analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Release preflight
+        run: dart run tool/check_release.dart --strict
+
+      - name: Build signed Android App Bundle
+        run: flutter build appbundle --release
+
+      - name: Upload App Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: wildbit-android-release
+          path: build/app/outputs/bundle/release/app-release.aab

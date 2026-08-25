@@ -14,12 +14,20 @@ import '../../domain/enums/poi_type.dart';
 /// detail, never make a phone miss frames or overheat.
 abstract final class MapRenderingBudget {
   static bool _mapInteracting = false;
+  static bool _mapVisible = true;
 
   /// True while the camera is being panned, pinched or rotated. Decorative
   /// geometry temporarily uses a smaller deterministic budget in this state.
   static bool get mapInteracting => _mapInteracting;
 
   static void setMapInteracting(bool value) => _mapInteracting = value;
+
+  /// IndexedStack keeps the map state mounted while another tab is visible.
+  /// Timer-driven Canvas layers use this flag to avoid repainting an unseen
+  /// map; TickerMode handles Flutter AnimationControllers separately.
+  static bool get mapVisible => _mapVisible;
+
+  static void setMapVisible(bool value) => _mapVisible = value;
 
   static final Expando<_GeographicExtent> _areaExtents =
       Expando<_GeographicExtent>('wildbit-area-extent');
@@ -85,6 +93,30 @@ abstract final class MapRenderingBudget {
     final progressive = (overview + (close - overview) * t).round();
     if (!_mapInteracting) return progressive;
     return math.min(progressive, overview + ((close - overview) * .18).round());
+  }
+
+  /// Quantised decorative density used by sprite layers. Keeping the count
+  /// constant inside a small zoom band prevents one tree or shrub from popping
+  /// for every fractional camera tick while still exposing more detail when
+  /// the user crosses a deliberate LOD boundary.
+  static int decorativeLodCount(
+    double zoom, {
+    required int overview,
+    required int close,
+    int bands = 6,
+    double overviewZoom = 8,
+    double closeZoom = 15,
+  }) {
+    if (bands < 1 || close <= overview) return overview;
+    if (zoom <= overviewZoom) return overview;
+    final t = ((zoom - overviewZoom) / (closeZoom - overviewZoom)).clamp(
+      0.0,
+      1.0,
+    );
+    final bucket = (t * bands).round() / bands;
+    final target = (overview + (close - overview) * bucket).round();
+    if (!_mapInteracting) return target;
+    return math.min(target, overview + ((close - overview) * .18).round());
   }
 
   /// Returns a deterministic prefix of a stable rank ordering. Decorative

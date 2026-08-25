@@ -199,7 +199,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
     final features = widget.features;
     _mappedTrees = [
       for (final tree in features.pois.where((poi) => poi.type == PoiType.tree))
-        if (!MapGeometryRules.insideAnyWater(tree.position, features.areas))
+        if (!_blockedByStructure(tree.position, features))
           _TreePaintItem(tree.position, _seedForId(tree.id), 1.0),
     ];
     final generated = <_GeneratedTree>[];
@@ -241,8 +241,9 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
           south + random.nextDouble() * (north - south),
           west + random.nextDouble() * (east - west),
         );
-        if (!MapGeometryRules.pointInPolygon(point, area.ring) ||
+        if (!MapGeometryRules.pointInArea(point, area) ||
             MapGeometryRules.insideAnyWater(point, features.areas) ||
+            _blockedByStructure(point, features) ||
             MapGeometryRules.nearAnyLine(
               point,
               features.lines,
@@ -299,8 +300,9 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         south + random.nextDouble() * (north - south),
         west + random.nextDouble() * (east - west),
       );
-      if (!MapGeometryRules.pointInPolygon(point, area.ring) ||
+      if (!MapGeometryRules.pointInArea(point, area) ||
           MapGeometryRules.insideAnyWater(point, widget.features.areas) ||
+          _blockedByStructure(point, widget.features) ||
           MapGeometryRules.nearAnyLine(
             point,
             widget.features.lines,
@@ -337,6 +339,19 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
     }
     return seed;
   }
+
+  bool _blockedByStructure(LatLng point, MapFeatureCollection features) {
+    return MapGeometryRules.insideAnyAreaKind(
+          point,
+          features.areas,
+          MapFeatureKind.building,
+        ) ||
+        MapGeometryRules.nearAnyAreaBoundary(
+          point,
+          features.areas,
+          MapFeatureKind.building,
+        );
+  }
 }
 
 class _ForegroundObjectPainter extends CustomPainter {
@@ -371,7 +386,7 @@ class _ForegroundObjectPainter extends CustomPainter {
     // is stable and removes the edge pop visible during zoom.
     final generatedTreeSubset = MapRenderingBudget.stableDecorativeSubset(
       generatedTrees,
-      count: MapRenderingBudget.decorativeCount(
+      count: MapRenderingBudget.decorativeLodCount(
         camera.zoom,
         overview: 120,
         close: math.min(

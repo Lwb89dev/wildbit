@@ -69,6 +69,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   OsmMapDataRepository? _dataRepository;
   Timer? _fetchDebounce;
   Timer? _interactionIdle;
+  final Set<Timer> _featureFetchTimers = <Timer>{};
   int _featureRequestId = 0;
   LatLng? _lastGpsFeatureFetch;
   final List<GeoBounds> _loadedFeatureRegions = [];
@@ -99,6 +100,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool? _cachedShowPois;
 
   static const _poiAnnounceRadiusMeters = 150.0;
+  // A public Overpass instance can be temporarily slow or overloaded. The
+  // map must still become usable while the repository keeps the request alive
+  // in the background and can populate its cache if it eventually succeeds.
+  static const _featureFetchBudget = Duration(seconds: 10);
   static const _poiDistance = Distance();
   final _announcedPoiIds = <String>{};
 
@@ -110,6 +115,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    MapRenderingBudget.setMapVisible(true);
     WidgetsBinding.instance.addObserver(this);
     _compassSub = _compassService.headingStream.listen(_onCompassHeading);
     if (kDebugMode) _frameMonitor.start();
@@ -163,7 +169,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _fetchDebounce?.cancel();
     _interactionIdle?.cancel();
+    for (final timer in _featureFetchTimers) {
+      timer.cancel();
+    }
+    _featureFetchTimers.clear();
     MapRenderingBudget.setMapInteracting(false);
+    MapRenderingBudget.setMapVisible(false);
     _bitRenderedPosition.dispose();
     _frameMonitor.dispose();
     _compassSub?.cancel();
@@ -228,41 +239,42 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final requestId = ++_featureRequestId;
 
     setState(() => _isLoadingFeatures = true);
+    final load = repository.loadFeatures(bounds);
     try {
-      final features = await repository.loadFeatures(bounds);
-      if (kDebugMode) {
-        debugPrint(
-          'WildBit OSM features: areas=${features.areas.length}, '
-          'buildings=${features.areas.where((a) => a.kind == MapFeatureKind.building).length}, '
-          'trees=${features.pois.where((p) => p.type == PoiType.tree).length}, '
-          'lines=${features.lines.length}',
-        );
-      }
+      final features = await _withFetchBudget(load);
+      _commitFeatures(features, bounds: bounds, requestId: requestId);
+    } on TimeoutException {
       if (!mounted || requestId != _featureRequestId) return;
-      final hasNoFeatures =
-          features.areas.isEmpty &&
-          features.lines.isEmpty &&
-          features.pois.isEmpty;
-      final useLocalPreview =
-          kDebugMode && hasNoFeatures && repository.lastLoadError != null;
+      // Do not mark the region as loaded: a timeout means the viewport still
+      // needs a real response. In debug, the deterministic valley keeps the
+      // renderer inspectable; in release, existing data remains visible and
+      // the user gets an honest status instead of an empty green screen.
       setState(() {
-        _features = useLocalPreview
-            ? testRegionFeatures
-            : _mergeFeatures(features, _features);
-        _coastlineTopology = CoastlineTopologyComposer.compose(
-          _features.lines.where(
-            (line) => line.kind == MapFeatureKind.coastline,
-          ),
-        );
-        _loadedFeatureRegions.add(bounds);
         _isLoadingFeatures = false;
-        _usingLocalPreview = useLocalPreview;
-        _mapDataError = hasNoFeatures && repository.lastLoadError != null
-            ? (useLocalPreview
-                  ? 'Anteprima locale · OSM non disponibile'
-                  : 'Dati mappa non disponibili')
-            : null;
+        if (kDebugMode && _features.areas.isEmpty && _features.lines.isEmpty) {
+          _features = testRegionFeatures;
+          _coastlineTopology = CoastlineTopologyComposer.compose(
+            _features.lines.where(
+              (line) => line.kind == MapFeatureKind.coastline,
+            ),
+          );
+          _usingLocalPreview = true;
+          _mapDataError = 'Anteprima locale · OSM in ritardo';
+        } else {
+          _mapDataError = 'Dati mappa in attesa del server OSM';
+        }
       });
+      // The repository operation is intentionally not cancelled: an eventual
+      // successful response is still valuable for the cell cache and should
+      // replace the preview only if this request is still the current one.
+      unawaited(
+        load.then(
+          (features) =>
+              _commitFeatures(features, bounds: bounds, requestId: requestId),
+          onError: (Object _) {},
+        ),
+      );
+      return;
     } catch (_) {
       if (mounted && requestId == _featureRequestId) {
         setState(() {
@@ -281,6 +293,82 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         });
       }
     }
+  }
+
+  /// A cancellable equivalent of [Future.timeout]. Flutter's timeout helper
+  /// owns an uncancellable Timer; keeping that timer alive after a map tab is
+  /// disposed makes widget tests noisy and needlessly retains the state for
+  /// the whole budget interval.
+  Future<T> _withFetchBudget<T>(Future<T> operation) {
+    final result = Completer<T>();
+    late final Timer timer;
+    void removeTimer() {
+      timer.cancel();
+      _featureFetchTimers.remove(timer);
+    }
+
+    timer = Timer(_featureFetchBudget, () {
+      _featureFetchTimers.remove(timer);
+      if (!result.isCompleted) {
+        result.completeError(
+          TimeoutException('OSM feature fetch exceeded $_featureFetchBudget'),
+        );
+      }
+    });
+    _featureFetchTimers.add(timer);
+    operation.then(
+      (value) {
+        if (result.isCompleted) return;
+        removeTimer();
+        result.complete(value);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (result.isCompleted) return;
+        removeTimer();
+        result.completeError(error, stackTrace);
+      },
+    );
+    return result.future;
+  }
+
+  void _commitFeatures(
+    MapFeatureCollection features, {
+    required GeoBounds bounds,
+    required int requestId,
+  }) {
+    if (!mounted || requestId != _featureRequestId) return;
+    final repository = _dataRepository;
+    if (repository == null) return;
+    if (kDebugMode) {
+      debugPrint(
+        'WildBit OSM features: areas=${features.areas.length}, '
+        'buildings=${features.areas.where((a) => a.kind == MapFeatureKind.building).length}, '
+        'trees=${features.pois.where((p) => p.type == PoiType.tree).length}, '
+        'lines=${features.lines.length}',
+      );
+    }
+    final hasNoFeatures =
+        features.areas.isEmpty &&
+        features.lines.isEmpty &&
+        features.pois.isEmpty;
+    final useLocalPreview =
+        kDebugMode && hasNoFeatures && repository.lastLoadError != null;
+    setState(() {
+      _features = useLocalPreview
+          ? testRegionFeatures
+          : _mergeFeatures(features, _features);
+      _coastlineTopology = CoastlineTopologyComposer.compose(
+        _features.lines.where((line) => line.kind == MapFeatureKind.coastline),
+      );
+      _loadedFeatureRegions.add(bounds);
+      _isLoadingFeatures = false;
+      _usingLocalPreview = useLocalPreview;
+      _mapDataError = hasNoFeatures && repository.lastLoadError != null
+          ? (useLocalPreview
+                ? 'Anteprima locale · OSM non disponibile'
+                : 'Dati mappa non disponibili')
+          : null;
+    });
   }
 
   MapFeatureCollection _mergeFeatures(
@@ -468,6 +556,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ),
+                    Text(
+                      'Proiezione: ${_lineProjectionCache.hits} hit · '
+                      '${_lineProjectionCache.misses} miss · '
+                      '${(_lineProjectionCache.hitRate * 100).toStringAsFixed(0)}% cache',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                     if (_dataRepository?.lastLoadError != null)
                       Text(
                         'Fetch OSM: ${_dataRepository!.lastLoadError}',
@@ -606,8 +700,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 depthPivot: _bitRenderedPosition,
                 slice: ProjectedDepthSlice.behindPivot,
               ),
-              // Bit sits above navigational geometry but below foreground
-              // vegetation, so trunks and shrubs can occlude his feet.
+              // Flowers are low ground texture as well; keep them below the
+              // tall silhouettes and the actor instead of painting them as a
+              // final overlay over tree trunks and Bit.
+              OsmPixelFlowerLayer(features: visibleFeatures),
+              // Low shrubs are ground-plane decoration. Painting them before
+              // the tall-object depth pass prevents them from covering tree
+              // canopies just because this layer is mounted later in the map.
+              OsmPixelForegroundVegetationLayer(features: visibleFeatures),
+              // Bit sits above navigational geometry and the low ground-plane
+              // shrubs; tall trees are split around him by projected depth.
               if (_lastFix != null)
                 MarkerLayer(
                   markers: [
@@ -646,8 +748,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   depthPivot: _bitRenderedPosition,
                   slice: ProjectedDepthSlice.inFrontOfPivot,
                 ),
-              OsmPixelForegroundVegetationLayer(features: visibleFeatures),
-              OsmPixelFlowerLayer(features: visibleFeatures),
               OsmPixelRouteLabelLayer(
                 features: visibleFeatures,
                 projectionCache: _lineProjectionCache,

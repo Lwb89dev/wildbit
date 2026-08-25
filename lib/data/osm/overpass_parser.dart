@@ -9,6 +9,7 @@ import '../../domain/entities/poi_metadata.dart';
 import '../../domain/entities/route_metadata.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/enums/poi_type.dart';
+import '../../map_rendering/composition/osm_multipolygon_composer.dart';
 
 /// Turns a raw Overpass API JSON response into WildBit's own map entities.
 /// This is the one place that knows about OSM tags — everything downstream
@@ -18,20 +19,28 @@ abstract final class OverpassParser {
     final areas = <AreaFeature>[];
     final lines = <LineFeature>[];
     final pois = <Poi>[];
-    final hikingRoutesByWay = _hikingRoutesByWay(
-      json['elements'] as List? ?? const [],
-    );
+    final elements = json['elements'] as List? ?? const [];
+    final multipolygonWayIds = _multipolygonMemberWayIds(elements);
+    final hikingRoutesByWay = _hikingRoutesByWay(elements);
 
-    for (final element in (json['elements'] as List? ?? const [])) {
+    for (final element in elements) {
       final map = element as Map<String, dynamic>;
       final tags = (map['tags'] as Map?)?.cast<String, String>() ?? const {};
       switch (map['type']) {
         case 'way':
-          _parseWay(map, tags, areas, lines, pois, hikingRoutesByWay);
+          _parseWay(
+            map,
+            tags,
+            areas,
+            lines,
+            pois,
+            hikingRoutesByWay,
+            skipAreaWayIds: multipolygonWayIds,
+          );
         case 'node':
           _parseNode(map, tags, pois);
         case 'relation':
-          _parseRelation(map, tags, pois);
+          _parseRelation(map, tags, areas, pois);
       }
     }
 
@@ -44,8 +53,9 @@ abstract final class OverpassParser {
     List<AreaFeature> areas,
     List<LineFeature> lines,
     List<Poi> pois,
-    Map<String, List<HikingRouteMembership>> hikingRoutesByWay,
-  ) {
+    Map<String, List<HikingRouteMembership>> hikingRoutesByWay, {
+    Set<String> skipAreaWayIds = const {},
+  }) {
     final geometry = (way['geometry'] as List?)
         ?.map(
           (p) => LatLng(
@@ -74,7 +84,7 @@ abstract final class OverpassParser {
     }
 
     final areaKind = _areaKindForTags(tags);
-    if (areaKind != null) {
+    if (areaKind != null && !skipAreaWayIds.contains(way['id']?.toString())) {
       areas.add(
         AreaFeature(
           kind: areaKind,
@@ -145,6 +155,27 @@ abstract final class OverpassParser {
     return value == null || value.isEmpty ? null : value;
   }
 
+  static Set<String> _multipolygonMemberWayIds(List elements) {
+    final ids = <String>{};
+    for (final raw in elements) {
+      if (raw is! Map || raw['type'] != 'relation') continue;
+      final tags = (raw['tags'] as Map?)?.cast<String, String>() ?? const {};
+      if (tags['type'] != 'multipolygon') continue;
+      final relation = raw.cast<String, dynamic>();
+      final composition = OsmMultipolygonComposer.compose(
+        _multipolygonMembers(relation),
+      );
+      if (!composition.isComplete) continue;
+      for (final member in raw['members'] as List? ?? const []) {
+        if (member is Map && member['type'] == 'way') {
+          final id = member['ref']?.toString();
+          if (id != null) ids.add(id);
+        }
+      }
+    }
+    return ids;
+  }
+
   static void _parseNode(
     Map<String, dynamic> node,
     Map<String, String> tags,
@@ -170,8 +201,12 @@ abstract final class OverpassParser {
   static void _parseRelation(
     Map<String, dynamic> relation,
     Map<String, String> tags,
+    List<AreaFeature> areas,
     List<Poi> pois,
   ) {
+    if (tags['type'] == 'multipolygon') {
+      _parseMultipolygonRelation(relation, tags, areas);
+    }
     final type = _poiTypeForTags(tags);
     if (type == null) return;
     final center = relation['center'] as Map?;
@@ -204,6 +239,56 @@ abstract final class OverpassParser {
       type: type,
       position: position,
     );
+  }
+
+  static void _parseMultipolygonRelation(
+    Map<String, dynamic> relation,
+    Map<String, String> tags,
+    List<AreaFeature> areas,
+  ) {
+    final kind = _areaKindForTags(tags);
+    final relationId = relation['id']?.toString();
+    if (kind == null || relationId == null) return;
+    final composition = OsmMultipolygonComposer.compose(
+      _multipolygonMembers(relation),
+    );
+    // An incomplete relation is not safe to fill: member ways remain
+    // available as standalone geometry when they carry their own tags.
+    if (!composition.isComplete) return;
+    for (var index = 0; index < composition.polygons.length; index++) {
+      final polygon = composition.polygons[index];
+      areas.add(
+        AreaFeature(
+          kind: kind,
+          ring: polygon.outer,
+          holes: polygon.holes,
+          sourceId: 'relation-$relationId-$index',
+        ),
+      );
+    }
+  }
+
+  static List<MultipolygonMember> _multipolygonMembers(
+    Map<String, dynamic> relation,
+  ) {
+    final members = <MultipolygonMember>[];
+    for (final rawMember in relation['members'] as List? ?? const []) {
+      if (rawMember is! Map || rawMember['type'] != 'way') continue;
+      final geometry = (rawMember['geometry'] as List?)
+          ?.map(
+            (point) => LatLng(
+              (point['lat'] as num).toDouble(),
+              (point['lon'] as num).toDouble(),
+            ),
+          )
+          .toList(growable: false);
+      final role = rawMember['role']?.toString();
+      if (geometry == null || geometry.length < 2) continue;
+      if (role == 'outer' || role == 'inner') {
+        members.add(MultipolygonMember(role: role!, points: geometry));
+      }
+    }
+    return members;
   }
 
   static void _addPoi(

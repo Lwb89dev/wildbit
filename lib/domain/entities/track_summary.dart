@@ -55,9 +55,8 @@ class TrackSummary {
   final double? north;
   final double? east;
 
-  double? get averagePaceSecondsPerKm => distanceMeters <= 0
-      ? null
-      : durationSeconds * 1000 / distanceMeters;
+  double? get averagePaceSecondsPerKm =>
+      distanceMeters <= 0 ? null : durationSeconds * 1000 / distanceMeters;
 
   String get formattedPace {
     final pace = averagePaceSecondsPerKm;
@@ -65,19 +64,12 @@ class TrackSummary {
     final totalSeconds = pace.round();
     final minutes = totalSeconds ~/ 60;
     final seconds = totalSeconds % 60;
-    return minutes.toString().padLeft(2, '0') +
-        ':' +
-        seconds.toString().padLeft(2, '0') +
-        ' min/km';
+    return '${minutes.toString().padLeft(2, '0')}:'
+        '${seconds.toString().padLeft(2, '0')} min/km';
   }
 
   Map<String, num>? get boundingBox =>
       south == null || west == null || north == null || east == null
       ? null
-      : {
-          'south': south!,
-          'west': west!,
-          'north': north!,
-          'east': east!,
-        };
+      : {'south': south!, 'west': west!, 'north': north!, 'east': east!};
 }

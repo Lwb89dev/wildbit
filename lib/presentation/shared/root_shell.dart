@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../location/location_service.dart';
+import '../../map_rendering/performance/map_rendering_budget.dart';
 import '../explore/explore_screen.dart';
 import '../map/map_screen.dart';
 import '../offline/offline_screen.dart';
@@ -44,7 +45,7 @@ class _RootShellState extends State<RootShell> {
         children: [
           for (var page = 0; page < _screens.length; page++)
             _mountedPages.contains(page)
-                ? _screens[page]
+                ? TickerMode(enabled: page == _index, child: _screens[page])
                 : const SizedBox.expand(),
         ],
       ),
@@ -52,6 +53,7 @@ class _RootShellState extends State<RootShell> {
         selectedIndex: _index,
         onDestinationSelected: (value) => setState(() {
           _index = value;
+          MapRenderingBudget.setMapVisible(value == 0);
           _mountedPages.add(value);
         }),
         destinations: const [

@@ -77,7 +77,9 @@ class _RecordedTrackPainter extends CustomPainter {
     final start = camera.latLngToScreenOffset(points.first.position);
     final current = camera.latLngToScreenOffset(points.last.position);
     _marker(canvas, start, radius: 3.5 + scale, fill: const Color(0xFFF8E1A5));
-    _marker(canvas, current, radius: 4.0 + scale, fill: color);
+    // The current endpoint is occupied by Bit. A second square marker here
+    // leaks from under the sprite during map-reading frames, so only the
+    // route origin receives a standalone marker.
     final heading = points.last.headingDegrees;
     if (heading != null && heading.isFinite) {
       final radians = heading * math.pi / 180;

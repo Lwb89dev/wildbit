@@ -193,9 +193,10 @@ On first launch, onboarding explicitly requests location permission. A Nostr
 identity is optional.
 
 > [!IMPORTANT]
-> The Android `release` configuration still uses the debug signing key.
-> Configure a production signing key, final application ID, versioning, and a
-> release pipeline before distributing an APK or AAB.
+> Local release builds fall back to the debug signing key so smoke tests work
+> without secrets. Distribution builds must provide the four
+> `WILDBIT_RELEASE_*` signing variables; the manual GitHub Actions workflow
+> also consumes `WILDBIT_RELEASE_KEYSTORE_B64` and produces a signed AAB.
 
 ## Tests and checks
 

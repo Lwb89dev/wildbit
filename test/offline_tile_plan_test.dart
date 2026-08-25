@@ -22,10 +22,7 @@ void main() {
     expect(tiles.map((tile) => tile.key).toSet(), hasLength(tiles.length));
     expect(tiles.every((tile) => tile.zoom == 12 || tile.zoom == 13), isTrue);
     expect(
-      OfflineTilePlan.url(
-        'https://example.test/{z}/{x}/{y}.png',
-        tiles.first,
-      ),
+      OfflineTilePlan.url('https://example.test/{z}/{x}/{y}.png', tiles.first),
       endsWith('.png'),
     );
   });
@@ -51,38 +48,82 @@ void main() {
       radiusKm: 1,
     );
     expect(package.bounds.contains(const LatLng(46.0679, 11.1211)), isTrue);
-    expect(package.bounds.northEast.latitude - package.bounds.southWest.latitude,
-        closeTo(.018, .002));
+    expect(
+      package.bounds.northEast.latitude - package.bounds.southWest.latitude,
+      closeTo(.018, .002),
+    );
     expect(package.name, contains('Pacchetto locale'));
   });
 
-  test('downloads both base and hiking overlays and resumes from disk', () async {
-    final root = await Directory.systemTemp.createTemp('wildbit_tiles_');
-    addTearDown(() => root.delete(recursive: true));
-    var requests = 0;
-    final client = MockClient((request) async {
-      requests++;
-      return http.Response.bytes(const [137, 80, 78, 71], 200);
-    });
-    final cache = OfflineTileCache(
-      client: client,
-      rootDirectory: () async => root,
-      minZoom: 12,
-      maxZoom: 12,
-      maxTiles: 20,
-    );
-    final progress = <int>[];
+  test(
+    'downloads both base and hiking overlays and resumes from disk',
+    () async {
+      final root = await Directory.systemTemp.createTemp('wildbit_tiles_');
+      addTearDown(() => root.delete(recursive: true));
+      var requests = 0;
+      final client = MockClient((request) async {
+        requests++;
+        return http.Response.bytes(const [137, 80, 78, 71], 200);
+      });
+      final cache = OfflineTileCache(
+        client: client,
+        rootDirectory: () async => root,
+        minZoom: 12,
+        maxZoom: 12,
+        maxTiles: 20,
+      );
+      final progress = <int>[];
 
-    final first = await cache.downloadBounds(
-      bounds,
-      onProgress: (completed, _) => progress.add(completed),
-    );
-    final second = await cache.downloadBounds(bounds);
+      final first = await cache.downloadBounds(
+        bounds,
+        onProgress: (completed, _) => progress.add(completed),
+      );
+      final second = await cache.downloadBounds(bounds);
 
-    expect(first, 2 * OfflineTilePlan.estimate(bounds, minZoom: 12, maxZoom: 12));
-    expect(second, 0);
-    expect(requests, first);
-    expect(progress, isNotEmpty);
-    expect(progress.last, 2 * OfflineTilePlan.estimate(bounds, minZoom: 12, maxZoom: 12));
+      expect(
+        first,
+        2 * OfflineTilePlan.estimate(bounds, minZoom: 12, maxZoom: 12),
+      );
+      expect(second, 0);
+      expect(requests, first);
+      expect(progress, isNotEmpty);
+      expect(
+        progress.last,
+        2 * OfflineTilePlan.estimate(bounds, minZoom: 12, maxZoom: 12),
+      );
+    },
+  );
+
+  test('can estimate a single viewport zoom without the default zoom band', () {
+    final cache = OfflineTileCache(minZoom: 12, maxZoom: 15);
+    final expected =
+        2 *
+        OfflineTilePlan.estimate(bounds, minZoom: 14, maxZoom: 14) *
+        OfflineTileCache.estimatedBytesPerTile;
+
+    expect(
+      cache.estimatedBytes(bounds, requestedMinZoom: 14, requestedMaxZoom: 14),
+      expected,
+    );
   });
+
+  test(
+    'cache cleanup removes partial files but keeps complete tiles',
+    () async {
+      final root = await Directory.systemTemp.createTemp('wildbit_cleanup_');
+      addTearDown(() => root.delete(recursive: true));
+      final complete = File('${root.path}/tiles/osm/14/1/2.png')
+        ..createSync(recursive: true);
+      await complete.writeAsBytes(const [1, 2, 3]);
+      final partial = File('${complete.path}.part');
+      await partial.writeAsBytes(const [4, 5, 6, 7]);
+      final cache = OfflineTileCache(rootDirectory: () async => root);
+
+      expect(await cache.cacheBytes(), 7);
+      expect(await cache.cleanupPartialFiles(), 4);
+      expect(await complete.exists(), isTrue);
+      expect(await partial.exists(), isFalse);
+      expect(await cache.cacheBytes(), 3);
+    },
+  );
 }

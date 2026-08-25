@@ -47,6 +47,9 @@ void main() {
     );
     expect(identical(first, second), isTrue);
     expect(cache.length, 1);
+    expect(cache.hits, 1);
+    expect(cache.misses, 1);
+    expect(cache.hitRate, .5);
   });
 
   test('caps pathological geometry while preserving endpoints', () {

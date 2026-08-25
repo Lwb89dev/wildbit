@@ -24,9 +24,10 @@ class OsmPixelBridgeLayer extends StatefulWidget {
 
 class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
   static const _assets = [
-    'assets/map/mock/structures/bridge_foot_start.png',
-    'assets/map/mock/structures/bridge_foot_mid.png',
-    'assets/map/mock/structures/bridge_foot_end.png',
+    // Keep the bridge as one watertight sprite. The former start/mid/end
+    // canvases contain transparent perspective margins and become visibly
+    // detached when stretched into narrow segments.
+    'assets/map/mock/structures/bridge_foot_horizontal_v2.png',
   ];
 
   List<ui.Image> _images = const [];
@@ -51,9 +52,9 @@ class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
 
   Future<ui.Image> _resolveImage(String asset) {
     final completer = Completer<ui.Image>();
-    final stream = AssetImage(asset).resolve(
-      createLocalImageConfiguration(context),
-    );
+    final stream = AssetImage(
+      asset,
+    ).resolve(createLocalImageConfiguration(context));
     late ImageStreamListener listener;
     listener = ImageStreamListener(
       (image, _) {
@@ -71,17 +72,17 @@ class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
 
   @override
   Widget build(BuildContext context) => RepaintBoundary(
-        child: IgnorePointer(
-          child: CustomPaint(
-            size: Size.infinite,
-            painter: _BridgePainter(
-              camera: MapCamera.of(context),
-              features: widget.features,
-              images: _images,
-            ),
-          ),
+    child: IgnorePointer(
+      child: CustomPaint(
+        size: Size.infinite,
+        painter: _BridgePainter(
+          camera: MapCamera.of(context),
+          features: widget.features,
+          images: _images,
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _BridgePainter extends CustomPainter {
@@ -100,8 +101,17 @@ class _BridgePainter extends CustomPainter {
     final waterPolygons = [
       for (final area in features.areas)
         if (area.kind == MapFeatureKind.water)
-          OsmWaterPolygonProjector.project(area, camera.latLngToScreenOffset),
-    ].where((polygon) => polygon.length >= 3).toList(growable: false);
+          _BridgeWaterArea(
+            polygon: OsmWaterPolygonProjector.project(
+              area,
+              camera.latLngToScreenOffset,
+            ),
+            holes: [
+              for (final hole in area.holes)
+                [for (final point in hole) camera.latLngToScreenOffset(point)],
+            ],
+          ),
+    ].where((area) => area.polygon.length >= 3).toList(growable: false);
     final bridges = features.lines.where(
       (line) =>
           line.metadata.hasConfirmedBridge &&
@@ -113,17 +123,25 @@ class _BridgePainter extends CustomPainter {
       var end = camera.latLngToScreenOffset(bridge.points.last);
       final crossingCenter = Offset.lerp(start, end, .5)!;
       final crossingDirection = end - start;
-      for (final polygon in waterPolygons) {
+      var anchoredToWater = false;
+      for (final water in waterPolygons) {
         final placement = PixelBridgePlacement.fromWaterPolygon(
-          polygon: polygon,
+          polygon: water.polygon,
+          holes: water.holes,
           center: crossingCenter,
           direction: crossingDirection,
         );
         if (placement == null) continue;
         start = placement.start;
         end = placement.end;
+        anchoredToWater = true;
         break;
       }
+      // If water polygons are available, an explicit bridge that misses all
+      // of them is not painted: its geometry would otherwise float on land.
+      // In cells with only linear river data there is no polygon to anchor to,
+      // so the original bridge way remains the safe visual fallback.
+      if (waterPolygons.isNotEmpty && !anchoredToWater) continue;
       final geometry = PixelBridgeGeometry.fromProjected(
         start: start,
         end: end,
@@ -148,7 +166,7 @@ class _BridgePainter extends CustomPainter {
         ),
         Paint()..color = const Color(0x66312624),
       );
-      if (images.length < 3) {
+      if (images.isEmpty) {
         canvas.drawRect(
           Rect.fromLTWH(
             -geometry.width / 2,
@@ -161,39 +179,13 @@ class _BridgePainter extends CustomPainter {
         canvas.restore();
         continue;
       }
-      final left = -geometry.width / 2;
       _drawImage(
         canvas,
         images[0],
-        Rect.fromLTWH(
-          left,
-          -geometry.height / 2,
-          geometry.capWidth,
-          geometry.height,
-        ),
-      );
-      final middleWidth = geometry.width - geometry.capWidth * 2;
-      final segmentWidth = middleWidth / geometry.midSegments;
-      for (var index = 0; index < geometry.midSegments; index++) {
-        _drawImage(
-          canvas,
-          images[1],
-          Rect.fromLTWH(
-            left + geometry.capWidth + index * segmentWidth,
-            -geometry.height / 2,
-            segmentWidth,
-            geometry.height,
-          ),
-        );
-      }
-      _drawImage(
-        canvas,
-        images[2],
-        Rect.fromLTWH(
-          geometry.width / 2 - geometry.capWidth,
-          -geometry.height / 2,
-          geometry.capWidth,
-          geometry.height,
+        Rect.fromCenter(
+          center: Offset.zero,
+          width: geometry.width,
+          height: geometry.height,
         ),
       );
       canvas.restore();
@@ -216,4 +208,11 @@ class _BridgePainter extends CustomPainter {
       oldDelegate.camera.rotation != camera.rotation ||
       oldDelegate.features != features ||
       oldDelegate.images != images;
+}
+
+class _BridgeWaterArea {
+  const _BridgeWaterArea({required this.polygon, required this.holes});
+
+  final List<Offset> polygon;
+  final List<List<Offset>> holes;
 }

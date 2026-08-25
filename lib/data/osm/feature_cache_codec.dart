@@ -16,7 +16,7 @@ import '../../domain/enums/poi_type.dart';
 /// layer concern only — the domain entities themselves stay JSON-agnostic.
 abstract final class FeatureCacheCodec {
   // Version 12 preserves surface and obstacle tags used by route artwork.
-  static const currentFormatVersion = 15;
+  static const currentFormatVersion = 16;
 
   static String encode(MapFeatureCollection features) {
     return jsonEncode({
@@ -26,6 +26,7 @@ abstract final class FeatureCacheCodec {
           {
             'kind': a.kind.name,
             'ring': _encodePoints(a.ring),
+            'holes': [for (final hole in a.holes) _encodePoints(hole)],
             'sourceId': a.sourceId,
           },
       ],
@@ -98,6 +99,10 @@ abstract final class FeatureCacheCodec {
           AreaFeature(
             kind: MapFeatureKind.values.byName(a['kind'] as String),
             ring: _decodePoints(a['ring'] as List),
+            holes: [
+              for (final hole in a['holes'] as List? ?? const [])
+                _decodePoints(hole as List),
+            ],
             sourceId: a['sourceId'] as String?,
           ),
       ],

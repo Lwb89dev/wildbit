@@ -22,3 +22,23 @@ Regole architetturali:
 4. La topologia costa è costruita al cambio dei dati, non ad ogni pan/zoom.
 5. Ogni modifica al renderer va verificata in `profile`/`release` su Android:
    obiettivo iniziale 60 fps e frame raster sotto 16,6 ms durante il pan.
+6. La topologia dei corsi d'acqua viene composta fuori dal painter animato:
+   l'animazione aggiorna solo la fase della texture e non ricostruisce le
+   catene OSM a ogni tick.
+7. Il caricamento OSM ha un budget UI di 10 secondi: oltre quel limite la
+   mappa mantiene i dati già disponibili (o l'anteprima debug) mentre la
+   richiesta continua in background per alimentare la cache.
+
+## Diagnostica del profilo
+
+In debug, il pannello **Livelli mappa** mostra i tempi medi build/raster,
+il picco della finestra più recente e la percentuale di frame oltre 16,7 ms.
+Mostra anche gli hit/miss della cache di proiezione condivisa da sentieri ed
+etichette. La diagnostica non viene avviata nelle build release.
+
+Per una misura ripetibile su Android usare `flutter run --profile`, eseguire
+tre cicli di pan continuo di 20 secondi e tre cicli di pinch tra zoom 12 e 17.
+Registrare frame raster, memoria e temperatura dopo ogni ciclo; il primo
+obiettivo è mantenere il raster sotto 16,6 ms e non aumentare il lavoro di
+rete durante il gesto. I fetch OSM devono partire solo dopo che la camera è
+ferma.

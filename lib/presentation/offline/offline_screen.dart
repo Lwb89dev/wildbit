@@ -34,6 +34,8 @@ class _OfflineScreenState extends State<OfflineScreen> {
   final _storage = OfflineStorageService();
   String? _tileCacheDirectory;
   int? _availableBytes;
+  int? _cacheBytes;
+  bool _cleaningCache = false;
 
   late Future<List<OfflineRegion>> _areasFuture;
 
@@ -44,6 +46,7 @@ class _OfflineScreenState extends State<OfflineScreen> {
     _centerOnLocation();
     _loadTileCacheDirectory();
     _loadAvailableStorage();
+    _loadCacheBytes();
   }
 
   Future<void> _loadTileCacheDirectory() async {
@@ -54,6 +57,29 @@ class _OfflineScreenState extends State<OfflineScreen> {
   Future<void> _loadAvailableStorage() async {
     final bytes = await _storage.availableBytes();
     if (mounted) setState(() => _availableBytes = bytes);
+  }
+
+  Future<void> _loadCacheBytes() async {
+    final bytes = await _tileCache.cacheBytes();
+    if (mounted) setState(() => _cacheBytes = bytes);
+  }
+
+  Future<void> _cleanupPartialCache() async {
+    if (_cleaningCache) return;
+    setState(() => _cleaningCache = true);
+    final removed = await _tileCache.cleanupPartialFiles();
+    await _loadCacheBytes();
+    if (!mounted) return;
+    setState(() => _cleaningCache = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          removed == 0
+              ? 'Nessun download interrotto da pulire'
+              : 'Puliti ${_formatBytes(removed)} di file incompleti',
+        ),
+      ),
+    );
   }
 
   Future<void> _centerOnLocation() async {
@@ -76,36 +102,47 @@ class _OfflineScreenState extends State<OfflineScreen> {
 
   Future<void> _downloadVisibleArea() async {
     final visible = _mapController.camera.visibleBounds;
+    final selectedZoom = _visibleTileZoom;
     final bounds = GeoBounds(
       southWest: LatLng(visible.south, visible.west),
       northEast: LatLng(visible.north, visible.east),
     );
 
     try {
-      final tiles = OfflineTilePlan.estimate(bounds);
-      final bytes = _tileCache.estimatedBytes(bounds);
+      final tiles = OfflineTilePlan.estimate(
+        bounds,
+        minZoom: selectedZoom,
+        maxZoom: selectedZoom,
+      );
+      final bytes = _tileCache.estimatedBytes(
+        bounds,
+        requestedMinZoom: selectedZoom,
+        requestedMaxZoom: selectedZoom,
+      );
       await _ensureSpace(bytes);
       if (!mounted) return;
       final manager = context.read<OfflineDownloadManager>();
       await manager.requestDownload(
         name:
-            'Area visibile ${visible.center.latitude.toStringAsFixed(2)}, ${visible.center.longitude.toStringAsFixed(2)}',
+            'Area visibile z$selectedZoom ${visible.center.latitude.toStringAsFixed(2)}, ${visible.center.longitude.toStringAsFixed(2)}',
         bounds: bounds,
+        minZoom: selectedZoom,
+        maxZoom: selectedZoom,
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Download avviato: $tiles tile × 2 overlay · ${_formatBytes(bytes)}',
+              'Download avviato: z$selectedZoom · $tiles tile × 2 overlay · ${_formatBytes(bytes)}',
             ),
           ),
         );
       }
     } on StateError catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error.message.toString())),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message.toString())));
       }
     }
     setState(_reload);
@@ -114,6 +151,11 @@ class _OfflineScreenState extends State<OfflineScreen> {
       if (mounted) setState(_reload);
     });
   }
+
+  int get _visibleTileZoom => _mapController.camera.zoom.round().clamp(
+    _tileCache.minZoom,
+    _tileCache.maxZoom,
+  );
 
   Future<void> _downloadLocalPackage() async {
     final package = OfflineRegionPackage.local(_center);
@@ -125,23 +167,25 @@ class _OfflineScreenState extends State<OfflineScreen> {
         bounds: package.bounds,
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${package.name} avviato')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('${package.name} avviato')));
         setState(_reload);
       }
     } on StateError catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error.message.toString())),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message.toString())));
       }
     }
   }
 
   Future<void> _ensureSpace(int requiredBytes) async {
     final available = await _storage.availableBytes();
-    if (mounted && available != null) setState(() => _availableBytes = available);
+    if (mounted && available != null) {
+      setState(() => _availableBytes = available);
+    }
     if (available != null && available < requiredBytes) {
       throw StateError(
         'Spazio insufficiente: servono ${_formatBytes(requiredBytes)}, '
@@ -168,10 +212,24 @@ class _OfflineScreenState extends State<OfflineScreen> {
     final storageLabel = _availableBytes == null
         ? ''
         : ' · ${_formatBytes(_availableBytes!)} liberi';
+    final cacheLabel = _cacheBytes == null
+        ? ''
+        : ' · cache ${_formatBytes(_cacheBytes!)}';
     return Scaffold(
       appBar: AppBar(
         title: const Text('Offline'),
         actions: [
+          IconButton(
+            tooltip: 'Pulisci download interrotti',
+            onPressed: _cleaningCache ? null : _cleanupPartialCache,
+            icon: _cleaningCache
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.cleaning_services_outlined),
+          ),
           IconButton(
             tooltip: 'Centra sul GPS',
             onPressed: _centerOnLocation,
@@ -242,7 +300,7 @@ class _OfflineScreenState extends State<OfflineScreen> {
                     child: Text(
                       _locating
                           ? 'Ricerca GPS in corso…'
-                          : 'Sposta e zooma: overlay sentieri$storageLabel',
+                          : 'Sposta e zooma: z$_visibleTileZoom · overlay sentieri$storageLabel$cacheLabel',
                       textAlign: TextAlign.center,
                     ),
                   ),

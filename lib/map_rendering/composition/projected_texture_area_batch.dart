@@ -45,8 +45,7 @@ class ProjectedTextureAreaBatch extends StatefulWidget {
       _ProjectedTextureAreaBatchState();
 }
 
-class _ProjectedTextureAreaBatchState
-    extends State<ProjectedTextureAreaBatch> {
+class _ProjectedTextureAreaBatchState extends State<ProjectedTextureAreaBatch> {
   final Map<String, ui.Image> _images = {};
   final Set<String> _loading = {};
 
@@ -71,9 +70,9 @@ class _ProjectedTextureAreaBatchState
 
   Future<void> _loadImage(String asset) async {
     final completer = Completer<ui.Image>();
-    final stream = AssetImage(asset).resolve(
-      createLocalImageConfiguration(context),
-    );
+    final stream = AssetImage(
+      asset,
+    ).resolve(createLocalImageConfiguration(context));
     late ImageStreamListener listener;
     listener = ImageStreamListener(
       (image, _) {
@@ -98,15 +97,15 @@ class _ProjectedTextureAreaBatchState
 
   @override
   Widget build(BuildContext context) => RepaintBoundary(
-        child: CustomPaint(
-          size: Size.infinite,
-          painter: _TextureAreaBatchPainter(
-            camera: widget.camera,
-            areas: widget.areas,
-            images: Map.unmodifiable(_images),
-          ),
-        ),
-      );
+    child: CustomPaint(
+      size: Size.infinite,
+      painter: _TextureAreaBatchPainter(
+        camera: widget.camera,
+        areas: widget.areas,
+        images: Map.unmodifiable(_images),
+      ),
+    ),
+  );
 }
 
 class _TextureAreaBatchPainter extends CustomPainter {
@@ -129,10 +128,22 @@ class _TextureAreaBatchPainter extends CustomPainter {
           ui.TileMode.repeated,
           ui.TileMode.repeated,
           Float64List.fromList(const [
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 1, 0,
-            0, 0, 0, 1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
           ]),
           filterQuality: ui.FilterQuality.none,
         ),
@@ -143,7 +154,7 @@ class _TextureAreaBatchPainter extends CustomPainter {
         camera.latLngToScreenOffset,
       );
       if (polygon.length < 3) continue;
-      final path = Path()..addPolygon(polygon, true);
+      final path = _pathForArea(spec.area, polygon);
       final bounds = path.getBounds();
       if (bounds.isEmpty || !bounds.overlaps(Offset.zero & size)) continue;
       final shader = shaders[spec.asset];
@@ -175,6 +186,18 @@ class _TextureAreaBatchPainter extends CustomPainter {
         );
       }
     }
+  }
+
+  Path _pathForArea(AreaFeature area, List<Offset> outer) {
+    final path = Path()..fillType = PathFillType.evenOdd;
+    path.addPolygon(outer, true);
+    for (final hole in area.holes) {
+      final projected = [
+        for (final point in hole) camera.latLngToScreenOffset(point),
+      ];
+      if (projected.length >= 3) path.addPolygon(projected, true);
+    }
+    return path;
   }
 
   @override

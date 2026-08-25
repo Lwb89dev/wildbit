@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../performance/map_rendering_budget.dart';
 import 'water_edge_composer.dart';
 
 /// Renders pixel-art water and its edge from arbitrary projected geometry.
@@ -64,6 +65,9 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
   void _startFlow() {
     if (_flowTimer?.isActive ?? false) return;
     _flowTimer = Timer.periodic(_flowStep, (_) {
+      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
+        return;
+      }
       _flowPhase.value = (_flowPhase.value + 1 / 20) % 1;
     });
   }
@@ -90,8 +94,7 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
     final shoreAsset = switch (widget.material) {
       WaterEdgeMaterial.grass => 'assets/map/mock/terrain/shore_grass.png',
       WaterEdgeMaterial.rock => 'assets/map/mock/terrain/shore_rock_detail.png',
-      WaterEdgeMaterial.sand =>
-        'assets/map/mock/terrain/shore_sand_bank.png',
+      WaterEdgeMaterial.sand => 'assets/map/mock/terrain/shore_sand_bank.png',
       WaterEdgeMaterial.mud => 'assets/map/mock/terrain/shore_mud_bank.png',
     };
 
@@ -245,7 +248,21 @@ class _WaterBoundaryPainter extends CustomPainter {
       WaterEdgeMaterial.sand => const Color(0xFFB4874A),
       _ => const Color(0xFF294A46),
     };
-    if (material != WaterEdgeMaterial.mud) {
+    if (material == WaterEdgeMaterial.mud) {
+      // The mud tile has transparent pixels at both sides so it cannot be
+      // used as a watertight seal by itself. Paint a narrow continuous
+      // earthen seam first; the pixel modules below add the irregular detail
+      // without ever exposing the meadow between bank and water.
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = inner
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 8
+          ..strokeJoin = StrokeJoin.round
+          ..isAntiAlias = false,
+      );
+    } else {
       canvas.drawPath(
         path,
         Paint()

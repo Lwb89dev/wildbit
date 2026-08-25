@@ -220,7 +220,18 @@ class _PoiPainter extends CustomPainter {
       );
       canvas.drawImageRect(
         image,
-        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+        poi.type == PoiType.shelter
+            ? ShelterSpriteMetrics.sourceRect(
+                imageWidth: image.width,
+                imageHeight: image.height,
+                shelterType: poi.metadata.shelterType,
+              )
+            : Rect.fromLTWH(
+                0,
+                0,
+                image.width.toDouble(),
+                image.height.toDouble(),
+              ),
         destination,
         imagePaint,
       );

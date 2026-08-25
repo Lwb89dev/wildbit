@@ -55,12 +55,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     setState(() => _waitingAmber = true);
     try {
       final signer = context.read<AmberSignerService>();
+      final databaseKeys = context.read<DatabaseKeyManager>();
       final identity = await signer.login();
       if (identity == null) return;
-      if (await context.read<DatabaseKeyManager>().linkNostrIdentity(
-        identity,
-        signer,
-      )) {
+      if (await databaseKeys.linkNostrIdentity(identity, signer)) {
         if (mounted) setState(() => _nostrIdentity = identity);
       }
     } finally {

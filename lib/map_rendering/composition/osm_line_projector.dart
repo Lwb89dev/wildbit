@@ -14,6 +14,19 @@ class ProjectedLineCache {
   final int maxEntries;
   String? _viewKey;
   final _entries = <String, List<Offset>>{};
+  int _hits = 0;
+  int _misses = 0;
+
+  /// Number of projections served from the in-memory camera cache.
+  int get hits => _hits;
+
+  /// Number of projections that had to simplify and project the source way.
+  int get misses => _misses;
+
+  double get hitRate {
+    final total = _hits + _misses;
+    return total == 0 ? 0 : _hits / total;
+  }
 
   void beginView(String viewKey) {
     if (_viewKey == viewKey) return;
@@ -31,7 +44,11 @@ class ProjectedLineCache {
         '${OsmLineProjector.seedFor(feature)}:'
         '${minimumDistancePixels.toStringAsFixed(2)}:$maximumPoints';
     final cached = _entries[key];
-    if (cached != null) return cached;
+    if (cached != null) {
+      _hits++;
+      return cached;
+    }
+    _misses++;
     final points = OsmLineProjector.projectSimplified(
       feature,
       projectPoint,

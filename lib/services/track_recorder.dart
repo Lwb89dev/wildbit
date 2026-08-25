@@ -16,13 +16,17 @@ enum RecorderState { idle, recording, paused }
 /// [state] is [RecorderState.recording] and derives running distance,
 /// duration and elevation gain so the Track screen can show them live.
 class TrackRecorderController extends ChangeNotifier {
-  TrackRecorderController({
+  factory TrackRecorderController({
     required LocationService locationService,
     required TrackRepository repository,
     WildBitVoiceService? voice,
-  })  : _locationService = locationService,
-        _repository = repository,
-        _voice = voice;
+  }) => TrackRecorderController._(locationService, repository, voice);
+
+  TrackRecorderController._(
+    this._locationService,
+    this._repository,
+    this._voice,
+  );
 
   static const _distance = Distance();
 
@@ -46,7 +50,8 @@ class TrackRecorderController extends ChangeNotifier {
     return end.difference(start) - _pausedAccumulated;
   }
 
-  double get currentSpeedMetersPerSecond => points.isEmpty ? 0 : (points.last.speedMetersPerSecond ?? 0);
+  double get currentSpeedMetersPerSecond =>
+      points.isEmpty ? 0 : (points.last.speedMetersPerSecond ?? 0);
 
   void start() {
     if (state != RecorderState.idle) return;
@@ -79,7 +84,9 @@ class TrackRecorderController extends ChangeNotifier {
     if (state != RecorderState.paused) return;
     state = RecorderState.recording;
     final pausedAt = _pausedAt;
-    if (pausedAt != null) _pausedAccumulated += DateTime.now().difference(pausedAt);
+    if (pausedAt != null) {
+      _pausedAccumulated += DateTime.now().difference(pausedAt);
+    }
     _pausedAt = null;
     _subscription = _locationService.positionStream.listen(_onFix);
     notifyListeners();
@@ -122,7 +129,11 @@ class TrackRecorderController extends ChangeNotifier {
 
   void _onFix(GeoFix fix) {
     if (points.isNotEmpty) {
-      distanceMeters += _distance.as(LengthUnit.Meter, points.last.position, fix.position);
+      distanceMeters += _distance.as(
+        LengthUnit.Meter,
+        points.last.position,
+        fix.position,
+      );
       final prevAltitude = points.last.altitudeMeters;
       final altitude = fix.altitudeMeters;
       if (prevAltitude != null && altitude != null && altitude > prevAltitude) {

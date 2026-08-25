@@ -13,19 +13,32 @@ import 'offline_tile_cache.dart';
 /// cached by [OsmMapDataRepository] are skipped on the next attempt instead
 /// of being re-fetched.
 class OfflineDownloadManager {
-  OfflineDownloadManager({
+  factory OfflineDownloadManager({
     required OfflineRegionRepository areaRepository,
     required OsmMapDataRepository mapDataRepository,
     OfflineTileCache? tileCache,
-  })  : _areaRepository = areaRepository,
-        _mapDataRepository = mapDataRepository,
-        _tileCache = tileCache ?? OfflineTileCache();
+  }) => OfflineDownloadManager._(
+    areaRepository,
+    mapDataRepository,
+    tileCache ?? OfflineTileCache(),
+  );
+
+  OfflineDownloadManager._(
+    this._areaRepository,
+    this._mapDataRepository,
+    this._tileCache,
+  );
 
   final OfflineRegionRepository _areaRepository;
   final OsmMapDataRepository _mapDataRepository;
   final OfflineTileCache _tileCache;
 
-  Future<int> requestDownload({required String name, required GeoBounds bounds}) async {
+  Future<int> requestDownload({
+    required String name,
+    required GeoBounds bounds,
+    int? minZoom,
+    int? maxZoom,
+  }) async {
     final id = await _areaRepository.create(
       OfflineRegion(
         name: name,
@@ -35,12 +48,28 @@ class OfflineDownloadManager {
         requestedAt: DateTime.now(),
       ),
     );
-    unawaited(_run(id, bounds));
+    unawaited(
+      _run(
+        id,
+        bounds,
+        minZoom: minZoom ?? _tileCache.minZoom,
+        maxZoom: maxZoom ?? _tileCache.maxZoom,
+      ),
+    );
     return id;
   }
 
-  Future<void> _run(int id, GeoBounds bounds) async {
-    await _areaRepository.updateStatus(id, status: OfflineAreaStatus.downloading, progress: 0);
+  Future<void> _run(
+    int id,
+    GeoBounds bounds, {
+    required int minZoom,
+    required int maxZoom,
+  }) async {
+    await _areaRepository.updateStatus(
+      id,
+      status: OfflineAreaStatus.downloading,
+      progress: 0,
+    );
 
     final cells = MapCellGrid.cellsCovering(bounds);
     try {
@@ -56,6 +85,8 @@ class OfflineDownloadManager {
       }
       await _tileCache.downloadBounds(
         bounds,
+        requestedMinZoom: minZoom,
+        requestedMaxZoom: maxZoom,
         onProgress: (completed, total) async {
           await _areaRepository.updateStatus(
             id,
@@ -64,7 +95,11 @@ class OfflineDownloadManager {
           );
         },
       );
-      await _areaRepository.updateStatus(id, status: OfflineAreaStatus.completed, progress: 1);
+      await _areaRepository.updateStatus(
+        id,
+        status: OfflineAreaStatus.completed,
+        progress: 1,
+      );
     } catch (_) {
       await _areaRepository.updateStatus(id, status: OfflineAreaStatus.failed);
     }
@@ -72,5 +107,10 @@ class OfflineDownloadManager {
 
   /// Retries a previously failed/interrupted download from where it left
   /// off (already-cached cells are skipped by the repository itself).
-  Future<void> retry(OfflineRegion area) => _run(area.id!, area.bounds);
+  Future<void> retry(OfflineRegion area) => _run(
+    area.id!,
+    area.bounds,
+    minZoom: _tileCache.minZoom,
+    maxZoom: _tileCache.maxZoom,
+  );
 }

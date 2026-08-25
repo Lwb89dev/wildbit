@@ -63,9 +63,9 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
 
   Future<void> _loadImage(String asset) async {
     final completer = Completer<ui.Image>();
-    final stream = AssetImage(asset).resolve(
-      createLocalImageConfiguration(context),
-    );
+    final stream = AssetImage(
+      asset,
+    ).resolve(createLocalImageConfiguration(context));
     late ImageStreamListener listener;
     listener = ImageStreamListener(
       (image, _) {
@@ -101,6 +101,11 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
   void _startFlow() {
     if (_flowTimer?.isActive ?? false) return;
     _flowTimer = Timer.periodic(_flowStep, (_) {
+      // Camera gestures already invalidate the water layer; avoid scheduling
+      // another repaint until the gesture has settled.
+      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
+        return;
+      }
       _flowPhase.value = (_flowPhase.value + 1 / 20) % 1;
     });
   }
@@ -116,18 +121,22 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
-    final waterAreas = widget.features.areas
-        .where(
-          (area) =>
-              area.kind == MapFeatureKind.water &&
-              MapRenderingBudget.areaMayBeVisible(area, camera.visibleBounds),
-        )
-        .toList()
-      ..sort(
-        (a, b) => MapGeometryRules.polygonArea(b.ring).compareTo(
-          MapGeometryRules.polygonArea(a.ring),
-        ),
-      );
+    final waterAreas =
+        widget.features.areas
+            .where(
+              (area) =>
+                  area.kind == MapFeatureKind.water &&
+                  MapRenderingBudget.areaMayBeVisible(
+                    area,
+                    camera.visibleBounds,
+                  ),
+            )
+            .toList()
+          ..sort(
+            (a, b) => MapGeometryRules.polygonArea(
+              b.ring,
+            ).compareTo(MapGeometryRules.polygonArea(a.ring)),
+          );
     final scale = _scaleForZoom(camera.zoom);
     final renders = <_WaterAreaRender>[];
     for (final area in waterAreas) {
@@ -138,19 +147,23 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
       if (polygon.length < 3) continue;
       final material = _materialFor(area);
       final seed = OsmWaterPolygonProjector.seedFor(area);
+      final projectedHoles = [
+        for (final hole in area.holes)
+          [for (final point in hole) camera.latLngToScreenOffset(point)],
+      ];
       renders.add(
         _WaterAreaRender(
           polygon: polygon,
+          holes: projectedHoles,
           material: material,
           seed: seed,
-          edges: WaterEdgeComposer(
-            spacing: 28 * scale,
-            maxPlacements: MapRenderingBudget.maxShoreSpritesPerPolygon,
-            fixedPlacements: _shorePlacementCount(area),
-          ).compose(
-            polygon: polygon,
+          edges: _shorePlacements(
+            area: area,
+            outer: polygon,
+            holes: projectedHoles,
             material: material,
-            chunkSeed: seed,
+            seed: seed,
+            scale: scale,
           ),
         ),
       );
@@ -178,21 +191,91 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
       math.pow(2, zoom - 16).clamp(.65, 1.35).toDouble();
 
   int _shorePlacementCount(AreaFeature water) {
-    if (water.ring.length < 3) return 0;
     var perimeter = 0.0;
-    for (var index = 0; index < water.ring.length; index++) {
-      final start = water.ring[index];
-      final end = water.ring[(index + 1) % water.ring.length];
-      final latitudeScale = math.cos(
-        (start.latitude + end.latitude) * math.pi / 360,
-      );
-      final dy = end.latitude - start.latitude;
-      final dx = (end.longitude - start.longitude) * latitudeScale;
-      perimeter += math.sqrt(dx * dx + dy * dy);
+    for (final ring in [water.ring, ...water.holes]) {
+      if (ring.length < 3) continue;
+      for (var index = 0; index < ring.length; index++) {
+        final start = ring[index];
+        final end = ring[(index + 1) % ring.length];
+        final latitudeScale = math.cos(
+          (start.latitude + end.latitude) * math.pi / 360,
+        );
+        final dy = end.latitude - start.latitude;
+        final dx = (end.longitude - start.longitude) * latitudeScale;
+        perimeter += math.sqrt(dx * dx + dy * dy);
+      }
     }
-    return (perimeter / .00038)
-        .round()
-        .clamp(4, MapRenderingBudget.maxShoreSpritesPerPolygon);
+    return (perimeter / .00038).round().clamp(
+      4,
+      MapRenderingBudget.maxShoreSpritesPerPolygon,
+    );
+  }
+
+  List<WaterEdgePlacement> _shorePlacements({
+    required AreaFeature area,
+    required List<Offset> outer,
+    required List<List<Offset>> holes,
+    required WaterEdgeMaterial material,
+    required int seed,
+    required double scale,
+  }) {
+    final rings = [outer, ...holes];
+    final total = _projectedPerimeter(rings);
+    if (total == 0) return const [];
+    var remaining = _shorePlacementCount(area);
+    final placements = <WaterEdgePlacement>[];
+    for (var index = 0; index < rings.length && remaining > 0; index++) {
+      final ring = rings[index];
+      if (ring.length < 3) continue;
+      final isLast = index == rings.length - 1;
+      final count = isLast
+          ? remaining
+          : math
+                .max(
+                  1,
+                  (remaining * _projectedPerimeter([ring]) / total).round(),
+                )
+                .clamp(1, remaining);
+      remaining -= count;
+      final ringPlacements =
+          WaterEdgeComposer(
+            spacing: 28 * scale,
+            maxPlacements: count,
+            fixedPlacements: count,
+          ).compose(
+            polygon: ring,
+            material: material,
+            chunkSeed: seed + index * 101,
+          );
+      if (index == 0) {
+        placements.addAll(ringPlacements);
+      } else {
+        // An inner ring bounds land, so its land/water normal is the inverse
+        // of the one used by an ordinary water-inside ring.
+        placements.addAll(
+          ringPlacements.map(
+            (edge) => WaterEdgePlacement(
+              position: edge.position - edge.normal * 6,
+              tangent: edge.tangent,
+              normal: -edge.normal,
+              material: edge.material,
+              variant: edge.variant,
+            ),
+          ),
+        );
+      }
+    }
+    return placements;
+  }
+
+  double _projectedPerimeter(List<List<Offset>> rings) {
+    var total = 0.0;
+    for (final ring in rings) {
+      for (var index = 0; index < ring.length; index++) {
+        total += (ring[(index + 1) % ring.length] - ring[index]).distance;
+      }
+    }
+    return total;
   }
 
   WaterEdgeMaterial _materialFor(AreaFeature water) {
@@ -218,12 +301,14 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
 class _WaterAreaRender {
   const _WaterAreaRender({
     required this.polygon,
+    required this.holes,
     required this.material,
     required this.seed,
     required this.edges,
   });
 
   final List<Offset> polygon;
+  final List<List<Offset>> holes;
   final WaterEdgeMaterial material;
   final int seed;
   final List<WaterEdgePlacement> edges;
@@ -253,10 +338,22 @@ class _WaterBatchPainter extends CustomPainter {
           ui.TileMode.repeated,
           ui.TileMode.repeated,
           Float64List.fromList(const [
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 1, 0,
-            0, 0, 0, 1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
           ]),
           filterQuality: ui.FilterQuality.none,
         ),
@@ -265,7 +362,7 @@ class _WaterBatchPainter extends CustomPainter {
     // All water fills are composed first. Shore modules can then form one
     // clean foreground edge without being covered by a later pond polygon.
     for (final render in renders) {
-      final path = Path()..addPolygon(render.polygon, true);
+      final path = _pathForRender(render);
       final bounds = path.getBounds();
       if (bounds.isEmpty || !bounds.overlaps(Offset.zero & size)) continue;
       final asset =
@@ -289,17 +386,14 @@ class _WaterBatchPainter extends CustomPainter {
     }
 
     for (final render in renders) {
-      final shorePath = Path()..addPolygon(render.polygon, true);
+      final shorePath = _pathForRender(render);
       _paintContinuousShore(canvas, shorePath, render.material);
       final shoreAsset = switch (render.material) {
-        WaterEdgeMaterial.grass =>
-          'assets/map/mock/terrain/shore_grass.png',
+        WaterEdgeMaterial.grass => 'assets/map/mock/terrain/shore_grass.png',
         WaterEdgeMaterial.rock =>
           'assets/map/mock/terrain/shore_rock_detail.png',
-        WaterEdgeMaterial.sand =>
-          'assets/map/mock/terrain/shore_sand_bank.png',
-        WaterEdgeMaterial.mud =>
-          'assets/map/mock/terrain/shore_mud_bank.png',
+        WaterEdgeMaterial.sand => 'assets/map/mock/terrain/shore_sand_bank.png',
+        WaterEdgeMaterial.mud => 'assets/map/mock/terrain/shore_mud_bank.png',
       };
       final shore = images[shoreAsset];
       for (var index = 0; index < render.edges.length; index++) {
@@ -345,6 +439,15 @@ class _WaterBatchPainter extends CustomPainter {
     }
   }
 
+  Path _pathForRender(_WaterAreaRender render) {
+    final path = Path()..fillType = PathFillType.evenOdd;
+    path.addPolygon(render.polygon, true);
+    for (final hole in render.holes) {
+      if (hole.length >= 3) path.addPolygon(hole, true);
+    }
+    return path;
+  }
+
   void _paintWaterHighlights(
     Canvas canvas,
     Path path,
@@ -365,31 +468,27 @@ class _WaterBatchPainter extends CustomPainter {
     canvas.save();
     canvas.clipPath(path);
     final seedOffset = (seed.abs() % 17) * scale;
-    for (var y = visible.top + seedOffset % spacingY;
-        y < visible.bottom;
-        y += spacingY) {
+    for (
+      var y = visible.top + seedOffset % spacingY;
+      y < visible.bottom;
+      y += spacingY
+    ) {
       final row = ((y - bounds.top) / spacingY).floor();
       final rowOffset = ((row * 19 + seed.abs()) % 31) * scale;
-      for (var x = visible.left - spacingX + rowOffset;
-          x < visible.right;
-          x += spacingX) {
+      for (
+        var x = visible.left - spacingX + rowOffset;
+        x < visible.right;
+        x += spacingX
+      ) {
         final waveWidth = (8 + ((row + seed) & 7)) * scale;
         final pixel = math.max(1.0, 1.35 * scale);
         canvas.drawRect(
           Rect.fromLTWH(x + 2 * scale, y + 2 * scale, waveWidth, pixel),
           shade,
         );
+        canvas.drawRect(Rect.fromLTWH(x, y, waveWidth, pixel), light);
         canvas.drawRect(
-          Rect.fromLTWH(x, y, waveWidth, pixel),
-          light,
-        );
-        canvas.drawRect(
-          Rect.fromLTWH(
-            x + waveWidth * .28,
-            y - pixel,
-            waveWidth * .44,
-            pixel,
-          ),
+          Rect.fromLTWH(x + waveWidth * .28, y - pixel, waveWidth * .44, pixel),
           light,
         );
       }
@@ -413,7 +512,20 @@ class _WaterBatchPainter extends CustomPainter {
       WaterEdgeMaterial.sand => const Color(0xFFB4874A),
       _ => const Color(0xFF294A46),
     };
-    if (material != WaterEdgeMaterial.mud) {
+    if (material == WaterEdgeMaterial.mud) {
+      // The mud module is intentionally irregular and has transparent
+      // margins. Seal the projected polygon first so those margins cannot
+      // reveal a green terrain strip at the waterline.
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = materialColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = math.max(5, 7 * scale)
+          ..strokeJoin = StrokeJoin.round
+          ..isAntiAlias = false,
+      );
+    } else {
       canvas.drawPath(
         path,
         Paint()
@@ -435,15 +547,20 @@ class _WaterBatchPainter extends CustomPainter {
           ..isAntiAlias = false,
       );
     }
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = const Color(0xFFB9E1DC)
-        ..style = PaintingStyle.stroke
-        ..strokeJoin = StrokeJoin.bevel
-        ..strokeWidth = math.max(1, .6 * scale)
-        ..isAntiAlias = false,
-    );
+    // Mud must touch the water directly. This pale highlight is only valid
+    // for sand/grass/rock shores; on a river it produces a detached green
+    // strip between the bank and the water texture.
+    if (material != WaterEdgeMaterial.mud) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = const Color(0xFFB9E1DC)
+          ..style = PaintingStyle.stroke
+          ..strokeJoin = StrokeJoin.bevel
+          ..strokeWidth = math.max(1, .6 * scale)
+          ..isAntiAlias = false,
+      );
+    }
   }
 
   void _drawSprite(
@@ -460,11 +577,7 @@ class _WaterBatchPainter extends CustomPainter {
     canvas.drawImageRect(
       image,
       Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-      Rect.fromCenter(
-        center: Offset.zero,
-        width: width,
-        height: height,
-      ),
+      Rect.fromCenter(center: Offset.zero, width: width, height: height),
       Paint()..filterQuality = FilterQuality.none,
     );
     canvas.restore();

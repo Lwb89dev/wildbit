@@ -1,5 +1,16 @@
 import java.security.MessageDigest
 
+val releaseStoreFile = System.getenv("WILDBIT_RELEASE_STORE_FILE")
+val releaseStorePassword = System.getenv("WILDBIT_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("WILDBIT_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("WILDBIT_RELEASE_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -27,11 +38,26 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("wildbitRelease") {
+                storeFile = file(requireNotNull(releaseStoreFile))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Local smoke tests keep working without secrets. CI/distribution
+            // sets all WILDBIT_RELEASE_* variables and gets a real signature.
+            signingConfig = if (releaseSigningConfigured) {
+                signingConfigs.getByName("wildbitRelease")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

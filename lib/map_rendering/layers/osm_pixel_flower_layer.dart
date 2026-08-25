@@ -67,6 +67,9 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
     _windTimer = Timer.periodic(_windStep, (_) {
       // Pixel art benefits from deliberate stepped motion; eight updates per
       // second are enough and avoid forcing a permanent 60 fps map repaint.
+      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
+        return;
+      }
       _windPhase.value = (_windPhase.value + 1 / 24) % 1;
     });
   }
@@ -175,7 +178,7 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
         cluster.$1 + (random.nextDouble() - .5) * (north - south) * .28,
         cluster.$2 + (random.nextDouble() - .5) * (east - west) * .28,
       );
-      if (!MapGeometryRules.pointInPolygon(position, area.ring) ||
+      if (!MapGeometryRules.pointInArea(position, area) ||
           MapGeometryRules.insideAnyWater(position, widget.features.areas) ||
           MapGeometryRules.nearAnyLine(
             position,

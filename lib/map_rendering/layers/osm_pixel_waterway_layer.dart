@@ -9,7 +9,7 @@ import 'package:flutter_map/flutter_map.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../composition/osm_line_projector.dart';
-import '../composition/waterway_flow_resolver.dart';
+import '../composition/waterway_network_composer.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Pixel-art pass for linear OSM waterways (stream, river, canal, ditch).
@@ -41,6 +41,11 @@ class _OsmPixelWaterwayLayerState extends State<OsmPixelWaterwayLayer> {
   void initState() {
     super.initState();
     _flowTimer = Timer.periodic(_flowStep, (_) {
+      // Keep the animated texture quiet while the camera is already being
+      // repainted by a pan, pinch or rotation.
+      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
+        return;
+      }
       _flowPhase.value = (_flowPhase.value + 1 / 20) % 1;
     });
   }
@@ -115,6 +120,18 @@ class _OsmPixelWaterwayLayerState extends State<OsmPixelWaterwayLayer> {
 
   @override
   Widget build(BuildContext context) {
+    final camera = MapCamera.of(context);
+    // Network composition is topology work, not paint work.  Keeping it
+    // outside the phase-driven painter prevents every 140ms water tick from
+    // re-walking all OSM endpoints and rebuilding the same river chains.
+    final waterways = WaterwayNetworkComposer.compose(
+      widget.features.lines
+          .where((line) => line.kind == MapFeatureKind.waterway)
+          .where(
+            (line) =>
+                MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
+          ),
+    );
     return RepaintBoundary(
       child: IgnorePointer(
         child: AnimatedBuilder(
@@ -123,7 +140,7 @@ class _OsmPixelWaterwayLayerState extends State<OsmPixelWaterwayLayer> {
             size: Size.infinite,
             painter: _WaterwayPainter(
               camera: MapCamera.of(context),
-              features: widget.features,
+              waterways: waterways,
               image: _image,
               mudImage: _mudImage,
               phase: _flowPhase.value,
@@ -138,14 +155,14 @@ class _OsmPixelWaterwayLayerState extends State<OsmPixelWaterwayLayer> {
 class _WaterwayPainter extends CustomPainter {
   const _WaterwayPainter({
     required this.camera,
-    required this.features,
+    required this.waterways,
     required this.image,
     required this.mudImage,
     required this.phase,
   });
 
   final MapCamera camera;
-  final MapFeatureCollection features;
+  final List<WaterwayRenderStroke> waterways;
   final ui.Image? image;
   final ui.Image? mudImage;
   final double phase;
@@ -153,12 +170,6 @@ class _WaterwayPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final width = 12 * math.pow(2, camera.zoom - 16).clamp(.6, 1.25).toDouble();
-    final waterways = features.lines
-        .where((line) => line.kind == MapFeatureKind.waterway)
-        .where(
-          (line) =>
-              MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
-        );
     final texture = image == null
         ? null
         : ui.ImageShader(
@@ -186,10 +197,7 @@ class _WaterwayPainter extends CustomPainter {
             filterQuality: ui.FilterQuality.none,
           );
     for (final waterway in waterways) {
-      final sourcePoints = WaterwayFlowResolver.ordered(
-        waterway,
-        waterway.points,
-      );
+      final sourcePoints = waterway.points;
       final points = OsmLineProjector.projectSimplifiedPoints(
         sourcePoints,
         camera.latLngToScreenOffset,
@@ -205,7 +213,10 @@ class _WaterwayPainter extends CustomPainter {
         Paint()
           ..color = const Color(0xFF5A412E)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = width + 4
+          // The bank is a continuous geometric underlay.  The old +4px
+          // stroke left transparent pixels in the mud sprite able to reveal
+          // the meadow between the bank and the water on short/curved ways.
+          ..strokeWidth = width + 10
           ..strokeCap = StrokeCap.square
           ..strokeJoin = StrokeJoin.bevel,
       );
@@ -214,7 +225,7 @@ class _WaterwayPainter extends CustomPainter {
         Paint()
           ..color = const Color(0xFF8A6542)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = width + 2
+          ..strokeWidth = width + 6
           ..strokeCap = StrokeCap.square
           ..strokeJoin = StrokeJoin.bevel
           ..isAntiAlias = false,
@@ -222,6 +233,30 @@ class _WaterwayPainter extends CustomPainter {
       // The animated texture is a detail pass. Keep a complete water body
       // underneath it so gaps between simplified segments never expose the
       // terrain below the river.
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = const Color(0xFF3987A3)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = width
+          ..strokeCap = StrokeCap.square
+          ..strokeJoin = StrokeJoin.bevel
+          ..isAntiAlias = false,
+      );
+      // Seal the water-facing edge after the earth underlay and before the
+      // decorative bank tiles.  This is intentionally only two pixels wider
+      // than the water: it prevents alpha holes in a tile from exposing
+      // meadow without turning the whole river into a thick brown outline.
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = const Color(0xFF725238)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = width + 2
+          ..strokeCap = StrokeCap.square
+          ..strokeJoin = StrokeJoin.bevel
+          ..isAntiAlias = false,
+      );
       canvas.drawPath(
         path,
         Paint()
@@ -302,20 +337,35 @@ class _WaterwayPainter extends CustomPainter {
       if (length < 4) continue;
       final tangent = delta / length;
       final normal = Offset(-tangent.dy, tangent.dx);
-      final center = Offset.lerp(start, end, .5)!;
+      // Sample along the segment rather than once at its midpoint.  This
+      // keeps the bank visually continuous when Overpass returns long ways
+      // or very short geometry fragments at a confluence.
+      const spacing = 13.0;
       for (final side in const [-1.0, 1.0]) {
-        final waterDirection = normal * -side;
-        final tileCenter = center + normal * side * (width / 2 + 3);
-        canvas.save();
-        canvas.translate(tileCenter.dx, tileCenter.dy);
-        canvas.rotate(math.atan2(waterDirection.dy, waterDirection.dx));
-        canvas.drawImageRect(
-          image,
-          Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-          Rect.fromCenter(center: Offset.zero, width: 16, height: 16),
-          Paint()..filterQuality = ui.FilterQuality.none,
-        );
-        canvas.restore();
+        final sideOffset = normal * side * (width / 2 + 4);
+        // The source tile is authored horizontally (land on one side and
+        // water on the other).  Every tile on a bank follows the river
+        // tangent; only the opposite bank is mirrored by a half-turn.
+        final angle =
+            math.atan2(tangent.dy, tangent.dx) + (side < 0 ? math.pi : 0);
+        for (var distance = 0.0; distance <= length; distance += spacing) {
+          final tileCenter = start + tangent * distance + sideOffset;
+          canvas.save();
+          canvas.translate(tileCenter.dx, tileCenter.dy);
+          canvas.rotate(angle);
+          canvas.drawImageRect(
+            image,
+            Rect.fromLTWH(
+              0,
+              0,
+              image.width.toDouble(),
+              image.height.toDouble(),
+            ),
+            Rect.fromCenter(center: Offset.zero, width: 16, height: 16),
+            Paint()..filterQuality = ui.FilterQuality.none,
+          );
+          canvas.restore();
+        }
       }
     }
   }
@@ -325,7 +375,7 @@ class _WaterwayPainter extends CustomPainter {
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
-      oldDelegate.features != features ||
+      oldDelegate.waterways != waterways ||
       oldDelegate.image != image ||
       oldDelegate.mudImage != mudImage ||
       oldDelegate.phase != phase;

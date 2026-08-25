@@ -8,9 +8,9 @@ class MockRecordedTrackLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const CustomPaint(
-        size: Size.infinite,
-        painter: _MockRecordedTrackPainter(),
-      );
+    size: Size.infinite,
+    painter: _MockRecordedTrackPainter(),
+  );
 }
 
 class _MockRecordedTrackPainter extends CustomPainter {
@@ -41,16 +41,15 @@ class _MockRecordedTrackPainter extends CustomPainter {
         ..strokeCap = StrokeCap.square
         ..isAntiAlias = false,
     );
-    for (final point in const [Offset(92, 256), Offset(119, 167)]) {
+    // Keep a marker at the route origin. The current endpoint is Bit's own
+    // ground anchor; drawing a square there leaks out from under his feet and
+    // reads as a beige rectangle attached to the sprite.
+    for (final point in const [Offset(92, 256)]) {
       canvas.drawRect(
         Rect.fromCenter(center: point, width: 8, height: 8),
         Paint()..color = const Color(0xFFE5B34D),
       );
     }
-    canvas.drawRect(
-      const Rect.fromLTWH(117, 162, 5, 5),
-      Paint()..color = const Color(0xFF2E3625),
-    );
   }
 
   @override

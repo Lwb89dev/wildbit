@@ -12,7 +12,43 @@ abstract final class MapGeometryRules {
       area.kind == MapFeatureKind.water;
 
   static bool insideAnyWater(LatLng point, Iterable<AreaFeature> areas) =>
-      areas.where(isWaterArea).any((area) => pointInPolygon(point, area.ring));
+      areas.where(isWaterArea).any((area) => pointInArea(point, area));
+
+  static bool insideAnyAreaKind(
+    LatLng point,
+    Iterable<AreaFeature> areas,
+    MapFeatureKind kind,
+  ) => areas
+      .where((area) => area.kind == kind)
+      .any((area) => pointInArea(point, area));
+
+  static bool nearAnyAreaBoundary(
+    LatLng point,
+    Iterable<AreaFeature> areas,
+    MapFeatureKind kind, {
+    double thresholdDegrees = .00008,
+  }) => areas
+      .where((area) => area.kind == kind)
+      .any(
+        (area) =>
+            nearPolygonBoundary(
+              point,
+              area.ring,
+              thresholdDegrees: thresholdDegrees,
+            ) ||
+            area.holes.any(
+              (hole) => nearPolygonBoundary(
+                point,
+                hole,
+                thresholdDegrees: thresholdDegrees,
+              ),
+            ),
+      );
+
+  static bool pointInArea(LatLng point, AreaFeature area) {
+    if (!pointInPolygon(point, area.ring)) return false;
+    return !area.holes.any((hole) => pointInPolygon(point, hole));
+  }
 
   static bool pointInPolygon(LatLng point, List<LatLng> polygon) {
     if (polygon.length < 3) return false;
@@ -20,10 +56,11 @@ abstract final class MapGeometryRules {
     for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
       final a = polygon[i];
       final b = polygon[j];
-      final crosses = (a.latitude > point.latitude) !=
-          (b.latitude > point.latitude);
+      final crosses =
+          (a.latitude > point.latitude) != (b.latitude > point.latitude);
       if (!crosses) continue;
-      final longitude = (b.longitude - a.longitude) *
+      final longitude =
+          (b.longitude - a.longitude) *
               (point.latitude - a.latitude) /
               (b.latitude - a.latitude) +
           a.longitude;
@@ -68,7 +105,11 @@ abstract final class MapGeometryRules {
     final thresholdSquared = thresholdDegrees * thresholdDegrees;
     for (final line in lines) {
       for (var i = 0; i + 1 < line.points.length; i++) {
-        if (_distanceSquaredToSegment(point, line.points[i], line.points[i + 1]) <=
+        if (_distanceSquaredToSegment(
+              point,
+              line.points[i],
+              line.points[i + 1],
+            ) <=
             thresholdSquared) {
           return true;
         }
@@ -85,11 +126,12 @@ abstract final class MapGeometryRules {
       final py = p.latitude - a.latitude;
       return px * px + py * py;
     }
-    final t = ((((p.longitude - a.longitude) * dx) +
-                ((p.latitude - a.latitude) * dy)) /
-            (dx * dx + dy * dy))
-        .clamp(0.0, 1.0)
-        .toDouble();
+    final t =
+        ((((p.longitude - a.longitude) * dx) +
+                    ((p.latitude - a.latitude) * dy)) /
+                (dx * dx + dy * dy))
+            .clamp(0.0, 1.0)
+            .toDouble();
     final px = p.longitude - (a.longitude + t * dx);
     final py = p.latitude - (a.latitude + t * dy);
     return px * px + py * py;

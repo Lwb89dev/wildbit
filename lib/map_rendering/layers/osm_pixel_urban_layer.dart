@@ -43,14 +43,18 @@ class OsmPixelUrbanLayer extends StatelessWidget {
     if (pivot == null && slice == ProjectedDepthSlice.inFrontOfPivot) {
       return const SizedBox.expand();
     }
-    final buildings = features.areas
-        .where(
-          (area) =>
-              area.kind == MapFeatureKind.building &&
-              MapRenderingBudget.areaMayBeVisible(area, camera.visibleBounds),
-        )
-        .toList(growable: false)
-      ..sort((a, b) => _sortKey(a).compareTo(_sortKey(b)));
+    final buildings =
+        features.areas
+            .where(
+              (area) =>
+                  area.kind == MapFeatureKind.building &&
+                  MapRenderingBudget.areaMayBeVisible(
+                    area,
+                    camera.visibleBounds,
+                  ),
+            )
+            .toList(growable: false)
+          ..sort((a, b) => _sortKey(a).compareTo(_sortKey(b)));
     if (buildings.isEmpty) return const SizedBox.expand();
     final limited = buildings.length <= 240
         ? buildings
@@ -73,9 +77,8 @@ class OsmPixelUrbanLayer extends StatelessWidget {
   }
 
   static String _sortKey(AreaFeature area) =>
-      (area.sourceId ?? '') +
-      ':' +
-      StructureFootprint.centroid(area.ring).latitude.toStringAsFixed(7);
+      '${area.sourceId ?? ''}:'
+      '${StructureFootprint.centroid(area.ring).latitude.toStringAsFixed(7)}';
 }
 
 class _UrbanPainter extends CustomPainter {
@@ -109,6 +112,11 @@ class _UrbanPainter extends CustomPainter {
       final raw = [
         for (final point in ring) camera.latLngToScreenOffset(point),
       ];
+      final rawHoles = [
+        for (final hole in area.holes)
+          if (StructureFootprint.sanitize(hole) case final cleanHole?)
+            [for (final point in cleanHole) camera.latLngToScreenOffset(point)],
+      ];
       if (pivotFoot != null &&
           !ProjectedDepthOrder.belongsToSlice(
             objectFoot: camera.latLngToScreenOffset(
@@ -123,10 +131,18 @@ class _UrbanPainter extends CustomPainter {
       // independently changed its silhouette at fractional zoom values.
       final snapDelta = _snap(raw.first) - raw.first;
       final projected = [for (final point in raw) point + snapDelta];
-      final roof = _path(projected);
-      final wall = _path([
-        for (final point in projected) point.translate(0, extrusion),
-      ]);
+      final projectedHoles = [
+        for (final hole in rawHoles)
+          [for (final point in hole) point + snapDelta],
+      ];
+      final roof = _path(projected, holes: projectedHoles);
+      final wall = _path(
+        [for (final point in projected) point.translate(0, extrusion)],
+        holes: [
+          for (final hole in projectedHoles)
+            [for (final point in hole) point.translate(0, extrusion)],
+        ],
+      );
       canvas.drawPath(
         wall.shift(Offset(2 * scale, 2 * scale)),
         Paint()
@@ -150,11 +166,10 @@ class _UrbanPainter extends CustomPainter {
         Paint()
           ..color = const Color(0xFF3B302A)
           ..style = PaintingStyle.stroke
-          ..strokeWidth =
-              1 + .4 * ((camera.zoom - 11) / 5).clamp(0.0, 1.0),
+          ..strokeWidth = 1 + .4 * ((camera.zoom - 11) / 5).clamp(0.0, 1.0),
       );
       if (detail > 0) {
-        _paintRoofInset(canvas, projected, detail);
+        _paintRoofInset(canvas, projected, detail, holes: projectedHoles);
       }
     }
   }
@@ -162,20 +177,34 @@ class _UrbanPainter extends CustomPainter {
   Offset _snap(Offset point) =>
       Offset(point.dx.roundToDouble(), point.dy.roundToDouble());
 
-  ui.Path _path(List<Offset> points) {
-    final path = ui.Path()..moveTo(points.first.dx, points.first.dy);
+  ui.Path _path(List<Offset> points, {List<List<Offset>> holes = const []}) {
+    final path = ui.Path()
+      ..fillType = ui.PathFillType.evenOdd
+      ..moveTo(points.first.dx, points.first.dy);
     for (final point in points.skip(1)) {
       path.lineTo(point.dx, point.dy);
     }
-    return path..close();
+    path.close();
+    for (final hole in holes) {
+      if (hole.length < 3) continue;
+      path.moveTo(hole.first.dx, hole.first.dy);
+      for (final point in hole.skip(1)) {
+        path.lineTo(point.dx, point.dy);
+      }
+      path.close();
+    }
+    return path;
   }
 
   void _paintRoofInset(
     Canvas canvas,
     List<Offset> projected,
-    double detail,
-  ) {
+    double detail, {
+    List<List<Offset>> holes = const [],
+  }) {
     if (projected.length < 3) return;
+    canvas.save();
+    canvas.clipPath(_path(projected, holes: holes));
     var center = Offset.zero;
     for (final point in projected) {
       center += point;
@@ -198,16 +227,20 @@ class _UrbanPainter extends CustomPainter {
         ..style = PaintingStyle.fill,
     );
     final highlightStrength = ((camera.zoom - 12) / 4).clamp(0.0, 1.0);
-    if (highlightStrength <= 0) return;
+    if (highlightStrength <= 0) {
+      canvas.restore();
+      return;
+    }
     final highlight = Paint()
-      ..color = const Color(0xFF403A34).withValues(
-        alpha: .33 * highlightStrength,
-      )
+      ..color = const Color(
+        0xFF403A34,
+      ).withValues(alpha: .33 * highlightStrength)
       ..strokeWidth = 1
       ..style = PaintingStyle.stroke;
     for (var i = 0; i + 1 < projected.length; i += 2) {
       canvas.drawLine(projected[i], projected[i + 1], highlight);
     }
+    canvas.restore();
   }
 
   @override

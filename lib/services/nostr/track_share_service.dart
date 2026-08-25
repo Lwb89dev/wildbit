@@ -13,11 +13,12 @@ import 'track_share_payload.dart';
 /// Publishes a completed hike as a signed Nostr note. Exact GPS points are
 /// public once shared, so callers must always obtain explicit user consent.
 class TrackShareService {
-  TrackShareService({
+  factory TrackShareService({
     required DatabaseKeyManager keyManager,
     required AmberSignerService amber,
-  }) : _keyManager = keyManager,
-       _amber = amber;
+  }) => TrackShareService._(keyManager, amber);
+
+  TrackShareService._(this._keyManager, this._amber);
 
   static const _relays = ['wss://nos.lol', 'wss://relay.primal.net'];
   final DatabaseKeyManager _keyManager;
@@ -73,8 +74,9 @@ class TrackShareService {
     final accepted = await Future.wait(
       _relays.map((relay) => _publish(relay, event)),
     );
-    if (!accepted.any((ok) => ok))
+    if (!accepted.any((ok) => ok)) {
       throw StateError('I relay non hanno accettato il percorso.');
+    }
   }
 
   Future<bool> _publish(String relay, Map<String, dynamic> event) async {

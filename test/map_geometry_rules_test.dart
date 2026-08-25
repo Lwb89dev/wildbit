@@ -36,6 +36,31 @@ void main() {
     );
   });
 
+  test('rejects generated vegetation inside or on a building footprint', () {
+    const building = AreaFeature(
+      kind: MapFeatureKind.building,
+      ring: [
+        LatLng(46, 11),
+        LatLng(46, 11.001),
+        LatLng(46.001, 11.001),
+        LatLng(46.001, 11),
+      ],
+    );
+
+    expect(
+      MapGeometryRules.insideAnyAreaKind(const LatLng(46.0005, 11.0005), const [
+        building,
+      ], MapFeatureKind.building),
+      isTrue,
+    );
+    expect(
+      MapGeometryRules.nearAnyAreaBoundary(const LatLng(46, 11.0005), const [
+        building,
+      ], MapFeatureKind.building),
+      isTrue,
+    );
+  });
+
   test('ranks larger geographic polygons first', () {
     expect(MapGeometryRules.polygonArea(lake.ring), greaterThan(0));
   });
