@@ -68,19 +68,33 @@ abstract final class MapCellGrid {
   /// before the cell containing the user. If Overpass then rate-limited the
   /// remaining requests, only terrain south of Bit became visible.
   static List<GeoBounds> cellsCoveringNearestFirst(GeoBounds bounds) {
+    return cellsCoveringPrioritized(
+      bounds,
+      priority: LatLng(
+        (bounds.southWest.latitude + bounds.northEast.latitude) / 2,
+        (bounds.southWest.longitude + bounds.northEast.longitude) / 2,
+      ),
+    );
+  }
+
+  /// Orders intersecting cells around an explicit geographic priority.
+  ///
+  /// The viewport centre is not always the hiker: during heading-follow and
+  /// after a delayed camera move Bit can be close to an edge. Passing the GNSS
+  /// point guarantees its cell is requested before neighbouring terrain.
+  static List<GeoBounds> cellsCoveringPrioritized(
+    GeoBounds bounds, {
+    required LatLng priority,
+  }) {
     final cells = cellsCovering(bounds);
-    final centreLatitude =
-        (bounds.southWest.latitude + bounds.northEast.latitude) / 2;
-    final centreLongitude =
-        (bounds.southWest.longitude + bounds.northEast.longitude) / 2;
     cells.sort((first, second) {
       double squaredDistance(GeoBounds cell) {
         final latitude =
             (cell.southWest.latitude + cell.northEast.latitude) / 2;
         final longitude =
             (cell.southWest.longitude + cell.northEast.longitude) / 2;
-        final latitudeDelta = latitude - centreLatitude;
-        final longitudeDelta = longitude - centreLongitude;
+        final latitudeDelta = latitude - priority.latitude;
+        final longitudeDelta = longitude - priority.longitude;
         return latitudeDelta * latitudeDelta + longitudeDelta * longitudeDelta;
       }
 

@@ -27,13 +27,12 @@ class OsmPixelRouteLabelLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Text layout and collision solving are meaningful only on a stable map.
+    // Route geometry remains fully visible in the route layer during pan.
+    if (MapRenderingBudget.mapInteracting) return const SizedBox.expand();
     final camera = MapCamera.of(context);
     final cache = projectionCache ?? ProjectedLineCache();
-    cache.beginView(
-      '${identityHashCode(features)}:${camera.center.latitude.toStringAsFixed(6)}:'
-      '${camera.center.longitude.toStringAsFixed(6)}:'
-      '${camera.zoom.toStringAsFixed(3)}:${camera.rotation.toStringAsFixed(2)}',
-    );
+    cache.beginView(_viewKey(camera));
     return RepaintBoundary(
       child: IgnorePointer(
         child: CustomPaint(
@@ -46,6 +45,13 @@ class OsmPixelRouteLabelLayer extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _viewKey(MapCamera camera) {
+    final bounds = camera.visibleBounds;
+    return '${identityHashCode(features)}:${camera.center.latitude}:'
+        '${camera.center.longitude}:${camera.zoom}:${camera.rotation}:'
+        '${bounds.south}:${bounds.west}:${bounds.north}:${bounds.east}';
   }
 }
 

@@ -78,6 +78,28 @@ void main() {
       ),
       isTrue,
     );
+    expect(
+      FeatureCacheCodec.isCurrentFormat(
+        '  { "formatVersion" : ${FeatureCacheCodec.currentFormatVersion}, '
+        '"areas": [] }',
+      ),
+      isTrue,
+    );
+  });
+
+  test('persists completed optional queries even when they found nothing', () {
+    const source = MapFeatureCollection(areas: [], lines: [], pois: []);
+    final encoded = FeatureCacheCodec.encode(
+      source,
+      includesBuildings: true,
+      includesIndividualTrees: true,
+    );
+
+    final entry = FeatureCacheCodec.decodeEntry(encoded);
+
+    expect(entry.features.areas, isEmpty);
+    expect(entry.includesBuildings, isTrue);
+    expect(entry.includesIndividualTrees, isTrue);
   });
 
   test('persists safety-relevant POI metadata', () {

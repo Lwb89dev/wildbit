@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'mock_environment_sprite_layer.dart';
@@ -16,62 +18,97 @@ import 'mock_recorded_track_layer.dart';
 /// This is deliberately a scene renderer, not a map widget: its only job is
 /// to make layering, anchors and occlusion visible and testable in isolation.
 class MockValleyScene extends StatelessWidget {
-  const MockValleyScene({super.key, this.showDebug = false, this.showLake = false});
+  const MockValleyScene({
+    super.key,
+    this.showDebug = false,
+    this.showLake = false,
+  });
 
   final bool showDebug;
   final bool showLake;
 
   @override
   Widget build(BuildContext context) {
-    return FittedBox(
-      fit: BoxFit.contain,
-      child: SizedBox(
-        width: MockValleyPainter.logicalSize,
-        height: MockValleyPainter.logicalSize,
-        child: Stack(
-          children: [
-            const MockTerrainTextureLayer(),
-            if (showLake) const MockLakeTextureLayer(),
-            const MockRiverbankTextureLayer(),
-            const MockLowRockSpriteLayer(),
-            CustomPaint(
-              size: const Size(
-                MockValleyPainter.logicalSize,
-                MockValleyPainter.logicalSize,
-              ),
-              painter: const MockValleyPainter(
-                paintTerrainBase: false,
-                paintMapDetails: true,
-                paintRiverBanks: false,
-                paintStructuralRocks: false,
-                paintTrailAndBridge: false,
-                paintSilhouetteVegetation: false,
-                paintPoiAndDynamic: false,
+    // Fractional FittedBox scales (for example 2.5× inside a 640 px preview)
+    // put sprite edges between physical pixels and make a clean silhouette
+    // look clipped. Keep the native 256 px grid and use only integer scales;
+    // the unused space is intentionally centred around the scene.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MockValleyPainter.logicalSize;
+        final height = constraints.maxHeight.isFinite
+            ? constraints.maxHeight
+            : MockValleyPainter.logicalSize;
+        final scale = math.max(
+          1.0,
+          math
+              .min(
+                width / MockValleyPainter.logicalSize,
+                height / MockValleyPainter.logicalSize,
+              )
+              .floorToDouble(),
+        );
+        final sceneSize = MockValleyPainter.logicalSize * scale;
+        return Center(
+          child: SizedBox(
+            width: sceneSize,
+            height: sceneSize,
+            child: Transform.scale(
+              scale: scale,
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: MockValleyPainter.logicalSize,
+                height: MockValleyPainter.logicalSize,
+                child: Stack(
+                  children: [
+                    const MockTerrainTextureLayer(),
+                    if (showLake) const MockLakeTextureLayer(),
+                    const MockRiverbankTextureLayer(),
+                    const MockLowRockSpriteLayer(),
+                    CustomPaint(
+                      size: const Size(
+                        MockValleyPainter.logicalSize,
+                        MockValleyPainter.logicalSize,
+                      ),
+                      painter: const MockValleyPainter(
+                        paintTerrainBase: false,
+                        paintMapDetails: true,
+                        paintRiverBanks: false,
+                        paintStructuralRocks: false,
+                        paintTrailAndBridge: false,
+                        paintSilhouetteVegetation: false,
+                        paintPoiAndDynamic: false,
+                      ),
+                    ),
+                    const MockTrailTextureLayer(),
+                    const MockRecordedTrackLayer(),
+                    const MockEnvironmentSpriteLayer(),
+                    const MockStructureSpriteLayer(),
+                    const MockBitSpriteLayer(),
+                    CustomPaint(
+                      size: const Size(
+                        MockValleyPainter.logicalSize,
+                        MockValleyPainter.logicalSize,
+                      ),
+                      painter: MockValleyPainter(
+                        showDebug: showDebug,
+                        paintTerrainBase: false,
+                        paintMapDetails: false,
+                        paintTrailAndBridge: false,
+                        paintSilhouetteVegetation: false,
+                        paintPoiAndDynamic: false,
+                        paintStaticPoi: false,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-            const MockTrailTextureLayer(),
-            const MockRecordedTrackLayer(),
-            const MockEnvironmentSpriteLayer(),
-            const MockStructureSpriteLayer(),
-            const MockBitSpriteLayer(),
-            CustomPaint(
-              size: const Size(
-                MockValleyPainter.logicalSize,
-                MockValleyPainter.logicalSize,
-              ),
-              painter: MockValleyPainter(
-                showDebug: showDebug,
-                paintTerrainBase: false,
-                paintMapDetails: false,
-                paintTrailAndBridge: false,
-                paintSilhouetteVegetation: false,
-                paintPoiAndDynamic: false,
-                paintStaticPoi: false,
-              ),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }

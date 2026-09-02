@@ -29,6 +29,12 @@ class TrackRecorderController extends ChangeNotifier {
   );
 
   static const _distance = Distance();
+  // Hiking tracks must not gain kilometres because a cold or reflected GNSS
+  // fix briefly lands on another valley. These are deliberately conservative:
+  // 75 m still accepts usable forest coverage, while 12 m/s leaves ample room
+  // for a fast runner but rejects impossible jumps in a walking recorder.
+  static const _maximumAccuracyMeters = 75.0;
+  static const _maximumPlausibleSpeedMetersPerSecond = 12.0;
 
   final LocationService _locationService;
   final TrackRepository _repository;
@@ -128,6 +134,7 @@ class TrackRecorderController extends ChangeNotifier {
   }
 
   void _onFix(GeoFix fix) {
+    if (!_acceptsFix(fix)) return;
     if (points.isNotEmpty) {
       distanceMeters += _distance.as(
         LengthUnit.Meter,
@@ -142,6 +149,27 @@ class TrackRecorderController extends ChangeNotifier {
     }
     points.add(fix);
     notifyListeners();
+  }
+
+  bool _acceptsFix(GeoFix fix) {
+    final accuracy = fix.accuracyMeters;
+    if (accuracy != null &&
+        (!accuracy.isFinite || accuracy > _maximumAccuracyMeters)) {
+      return false;
+    }
+    if (points.isEmpty) return true;
+
+    final previous = points.last;
+    final elapsedSeconds =
+        fix.timestamp.difference(previous.timestamp).inMilliseconds / 1000;
+    if (!elapsedSeconds.isFinite || elapsedSeconds <= 0) return false;
+    final segmentMeters = _distance.as(
+      LengthUnit.Meter,
+      previous.position,
+      fix.position,
+    );
+    return segmentMeters / elapsedSeconds <=
+        _maximumPlausibleSpeedMetersPerSecond;
   }
 
   @override

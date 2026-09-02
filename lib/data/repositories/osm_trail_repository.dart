@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -11,6 +13,7 @@ import '../../domain/entities/route_metadata.dart';
 import '../../domain/routing/route_eligibility_gate.dart';
 import '../osm/trail_cache_codec.dart';
 import '../osm/overpass_endpoints.dart';
+import '../osm/trail_query_builder.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Searches named walking paths in OpenStreetMap through public Overpass
@@ -31,6 +34,8 @@ class OsmTrailRepository {
   static const _staleGrace = Duration(hours: 24);
   static const _persistentCacheKey = 'wildbit.explore.cache.v1';
   static const _maxPersistentEntries = 24;
+  static const _endpointConnectTimeout = Duration(seconds: 6);
+  static const _endpointResponseTimeout = Duration(seconds: 8);
 
   final http.Client _httpClient;
   final _endpoints = OverpassEndpoints.instance;
@@ -52,25 +57,17 @@ class OsmTrailRepository {
     final normalizedQuery = query.trim();
     final cacheKey = _cacheKey(position, radiusKm, normalizedQuery);
     final cached = _cache[cacheKey];
-    if (!forceRefresh && cached != null &&
+    if (!forceRefresh &&
+        cached != null &&
         DateTime.now().difference(cached.fetchedAt) <= _cacheTtl) {
       lastResultWasStale = true;
       return cached.trails;
     }
-    final queryFilter = normalizedQuery.isEmpty
-        ? ''
-        : '["name"~"${_escapeRegex(normalizedQuery)}",i]';
-    final radiusMeters = (radiusKm * 1000).round();
-    final overpassQuery =
-        '''
-[out:json][timeout:20];
-way["highway"~"^(path|footway|track|steps|bridleway|via_ferrata)\$"]$queryFilter
-  (around:$radiusMeters,${position.latitude},${position.longitude});
-out tags center 150;
-relation["route"~"^(hiking|foot)\$"]["network"~"^.wn\$"]$queryFilter
-  (around:$radiusMeters,${position.latitude},${position.longitude});
-out tags center 60;
-''';
+    final overpassQuery = TrailQueryBuilder.nearby(
+      position: position,
+      radiusKm: radiusKm,
+      query: normalizedQuery,
+    );
 
     Object? lastError;
     for (final endpoint in OverpassEndpoints.all) {
@@ -84,25 +81,34 @@ out tags center 60;
           ..bodyFields = {'data': overpassQuery};
         final streamed = await _httpClient
             .send(request)
-            .timeout(const Duration(seconds: 12));
+            .timeout(_endpointConnectTimeout);
         if (streamed.statusCode != 200) {
-          throw Exception('Overpass returned ${streamed.statusCode}');
+          throw OverpassHttpFailure(streamed.statusCode);
         }
 
-        final bytes = <int>[];
+        final bytes = BytesBuilder(copy: false);
+        var byteLength = 0;
         await for (final chunk in streamed.stream.timeout(
-          const Duration(seconds: 15),
+          _endpointResponseTimeout,
         )) {
-          bytes.addAll(chunk);
-          if (bytes.length > _maxResponseBytes) {
+          bytes.add(chunk);
+          byteLength += chunk.length;
+          if (byteLength > _maxResponseBytes) {
             throw Exception(
               'Overpass response exceeded the maximum accepted size',
             );
           }
         }
-        final trails = _parse(
-          jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>,
-          position,
+        // JSON decoding, eligibility classification and distance sorting can
+        // be expensive at a 100 km radius. Keep the entire composition off
+        // Flutter's UI isolate, just like the main map parser.
+        final trails = await compute(
+          _parseTrailPayload,
+          _TrailParseInput(
+            bytes.takeBytes(),
+            latitude: position.latitude,
+            longitude: position.longitude,
+          ),
         );
         _cache[cacheKey] = _TrailCacheEntry(
           fetchedAt: DateTime.now(),
@@ -114,7 +120,7 @@ out tags center 60;
         lastError = error;
         _endpoints.markFailed(
           endpoint,
-          serverOverloaded: error.toString().contains('502'),
+          serverOverloaded: OverpassEndpoints.isOverloadedFailure(error),
         );
       }
     }
@@ -154,7 +160,9 @@ out tags center 60;
       for (final entry in entries.entries) {
         final value = entry.value;
         if (value is! Map) continue;
-        final fetchedAt = DateTime.tryParse(value['fetchedAt'] as String? ?? '');
+        final fetchedAt = DateTime.tryParse(
+          value['fetchedAt'] as String? ?? '',
+        );
         final payload = value['payload'] as String?;
         if (fetchedAt == null || payload == null) continue;
         final trails = TrailCacheCodec.decode(payload);
@@ -189,7 +197,7 @@ out tags center 60;
     }
   }
 
-  List<HikingTrail> _parse(Map<String, dynamic> json, LatLng origin) {
+  static List<HikingTrail> _parse(Map<String, dynamic> json, LatLng origin) {
     final trails = <HikingTrail>[];
     final seen = <String>{};
     for (final rawElement in json['elements'] as List? ?? const []) {
@@ -221,7 +229,7 @@ out tags center 60;
               name: tags['name'],
               network: tags['network'],
             ),
-            lengthKm: double.tryParse(tags['distance'] ?? ''),
+            lengthKm: _lengthKm(tags['distance']),
           ),
         );
         continue;
@@ -242,6 +250,7 @@ out tags center 60;
           metadata: metadata,
           // Search returns a centre point, never a complete reviewed route.
           eligibility: RouteEligibilityGate.evaluate(metadata),
+          lengthKm: _lengthKm(tags['distance']),
         ),
       );
     }
@@ -256,7 +265,7 @@ out tags center 60;
     return trails;
   }
 
-  double _rank(HikingTrail trail, double distanceMeters) {
+  static double _rank(HikingTrail trail, double distanceMeters) {
     // A curated route relation (a maintained, numbered/named long-distance
     // trail) is what users actually mean by "recommended" — it should always
     // surface above generic way segments, regardless of radius, hence the
@@ -266,28 +275,46 @@ out tags center 60;
     }
     final isNamed = trail.name != 'Sentiero escursionistico';
     final hasRouteRelation = trail.metadata.hikingRoutes.isNotEmpty;
-    final isRestricted = trail.eligibility.status == RouteProposalStatus.doNotOffer;
+    final isRestricted =
+        trail.eligibility.status == RouteProposalStatus.doNotOffer;
     return distanceMeters +
         (isNamed ? 0 : 4000) +
         (hasRouteRelation ? 0 : 1000) +
         (isRestricted ? 10000 : 0);
   }
 
-  // `String.replaceAll` takes the replacement literally — it has no
-  // `$1`-backreference support (that's a JS/PCRE `.replace` idiom, not a
-  // Dart one). `replaceAllMapped` is what actually re-inserts the matched
-  // character with a backslash in front of it.
-  //
-  // `"` is included even though it isn't a regex metacharacter: this value
-  // is embedded inside an Overpass QL string literal (`["name"~"..."]`), and
-  // an unescaped `"` in user input would close that literal early, letting
-  // arbitrary Overpass QL be appended to the query (e.g. via the Explore
-  // search box) — an injection into shared public infrastructure, not just
-  // a regex-matching bug.
-  String _escapeRegex(String value) => value.replaceAllMapped(
-    RegExp(r'([\\^$.*+?()[\]{}|"])'),
-    (match) => '\\${match[0]}',
-  );
+  static double? _lengthKm(String? raw) {
+    if (raw == null) return null;
+    final match = RegExp(
+      r'^\s*(\d+(?:[\.,]\d+)?)\s*(km|kilomet(?:er|re|ri)|m|met(?:er|re|ri))?\s*$',
+      caseSensitive: false,
+    ).firstMatch(raw);
+    if (match == null) return null;
+    final value = double.tryParse(match.group(1)!.replaceAll(',', '.'));
+    if (value == null || value < 0) return null;
+    final unit = match.group(2)?.toLowerCase();
+    return unit == 'm' || unit?.startsWith('met') == true
+        ? value / 1000
+        : value;
+  }
+}
+
+List<HikingTrail> _parseTrailPayload(_TrailParseInput input) =>
+    OsmTrailRepository._parse(
+      jsonDecode(utf8.decode(input.bytes)) as Map<String, dynamic>,
+      LatLng(input.latitude, input.longitude),
+    );
+
+class _TrailParseInput {
+  const _TrailParseInput(
+    this.bytes, {
+    required this.latitude,
+    required this.longitude,
+  });
+
+  final Uint8List bytes;
+  final double latitude;
+  final double longitude;
 }
 
 class _TrailCacheEntry {

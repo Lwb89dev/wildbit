@@ -52,6 +52,44 @@ void main() {
     expect(cache.hitRate, .5);
   });
 
+  test('invalidates projection when the exact camera view changes', () {
+    final cache = ProjectedLineCache();
+    cache.beginView('camera:45.0000001:9.0000001:15.5:0');
+    final first = cache.project(
+      trail,
+      (point) => Offset(point.longitude * 10, point.latitude * -10),
+      minimumDistancePixels: 2,
+      maximumPoints: 64,
+    );
+    cache.beginView('camera:45.0000002:9.0000001:15.5:0');
+    final second = cache.project(
+      trail,
+      (point) => Offset(point.longitude * 10 + 1, point.latitude * -10),
+      minimumDistancePixels: 2,
+      maximumPoints: 64,
+    );
+
+    expect(identical(first, second), isFalse);
+    expect(second.first.dx, first.first.dx + 1);
+  });
+
+  test('releases only transient projections on memory pressure', () {
+    final cache = ProjectedLineCache();
+    cache.beginView('camera-a');
+    cache.project(
+      trail,
+      (point) => Offset(point.longitude * 10, point.latitude * -10),
+      minimumDistancePixels: 2,
+      maximumPoints: 64,
+    );
+
+    cache.clearTransient();
+
+    expect(cache.length, 0);
+    // Statistics are diagnostic history, not geometry retained by the cache.
+    expect(cache.misses, 1);
+  });
+
   test('caps pathological geometry while preserving endpoints', () {
     final points = [
       for (var index = 0; index < 100; index++) Offset(index.toDouble(), 0),
@@ -60,6 +98,24 @@ void main() {
     expect(capped, hasLength(10));
     expect(capped.first, points.first);
     expect(capped.last, points.last);
+  });
+
+  test('keeps sharp switchbacks when capping a dense painted line', () {
+    final points = [
+      for (var index = 0; index < 30; index++) Offset(index.toDouble(), 0),
+      const Offset(30, 0),
+      const Offset(30, 12),
+      const Offset(42, 12),
+      for (var index = 43; index < 100; index++) Offset(index.toDouble(), 12),
+    ];
+
+    final capped = OsmLineProjector.capPoints(points, maximumPoints: 8);
+
+    expect(capped, contains(const Offset(30, 0)));
+    expect(capped, contains(const Offset(30, 12)));
+    expect(capped.first, points.first);
+    expect(capped.last, points.last);
+    expect(capped.length, lessThanOrEqualTo(8));
   });
 
   test('culls projected lines outside the viewport', () {

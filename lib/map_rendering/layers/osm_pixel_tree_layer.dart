@@ -11,6 +11,7 @@ import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/enums/poi_type.dart';
+import '../assets/map_visual_asset_warmup.dart';
 import '../composition/map_geometry_rules.dart';
 import '../composition/osm_line_projector.dart';
 import '../composition/projected_depth_order.dart';
@@ -46,20 +47,34 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   // Candidates are richer than the paint budget. This prevents a large OSM
   // forest loaded first from starving smaller polygons while keeping the
   // number of sprites actually drawn bounded by the LOD budget below.
-  static const _treeCandidateLimit = 600;
-  static const _treePaintLimit = 360;
+  static const _treeCandidateLimit = 520;
+  static const _treePaintLimit = 300;
+  // Explicit-tree POIs are decorative too. Keep a generous close-up budget,
+  // but prevent a dense city/forest import from turning every camera tick
+  // into thousands of image draws.
+  static const _mappedTreePaintLimit = 420;
+  // Individual OSM tree nodes can be extremely dense in a surveyed park.
+  // They are visual context, not navigational evidence, so retain a stable
+  // representative candidate set before the per-camera LOD budget is chosen.
+  // This bounds both memory and projection work without affecting trails,
+  // water, bridges or safety POIs.
+  static const _mappedTreeCandidateLimit = 1200;
   static const _treeAssets = [
     'assets/map/mock/objects/tree_deciduous_s.png',
     'assets/map/mock/objects/tree_conifer.png',
     'assets/map/mock/objects/tree_deciduous_l.png',
   ];
   static const _rockAsset = 'assets/map/mock/structures/boulder.png';
+  static Future<_TreeSpriteBundle>? _sharedSpriteBundle;
 
   List<ui.Image> _treeImages = const [];
   ui.Image? _rockImage;
+  ui.Image? _spriteAtlas;
   List<_TreePaintItem> _mappedTrees = const [];
   List<_GeneratedTree> _generatedTrees = const [];
   List<_GeneratedRock> _generatedRocks = const [];
+  List<_ForegroundPaintItem>? _projectedItems;
+  int? _projectedViewKey;
   late int _featureSignature;
   Future<void>? _loading;
 
@@ -76,12 +91,24 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
     final signature = _signature(widget.features);
     if (signature == _featureSignature) return;
     _featureSignature = signature;
+    _projectedItems = null;
+    _projectedViewKey = null;
     _rebuildCandidates();
+    _ensureImages();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _ensureImages();
+  }
+
+  void _ensureImages() {
+    if (_mappedTrees.isEmpty &&
+        _generatedTrees.isEmpty &&
+        _generatedRocks.isEmpty) {
+      return;
+    }
     if (_treeImages.isEmpty || _rockImage == null) {
       _loading ??= _loadImages();
     }
@@ -89,41 +116,90 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
 
   Future<void> _loadImages() async {
     try {
-      final images = await Future.wait([
-        ..._treeAssets.map(_resolveImage),
-        _resolveImage(_rockAsset),
-      ]);
+      final bundle = _sharedSpriteBundle ??= _buildSharedSpriteBundle();
+      final sprites = await bundle;
       if (mounted) {
         setState(() {
-          _treeImages = images.take(_treeAssets.length).toList(growable: false);
-          _rockImage = images.last;
+          _treeImages = sprites.trees;
+          _rockImage = sprites.rock;
+          _spriteAtlas = sprites.atlas;
         });
       }
     } catch (_) {
+      // A failed future must not poison a later mount after transient asset
+      // pressure; the next state can attempt the small shared atlas again.
+      _sharedSpriteBundle = null;
       // Optional artwork must not make the map unavailable.
     } finally {
       _loading = null;
     }
   }
 
-  Future<ui.Image> _resolveImage(String asset) {
-    final completer = Completer<ui.Image>();
-    final stream = AssetImage(
-      asset,
-    ).resolve(createLocalImageConfiguration(context));
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (image, _) {
-        stream.removeListener(listener);
-        completer.complete(image.image);
-      },
-      onError: (error, stackTrace) {
-        stream.removeListener(listener);
-        completer.completeError(error, stackTrace);
-      },
+  Future<_TreeSpriteBundle> _buildSharedSpriteBundle() async {
+    final images = await Future.wait([
+      ..._treeAssets.map(_resolveImage),
+      _resolveImage(_rockAsset),
+    ]);
+    final trees = List<ui.Image>.unmodifiable(images.take(_treeAssets.length));
+    final rock = images.last;
+    // All foreground objects share one small atlas. A dense forest used to
+    // issue a separate drawImageRect command for each tree; batching the
+    // identical 32-bit sprites into drawAtlas keeps their geographic depth
+    // order but considerably lowers raster-thread command overhead.
+    final atlas = await _composeSpriteAtlas(trees, rock);
+    return _TreeSpriteBundle(trees: trees, rock: rock, atlas: atlas);
+  }
+
+  Future<ui.Image> _resolveImage(String asset) =>
+      MapVisualAssetWarmup.resolveImage(context, asset);
+
+  Future<ui.Image> _composeSpriteAtlas(
+    List<ui.Image> trees,
+    ui.Image rock,
+  ) async {
+    // Three 32x48 tree frames plus a 24x22 pre-scaled boulder.  The boulder
+    // is resampled once here so every atlas entry can use one uniform
+    // RSTransform scale without altering its established silhouette.
+    const atlasSize = Size(144, 48);
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final paint = Paint()..filterQuality = FilterQuality.none;
+    for (var index = 0; index < trees.length; index++) {
+      final image = trees[index];
+      canvas.drawImageRect(
+        image,
+        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+        Rect.fromLTWH(index * 32.0, 0, 32, 48),
+        paint,
+      );
+    }
+    canvas.drawImageRect(
+      rock,
+      Rect.fromLTWH(0, 0, rock.width.toDouble(), rock.height.toDouble()),
+      const Rect.fromLTWH(96, 0, 24, 22),
+      paint,
     );
-    stream.addListener(listener);
-    return completer.future;
+    // Preserve the previous deterministic left/right variation without an
+    // extra draw call for every odd rock at paint time.
+    canvas.save();
+    canvas.translate(144, 0);
+    canvas.scale(-1, 1);
+    canvas.drawImageRect(
+      rock,
+      Rect.fromLTWH(0, 0, rock.width.toDouble(), rock.height.toDouble()),
+      const Rect.fromLTWH(0, 0, 24, 22),
+      paint,
+    );
+    canvas.restore();
+    final picture = recorder.endRecording();
+    try {
+      return await picture.toImage(
+        atlasSize.width.toInt(),
+        atlasSize.height.toInt(),
+      );
+    } finally {
+      picture.dispose();
+    }
   }
 
   @override
@@ -142,30 +218,52 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   }
 
   Widget _buildScene(MapCamera camera, LatLng? pivot, {Widget? middleChild}) {
+    // Project and depth-sort once per camera update. The three occlusion
+    // slices below reuse this immutable list, avoiding duplicate geographic
+    // projections and full sorts during every frame.
+    final projectedItems = _projectItemsForCamera(camera);
+    final pivotBoundary = pivot == null
+        ? null
+        : ProjectedDepthOrder.firstInFrontIndex(
+            projectedItems,
+            camera.latLngToScreenOffset(pivot),
+            (item) => item.foot,
+          );
     return LayoutBuilder(
       builder: (context, constraints) => SizedBox(
         width: constraints.maxWidth,
         height: constraints.maxHeight,
         child: middleChild == null
-            ? _paintSlice(camera, null, ProjectedDepthSlice.all)
+            ? _paintSlice(camera, projectedItems, null, ProjectedDepthSlice.all)
             : pivot == null
             // Bit must be mounted before it can publish its first interpolated
             // ground anchor. Until then, keep all objects behind him.
             ? Stack(
                 fit: StackFit.expand,
                 children: [
-                  _paintSlice(camera, null, ProjectedDepthSlice.all),
+                  _paintSlice(
+                    camera,
+                    projectedItems,
+                    null,
+                    ProjectedDepthSlice.all,
+                  ),
                   middleChild,
                 ],
               )
             : Stack(
                 fit: StackFit.expand,
                 children: [
-                  _paintSlice(camera, pivot, ProjectedDepthSlice.behindPivot),
+                  _paintSlice(
+                    camera,
+                    projectedItems,
+                    pivotBoundary,
+                    ProjectedDepthSlice.behindPivot,
+                  ),
                   middleChild,
                   _paintSlice(
                     camera,
-                    pivot,
+                    projectedItems,
+                    pivotBoundary,
                     ProjectedDepthSlice.inFrontOfPivot,
                   ),
                 ],
@@ -176,32 +274,148 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
 
   Widget _paintSlice(
     MapCamera camera,
-    LatLng? pivot,
+    List<_ForegroundPaintItem> items,
+    int? pivotBoundary,
     ProjectedDepthSlice slice,
   ) => RepaintBoundary(
     child: IgnorePointer(
       child: CustomPaint(
         painter: _ForegroundObjectPainter(
           camera: camera,
-          mappedTrees: _mappedTrees,
-          generatedTrees: _generatedTrees,
-          generatedRocks: _generatedRocks,
+          items: items,
           treeImages: _treeImages,
           rockImage: _rockImage,
-          pivot: pivot,
+          spriteAtlas: _spriteAtlas,
+          pivotBoundary: pivotBoundary,
           slice: slice,
         ),
       ),
     ),
   );
 
+  List<_ForegroundPaintItem> _projectItems(MapCamera camera) {
+    // Do not pre-filter by geographic point. A sprite anchored just outside
+    // the viewport can still overlap it; target-rect clipping in the painter
+    // keeps that edge behaviour stable during zoom.
+    final generatedTreeSubset = _decorativePrefix(
+      _generatedTrees,
+      MapRenderingBudget.decorativeLodCount(
+        camera.zoom,
+        overview: 96,
+        close: math.min(
+          _generatedTrees.length,
+          _OsmPixelTreeLayerState._treePaintLimit,
+        ),
+      ),
+    );
+    final generatedRockSubset = _decorativePrefix(
+      _generatedRocks,
+      // Rocks use the same quantised bands as trees.  A smooth count here
+      // used to remove/add one rock for every fractional zoom tick, which
+      // looked like flicker on phone pinch gestures.
+      MapRenderingBudget.decorativeLodCount(
+        camera.zoom,
+        overview: 24,
+        close: _generatedRocks.length,
+      ),
+    );
+    // Individual OSM tree nodes remain eligible at every zoom.  Previously
+    // they were all dropped below 15.5, creating a conspicuous pop when a
+    // user zoomed out of a mapped grove.  The same deterministic LOD budget
+    // used for generated forests keeps overview views cheap while preserving
+    // a stable representative canopy.
+    final mappedTreeSubset = _decorativePrefix(
+      _mappedTrees,
+      MapRenderingBudget.decorativeLodCount(
+        camera.zoom,
+        overview: 32,
+        close: math.min(
+          _mappedTrees.length,
+          _OsmPixelTreeLayerState._mappedTreePaintLimit,
+        ),
+      ),
+    );
+    final items = <_ForegroundPaintItem>[
+      for (final tree in mappedTreeSubset)
+        _ForegroundPaintItem.tree(
+          tree.position,
+          tree.seed,
+          tree.scaleMultiplier,
+          camera.latLngToScreenOffset(tree.position),
+        ),
+      for (final tree in generatedTreeSubset)
+        _ForegroundPaintItem.tree(
+          tree.position,
+          tree.seed,
+          tree.scaleMultiplier,
+          camera.latLngToScreenOffset(tree.position),
+        ),
+      for (final rock in generatedRockSubset)
+        _ForegroundPaintItem.rock(
+          rock.position,
+          rock.seed,
+          camera.latLngToScreenOffset(rock.position),
+        ),
+    ];
+    items.sort((a, b) {
+      final depth = ProjectedDepthOrder.compare(
+        firstFoot: a.foot,
+        secondFoot: b.foot,
+      );
+      if (depth != 0) return depth;
+      final kind = a.kind.index.compareTo(b.kind.index);
+      return kind != 0 ? kind : a.seed.compareTo(b.seed);
+    });
+    return items;
+  }
+
+  List<T> _decorativePrefix<T>(List<T> ranked, int count) {
+    if (count <= 0 || ranked.isEmpty) return const [];
+    if (count >= ranked.length) return ranked;
+    return ranked.sublist(0, count);
+  }
+
+  List<_ForegroundPaintItem> _projectItemsForCamera(MapCamera camera) {
+    final bounds = camera.visibleBounds;
+    final viewKey = Object.hash(
+      camera.center.latitude,
+      camera.center.longitude,
+      camera.zoom,
+      camera.rotation,
+      bounds.south,
+      bounds.west,
+      bounds.north,
+      bounds.east,
+      _featureSignature,
+      MapRenderingBudget.decorativeQuality,
+    );
+    if (_projectedItems != null && _projectedViewKey == viewKey) {
+      return _projectedItems!;
+    }
+    final projected = _projectItems(camera);
+    _projectedViewKey = viewKey;
+    _projectedItems = List.unmodifiable(projected);
+    return _projectedItems!;
+  }
+
   void _rebuildCandidates() {
     final features = widget.features;
-    _mappedTrees = [
+    final poiObstacles = [
+      for (final poi in features.pois)
+        if (poi.type != PoiType.tree) poi.position,
+    ];
+    final poiObstacleIndex = MapPointAnchorIndex(poiObstacles);
+    final mappedTrees = [
       for (final tree in features.pois.where((poi) => poi.type == PoiType.tree))
-        if (!_blockedByStructure(tree.position, features))
+        if (!_blockedByStructure(tree.position, features) &&
+            !poiObstacleIndex.containsNear(tree.position))
           _TreePaintItem(tree.position, _seedForId(tree.id), 1.0),
     ];
+    _mappedTrees = _rankedBy(
+      mappedTrees,
+      rank: (tree) => tree.seed,
+      maximum: _mappedTreeCandidateLimit,
+    );
     final generated = <_GeneratedTree>[];
     final forestAreas = features.areas
         .where(
@@ -212,7 +426,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         .toList(growable: false);
     final perArea = forestAreas.isEmpty
         ? 0
-        : math.max(24, (_treeCandidateLimit / forestAreas.length).ceil());
+        : math.max(8, (_treeCandidateLimit / forestAreas.length).ceil());
     for (var areaIndex = 0; areaIndex < forestAreas.length; areaIndex++) {
       final area = forestAreas[areaIndex];
       if (generated.length >= _treeCandidateLimit || area.ring.length < 3) {
@@ -228,11 +442,13 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         west = math.min(west, point.longitude);
         east = math.max(east, point.longitude);
       }
+      final localAreas = MapGeometryRules.areasNearArea(area, features.areas);
+      final localLines = MapGeometryRules.linesNearArea(area, features.lines);
       final random = math.Random(_areaSeed(area));
       var areaCount = 0;
       for (
         var attempt = 0;
-        attempt < perArea * 12 &&
+        attempt < perArea * 8 &&
             generated.length < _treeCandidateLimit &&
             areaCount < perArea;
         attempt++
@@ -242,13 +458,14 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
           west + random.nextDouble() * (east - west),
         );
         if (!MapGeometryRules.pointInArea(point, area) ||
-            MapGeometryRules.insideAnyWater(point, features.areas) ||
-            _blockedByStructure(point, features) ||
+            MapGeometryRules.insideAnyWater(point, localAreas) ||
+            _blockedByStructureInAreas(point, localAreas) ||
             MapGeometryRules.nearAnyLine(
               point,
-              features.lines,
+              localLines,
               thresholdDegrees: .0003,
-            )) {
+            ) ||
+            poiObstacleIndex.containsNear(point)) {
           continue;
         }
         final edgeScale = MapGeometryRules.nearPolygonBoundary(point, area.ring)
@@ -260,23 +477,54 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         areaCount++;
       }
     }
-    _generatedTrees = generated;
+    _generatedTrees = _rankedBy(generated, rank: (tree) => tree.seed);
 
     final rocks = <_GeneratedRock>[];
     var rockAreaIndex = 0;
     for (final area in features.areas.where(
       (area) => area.kind == MapFeatureKind.mountainRock,
     )) {
-      if (rocks.length >= 120) break;
-      rocks.addAll(_sampleRocks(area, 120 - rocks.length, rockAreaIndex++));
+      if (rocks.length >= 80) break;
+      rocks.addAll(
+        _sampleRocks(
+          area,
+          80 - rocks.length,
+          rockAreaIndex++,
+          poiObstacleIndex,
+        ),
+      );
     }
-    _generatedRocks = rocks;
+    _generatedRocks = _rankedBy(rocks, rank: (rock) => rock.seed);
+  }
+
+  List<T> _rankedBy<T>(
+    List<T> source, {
+    required int Function(T item) rank,
+    int? maximum,
+  }) {
+    final ranked =
+        [
+          for (final entry in source.indexed)
+            (index: entry.$1, item: entry.$2, rank: rank(entry.$2)),
+        ]..sort((first, second) {
+          final rankOrder = first.rank.compareTo(second.rank);
+          return rankOrder != 0
+              ? rankOrder
+              : first.index.compareTo(second.index);
+        });
+    final limit = maximum == null
+        ? ranked.length
+        : math.min(maximum, ranked.length);
+    return List.unmodifiable([
+      for (final entry in ranked.take(limit)) entry.item,
+    ]);
   }
 
   List<_GeneratedRock> _sampleRocks(
     AreaFeature area,
     int remaining,
     int areaIndex,
+    MapPointAnchorIndex poiObstacleIndex,
   ) {
     if (area.ring.length < 3 || remaining <= 0) return const [];
     var south = area.ring.first.latitude;
@@ -290,6 +538,14 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
       east = math.max(east, point.longitude);
     }
     final random = math.Random(_areaSeed(area) ^ (areaIndex * 15485863));
+    final localAreas = MapGeometryRules.areasNearArea(
+      area,
+      widget.features.areas,
+    );
+    final localLines = MapGeometryRules.linesNearArea(
+      area,
+      widget.features.lines,
+    );
     final result = <_GeneratedRock>[];
     for (
       var attempt = 0;
@@ -301,13 +557,14 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         west + random.nextDouble() * (east - west),
       );
       if (!MapGeometryRules.pointInArea(point, area) ||
-          MapGeometryRules.insideAnyWater(point, widget.features.areas) ||
-          _blockedByStructure(point, widget.features) ||
+          MapGeometryRules.insideAnyWater(point, localAreas) ||
+          _blockedByStructureInAreas(point, localAreas) ||
           MapGeometryRules.nearAnyLine(
             point,
-            widget.features.lines,
+            localLines,
             thresholdDegrees: .00024,
-          )) {
+          ) ||
+          poiObstacleIndex.containsNear(point)) {
         continue;
       }
       result.add(_GeneratedRock(point, random.nextInt(1 << 30)));
@@ -341,9 +598,13 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   }
 
   bool _blockedByStructure(LatLng point, MapFeatureCollection features) {
+    return _blockedByStructureInAreas(point, features.areas);
+  }
+
+  bool _blockedByStructureInAreas(LatLng point, Iterable<AreaFeature> areas) {
     return MapGeometryRules.insideOrNearAnyAreaKind(
       point,
-      features.areas,
+      areas,
       MapFeatureKind.building,
     );
   }
@@ -352,22 +613,20 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
 class _ForegroundObjectPainter extends CustomPainter {
   const _ForegroundObjectPainter({
     required this.camera,
-    required this.mappedTrees,
-    required this.generatedTrees,
-    required this.generatedRocks,
+    required this.items,
     required this.treeImages,
     required this.rockImage,
-    required this.pivot,
+    required this.spriteAtlas,
+    required this.pivotBoundary,
     required this.slice,
   });
 
   final MapCamera camera;
-  final List<_TreePaintItem> mappedTrees;
-  final List<_GeneratedTree> generatedTrees;
-  final List<_GeneratedRock> generatedRocks;
+  final List<_ForegroundPaintItem> items;
   final List<ui.Image> treeImages;
   final ui.Image? rockImage;
-  final LatLng? pivot;
+  final ui.Image? spriteAtlas;
+  final int? pivotBoundary;
   final ProjectedDepthSlice slice;
 
   @override
@@ -376,73 +635,26 @@ class _ForegroundObjectPainter extends CustomPainter {
       return;
     }
     final paint = Paint()..filterQuality = FilterQuality.none;
-    // Do not pre-filter by geographic point. The sprite may still overlap the
-    // viewport while its anchor is just outside it; target-rect clipping below
-    // is stable and removes the edge pop visible during zoom.
-    final generatedTreeSubset = MapRenderingBudget.stableDecorativeSubset(
-      generatedTrees,
-      count: MapRenderingBudget.decorativeLodCount(
-        camera.zoom,
-        overview: 120,
-        close: math.min(
-          generatedTrees.length,
-          _OsmPixelTreeLayerState._treePaintLimit,
-        ),
-      ),
-      rank: (tree) => tree.seed,
-    );
-    final generatedRockSubset = MapRenderingBudget.stableDecorativeSubset(
-      generatedRocks,
-      count: MapRenderingBudget.decorativeCount(
-        camera.zoom,
-        overview: 40,
-        close: generatedRocks.length,
-      ),
-      rank: (rock) => rock.seed,
-    );
-    final items = <_ForegroundPaintItem>[
-      for (final tree in mappedTrees)
-        _ForegroundPaintItem.tree(
-          tree.position,
-          tree.seed,
-          tree.scaleMultiplier,
-          camera.latLngToScreenOffset(tree.position),
-        ),
-      for (final tree in generatedTreeSubset)
-        _ForegroundPaintItem.tree(
-          tree.position,
-          tree.seed,
-          tree.scaleMultiplier,
-          camera.latLngToScreenOffset(tree.position),
-        ),
-      for (final rock in generatedRockSubset)
-        _ForegroundPaintItem.rock(
-          rock.position,
-          rock.seed,
-          camera.latLngToScreenOffset(rock.position),
-        ),
-    ];
-    items.sort((a, b) {
-      final depth = a.foot.dy.compareTo(b.foot.dy);
-      if (depth != 0) return depth;
-      // At the same ground depth, low props go first and tall silhouettes
-      // may naturally cover their upper edge.
-      final kind = a.kind.index.compareTo(b.kind.index);
-      if (kind != 0) return kind;
-      return a.seed.compareTo(b.seed);
-    });
-    final pivotFoot = pivot == null
-        ? null
-        : camera.latLngToScreenOffset(pivot!);
-    for (final item in items) {
-      if (pivotFoot != null &&
-          !ProjectedDepthOrder.belongsToSlice(
-            objectFoot: item.foot,
-            pivotFoot: pivotFoot,
-            slice: slice,
-          )) {
-        continue;
+    var start = 0;
+    var end = items.length;
+    final boundary = pivotBoundary;
+    if (boundary != null) {
+      switch (slice) {
+        case ProjectedDepthSlice.all:
+          break;
+        case ProjectedDepthSlice.behindPivot:
+          end = boundary;
+        case ProjectedDepthSlice.inFrontOfPivot:
+          start = boundary;
       }
+    }
+    final atlas = spriteAtlas;
+    if (atlas != null) {
+      _paintAtlasBatch(canvas, size, start, end, atlas, paint);
+      return;
+    }
+    for (var index = start; index < end; index++) {
+      final item = items[index];
       switch (item.kind) {
         case _ForegroundKind.rock:
           _paintRock(canvas, size, item.foot, item.seed, paint);
@@ -459,6 +671,128 @@ class _ForegroundObjectPainter extends CustomPainter {
     }
   }
 
+  void _paintAtlasBatch(
+    Canvas canvas,
+    Size canvasSize,
+    int start,
+    int end,
+    ui.Image atlas,
+    Paint paint,
+  ) {
+    final viewport = Offset.zero & canvasSize;
+    final transforms = <ui.RSTransform>[];
+    final sourceRects = <Rect>[];
+
+    // Rock shadows deliberately remain below the atlas pass.  They are a
+    // subtle grounding cue, while actual tree/rock sprites retain their one
+    // globally sorted depth order in the following GPU batch.
+    for (var index = start; index < end; index++) {
+      final item = items[index];
+      if (item.kind != _ForegroundKind.rock) continue;
+      final scale = _rockScale(item.seed);
+      final width = 24 * scale;
+      final height = 22 * scale;
+      final target = Rect.fromLTWH(
+        item.foot.dx - width / 2,
+        item.foot.dy - height * .86,
+        width,
+        height,
+      );
+      if (!target.inflate(2).overlaps(viewport)) continue;
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: item.foot.translate(0, -height * .08),
+          width: width * .78,
+          height: math.max(2, height * .18),
+        ),
+        Paint()
+          ..color = const Color(0x66243025)
+          ..isAntiAlias = false,
+      );
+    }
+
+    for (var index = start; index < end; index++) {
+      final item = items[index];
+      switch (item.kind) {
+        case _ForegroundKind.tree:
+          final scale = _treeScale(item.seed, item.scaleMultiplier);
+          final target = Rect.fromLTWH(
+            item.foot.dx - 16 * scale,
+            item.foot.dy - 46 * scale,
+            32 * scale,
+            48 * scale,
+          );
+          if (!target.overlaps(viewport)) continue;
+          transforms.add(
+            ui.RSTransform.fromComponents(
+              rotation: 0,
+              scale: scale,
+              anchorX: 16,
+              anchorY: 46,
+              translateX: item.foot.dx,
+              translateY: item.foot.dy,
+            ),
+          );
+          sourceRects.add(
+            Rect.fromLTWH((item.seed.abs() % 3) * 32.0, 0, 32, 48),
+          );
+        case _ForegroundKind.rock:
+          final scale = _rockScale(item.seed);
+          final width = 24 * scale;
+          final height = 22 * scale;
+          final target = Rect.fromLTWH(
+            item.foot.dx - width / 2,
+            item.foot.dy - height * .86,
+            width,
+            height,
+          );
+          if (!target.inflate(2).overlaps(viewport)) continue;
+          transforms.add(
+            ui.RSTransform.fromComponents(
+              rotation: 0,
+              scale: scale,
+              anchorX: 12,
+              anchorY: 22 * .86,
+              translateX: item.foot.dx,
+              translateY: item.foot.dy,
+            ),
+          );
+          sourceRects.add(
+            Rect.fromLTWH(seedIsOdd(item.seed) ? 120 : 96, 0, 24, 22),
+          );
+      }
+    }
+    if (transforms.isEmpty) return;
+    canvas.drawAtlas(
+      atlas,
+      transforms,
+      sourceRects,
+      null,
+      BlendMode.srcOver,
+      viewport,
+      paint,
+    );
+  }
+
+  double _treeScale(int seed, double scaleMultiplier) {
+    final zoomScale = MapRenderingBudget.decorativeScale(camera.zoom);
+    final variantScale = .78 + (seed.abs() % 53) / 100;
+    return zoomScale * variantScale * scaleMultiplier;
+  }
+
+  double _rockScale(int seed) {
+    final zoomScale = MapRenderingBudget.decorativeScale(
+      camera.zoom,
+      referenceZoom: 15,
+      min: .58,
+      max: 1,
+    );
+    final variantScale = .76 + (seed.abs() % 23) / 100;
+    return zoomScale * variantScale;
+  }
+
+  bool seedIsOdd(int seed) => seed.isOdd;
+
   void _paintTree(
     Canvas canvas,
     Size canvasSize,
@@ -469,11 +803,7 @@ class _ForegroundObjectPainter extends CustomPainter {
   }) {
     // Keep a readable silhouette at overview zooms instead of letting the
     // sprite become sub-pixel and appear to disappear.
-    final zoomScale = MapRenderingBudget.decorativeScale(camera.zoom);
-    // Stable per-tree variation creates depth without making sprites jump
-    // while panning or changing zoom.
-    final variantScale = .78 + (seed.abs() % 53) / 100;
-    final scale = zoomScale * variantScale * scaleMultiplier;
+    final scale = _treeScale(seed, scaleMultiplier);
     final target = Rect.fromLTWH(
       foot.dx - 16 * scale,
       foot.dy - 46 * scale,
@@ -511,15 +841,9 @@ class _ForegroundObjectPainter extends CustomPainter {
     int seed,
     Paint imagePaint,
   ) {
-    final zoomScale = MapRenderingBudget.decorativeScale(
-      camera.zoom,
-      referenceZoom: 15,
-      min: .58,
-      max: 1,
-    );
-    final variantScale = .76 + (seed.abs() % 23) / 100;
-    final width = 24 * zoomScale * variantScale;
-    final height = 22 * zoomScale * variantScale;
+    final scale = _rockScale(seed);
+    final width = 24 * scale;
+    final height = 22 * scale;
     final target = Rect.fromLTWH(
       foot.dx - width / 2,
       foot.dy - height * .86,
@@ -581,13 +905,24 @@ class _ForegroundObjectPainter extends CustomPainter {
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
-      oldDelegate.mappedTrees != mappedTrees ||
-      oldDelegate.generatedTrees != generatedTrees ||
-      oldDelegate.generatedRocks != generatedRocks ||
+      oldDelegate.items != items ||
       oldDelegate.treeImages != treeImages ||
       oldDelegate.rockImage != rockImage ||
-      oldDelegate.pivot != pivot ||
+      oldDelegate.spriteAtlas != spriteAtlas ||
+      oldDelegate.pivotBoundary != pivotBoundary ||
       oldDelegate.slice != slice;
+}
+
+class _TreeSpriteBundle {
+  const _TreeSpriteBundle({
+    required this.trees,
+    required this.rock,
+    required this.atlas,
+  });
+
+  final List<ui.Image> trees;
+  final ui.Image rock;
+  final ui.Image atlas;
 }
 
 class _GeneratedTree {

@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
+import '../assets/map_visual_asset_warmup.dart';
 import '../composition/pixel_bridge_geometry.dart';
 import '../composition/pixel_bridge_placement.dart';
 import '../composition/osm_water_polygon_projector.dart';
@@ -36,6 +37,21 @@ class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _ensureImages();
+  }
+
+  @override
+  void didUpdateWidget(covariant OsmPixelBridgeLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _ensureImages();
+  }
+
+  void _ensureImages() {
+    if (!widget.features.lines.any(
+      (line) => line.metadata.hasConfirmedBridge,
+    )) {
+      return;
+    }
     if (_images.isEmpty) _loading ??= _loadImages();
   }
 
@@ -50,25 +66,8 @@ class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
     }
   }
 
-  Future<ui.Image> _resolveImage(String asset) {
-    final completer = Completer<ui.Image>();
-    final stream = AssetImage(
-      asset,
-    ).resolve(createLocalImageConfiguration(context));
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (image, _) {
-        stream.removeListener(listener);
-        completer.complete(image.image);
-      },
-      onError: (error, stackTrace) {
-        stream.removeListener(listener);
-        completer.completeError(error, stackTrace);
-      },
-    );
-    stream.addListener(listener);
-    return completer.future;
-  }
+  Future<ui.Image> _resolveImage(String asset) =>
+      MapVisualAssetWarmup.resolveImage(context, asset);
 
   @override
   Widget build(BuildContext context) => RepaintBoundary(
@@ -98,9 +97,19 @@ class _BridgePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final bridges = features.lines
+        .where(
+          (line) =>
+              line.metadata.hasConfirmedBridge &&
+              line.points.length >= 2 &&
+              MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
+        )
+        .toList(growable: false);
+    if (bridges.isEmpty) return;
     final waterPolygons = [
       for (final area in features.areas)
-        if (area.kind == MapFeatureKind.water)
+        if (area.kind == MapFeatureKind.water &&
+            MapRenderingBudget.areaMayBeVisible(area, camera.visibleBounds))
           _BridgeWaterArea(
             polygon: OsmWaterPolygonProjector.project(
               area,
@@ -108,40 +117,46 @@ class _BridgePainter extends CustomPainter {
             ),
             holes: [
               for (final hole in area.holes)
-                [for (final point in hole) camera.latLngToScreenOffset(point)],
+                OsmWaterPolygonProjector.projectRing(
+                  hole,
+                  camera.latLngToScreenOffset,
+                ),
             ],
           ),
     ].where((area) => area.polygon.length >= 3).toList(growable: false);
-    final bridges = features.lines.where(
-      (line) =>
-          line.metadata.hasConfirmedBridge &&
-          line.points.length >= 2 &&
-          MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
-    );
     for (final bridge in bridges) {
       var start = camera.latLngToScreenOffset(bridge.points.first);
       var end = camera.latLngToScreenOffset(bridge.points.last);
       final crossingCenter = Offset.lerp(start, end, .5)!;
       final crossingDirection = end - start;
-      var anchoredToWater = false;
+      PixelBridgePlacement? bestPlacement;
       for (final water in waterPolygons) {
         final placement = PixelBridgePlacement.fromWaterPolygon(
           polygon: water.polygon,
           holes: water.holes,
           center: crossingCenter,
           direction: crossingDirection,
+          // The bridge way is finite. An infinite axis can cross an unrelated
+          // pond elsewhere in the viewport and create a false bridge. Keep a
+          // small tolerance for OSM endpoints placed just inside the banks.
+          maximumAxisGap: crossingDirection.distance * .75 + 8,
         );
         if (placement == null) continue;
-        start = placement.start;
-        end = placement.end;
-        anchoredToWater = true;
-        break;
+        if (bestPlacement == null ||
+            placement.distanceTo(crossingCenter) <
+                bestPlacement.distanceTo(crossingCenter)) {
+          bestPlacement = placement;
+        }
+      }
+      if (bestPlacement != null) {
+        start = bestPlacement.start;
+        end = bestPlacement.end;
       }
       // If water polygons are available, an explicit bridge that misses all
       // of them is not painted: its geometry would otherwise float on land.
       // In cells with only linear river data there is no polygon to anchor to,
       // so the original bridge way remains the safe visual fallback.
-      if (waterPolygons.isNotEmpty && !anchoredToWater) continue;
+      if (waterPolygons.isNotEmpty && bestPlacement == null) continue;
       final geometry = PixelBridgeGeometry.fromProjected(
         start: start,
         end: end,

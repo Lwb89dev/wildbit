@@ -64,17 +64,27 @@ abstract final class OverpassQueryBuilder {
   /// Buildings and complex POIs share one optional context request. Keeping
   /// them out of the base query prevents a dense urban cell or multipolygon
   /// campsite from delaying trails, water and terrain.
-  static String structuresForBounds(GeoBounds bounds) {
+  static String structuresForBounds(
+    GeoBounds bounds, {
+    bool includeBuildings = true,
+  }) {
     final bbox =
         '${bounds.southWest.latitude},${bounds.southWest.longitude},'
         '${bounds.northEast.latitude},${bounds.northEast.longitude}';
-    final clauses = <String>[
-      'way["building"]($bbox);',
+    final poiClauses = <String>[
       for (final selector in _poiSelectors)
         for (final elementType in const ['way', 'relation'])
           '$elementType$selector($bbox);',
     ];
-    return '[out:json][timeout:10];(${clauses.join()});out body geom;';
+    // Put buildings and hiking structures in separate output statements. A
+    // dense city can contain tens of thousands of footprints; limiting only
+    // that decorative branch prevents it from delaying or truncating huts,
+    // guideposts and campsites returned by the second branch.
+    final buildings = includeBuildings
+        ? 'way["building"]($bbox);out body geom 240;'
+        : '';
+    return '[out:json][timeout:10];$buildings'
+        '(${poiClauses.join()});out body geom;';
   }
 
   static String treesForBounds(GeoBounds bounds) {
@@ -82,6 +92,9 @@ abstract final class OverpassQueryBuilder {
         '${bounds.southWest.latitude},${bounds.southWest.longitude},'
         '${bounds.northEast.latitude},${bounds.northEast.longitude}';
     // `body` is required here: `tags` alone omits node latitude/longitude.
-    return '[out:json][timeout:8];node["natural"="tree"]($bbox);out body;';
+    // Individual trees are visual enrichment rather than route evidence.
+    // The renderer itself can paint at most a few hundred point trees, so an
+    // unbounded city/park response only wastes mobile bandwidth and parsing.
+    return '[out:json][timeout:8];node["natural"="tree"]($bbox);out body 700;';
   }
 }

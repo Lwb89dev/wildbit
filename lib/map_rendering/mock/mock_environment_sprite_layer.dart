@@ -7,6 +7,21 @@ import 'mock_valley_water_geometry.dart';
 class MockEnvironmentSpriteLayer extends StatelessWidget {
   const MockEnvironmentSpriteLayer({super.key});
 
+  /// Native logical canvas used by [MockValleyScene].
+  static const sceneSize = 256.0;
+
+  /// Regression hook for the mock renderer: every sprite is kept fully inside
+  /// the scene after its ground anchor is resolved.  A negative top/left used
+  /// to be silently clipped by the parent Stack, which made the large
+  /// deciduous tree look as if its right side had been cut away after zooming.
+  static bool get placementsFitScene => _sprites.every((sprite) {
+    final rect = sprite.sceneRect(sceneSize);
+    return rect.left >= 0 &&
+        rect.top >= 0 &&
+        rect.right <= sceneSize &&
+        rect.bottom <= sceneSize;
+  });
+
   static const _sprites = <_PlacedSprite>[
     _PlacedSprite(
       'assets/map/mock/objects/tree_deciduous_s.png',
@@ -31,7 +46,7 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       76,
       34,
       16,
-      38,
+      47,
       32,
       48,
     ),
@@ -94,7 +109,7 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       21,
       58,
       16,
-      38,
+      47,
       32,
       48,
     ),
@@ -112,7 +127,7 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       77,
       187,
       16,
-      38,
+      47,
       32,
       48,
     ),
@@ -169,7 +184,7 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       101,
       48,
       16,
-      38,
+      47,
       32,
       48,
     ),
@@ -196,7 +211,7 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       83,
       91,
       16,
-      38,
+      47,
       32,
       48,
     ),
@@ -232,7 +247,7 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       124,
       144,
       16,
-      38,
+      47,
       32,
       48,
     ),
@@ -268,7 +283,7 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       113,
       198,
       16,
-      38,
+      47,
       32,
       48,
     ),
@@ -341,15 +356,16 @@ class MockEnvironmentSpriteLayer extends StatelessWidget {
       ..sort((a, b) => a.footY.compareTo(b.footY));
     final ordered = [...shrubs, ...trees];
     return Stack(
-      clipBehavior: Clip.hardEdge,
+      // A tree canopy may extend a pixel beyond its positioned box when two
+      // native sprites overlap. Clipping this intermediate stack produced a
+      // straight cut on the right edge of the large deciduous tree. The
+      // scene's outer viewport still provides the final boundary.
+      clipBehavior: Clip.none,
       children: [
         for (final sprite in ordered)
           if (!_insideWater(Offset(sprite.footX, sprite.footY)))
-            Positioned(
-              left: sprite.footX - sprite.anchorX,
-              top: sprite.footY - sprite.anchorY,
-              width: sprite.width,
-              height: sprite.height,
+            Positioned.fromRect(
+              rect: sprite.sceneRect(sceneSize),
               child: Image.asset(
                 sprite.assetPath,
                 filterQuality: FilterQuality.none,
@@ -385,4 +401,22 @@ class _PlacedSprite {
   final double height;
 
   bool get isShrub => assetPath.contains('/shrub_');
+
+  /// Resolves the anchored canvas and translates it only when it would cross
+  /// the fixed mock viewport.  This preserves the native sprite dimensions
+  /// and depth anchor while preventing accidental edge clipping.
+  Rect sceneRect(double sceneSize) {
+    final raw = Rect.fromLTWH(footX - anchorX, footY - anchorY, width, height);
+    final dx = raw.left < 0
+        ? -raw.left
+        : raw.right > sceneSize
+        ? sceneSize - raw.right
+        : 0.0;
+    final dy = raw.top < 0
+        ? -raw.top
+        : raw.bottom > sceneSize
+        ? sceneSize - raw.bottom
+        : 0.0;
+    return raw.shift(Offset(dx, dy));
+  }
 }

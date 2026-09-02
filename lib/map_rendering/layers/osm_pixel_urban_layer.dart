@@ -13,52 +13,117 @@ import '../performance/map_rendering_budget.dart';
 
 /// A deliberately quiet urban backdrop. Buildings provide orientation without
 /// turning the map into a grey raster block or competing with trails.
-class OsmPixelUrbanLayer extends StatelessWidget {
+class OsmPixelUrbanLayer extends StatefulWidget {
   const OsmPixelUrbanLayer({
     super.key,
     required this.features,
     this.depthPivot,
     this.slice = ProjectedDepthSlice.all,
+    this.renderCache,
   });
 
   final MapFeatureCollection features;
   final ValueListenable<LatLng?>? depthPivot;
   final ProjectedDepthSlice slice;
 
+  /// Share this cache between the behind/in-front depth passes. Both passes
+  /// use identical features and camera data, so projecting every footprint
+  /// twice is pure CPU work with no visual benefit.
+  final UrbanRenderCache? renderCache;
+
   @override
-  Widget build(BuildContext context) {
-    final camera = MapCamera.of(context);
-    if (depthPivot != null) {
-      return ValueListenableBuilder<LatLng?>(
-        valueListenable: depthPivot!,
-        builder: (context, pivot, _) => _buildLayer(camera, pivot),
-      );
-    }
-    return _buildLayer(camera, null);
+  State<OsmPixelUrbanLayer> createState() => _OsmPixelUrbanLayerState();
+}
+
+class _OsmPixelUrbanLayerState extends State<OsmPixelUrbanLayer> {
+  final UrbanRenderCache _localCache = UrbanRenderCache();
+
+  UrbanRenderCache get _cache => widget.renderCache ?? _localCache;
+
+  @override
+  void didUpdateWidget(covariant OsmPixelUrbanLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _cache.prepare(widget.features);
   }
 
-  Widget _buildLayer(MapCamera camera, LatLng? pivot) {
-    // Before the first GPS fix there is no meaningful depth pivot. Keep one
-    // complete background pass and suppress the foreground duplicate.
-    if (pivot == null && slice == ProjectedDepthSlice.inFrontOfPivot) {
-      return const SizedBox.expand();
+  @override
+  Widget build(BuildContext context) {
+    _cache.prepare(widget.features);
+    final camera = MapCamera.of(context);
+    final buildings = _visibleBuildings(camera);
+    if (buildings.isEmpty) return const SizedBox.expand();
+    final projectedBuildings = _projectBuildings(camera, buildings);
+    if (widget.depthPivot != null) {
+      return ValueListenableBuilder<LatLng?>(
+        valueListenable: widget.depthPivot!,
+        builder: (context, pivot, _) =>
+            _buildLayer(camera, pivot, projectedBuildings),
+      );
+    }
+    return _buildLayer(camera, null, projectedBuildings);
+  }
+
+  List<AreaFeature> _visibleBuildings(MapCamera camera) {
+    // Buildings are orientation context, not the map's primary artwork. At
+    // overview zooms they collapse into a noisy grey carpet, so roads and
+    // trails carry the urban shape until the user is close enough to inspect
+    // individual footprints. During a gesture keep a small stable sample
+    // instead of removing the whole layer: this prevents buildings/refuges
+    // from blinking out while the camera rotates or pans on a phone.
+    final bounds = camera.visibleBounds;
+    final viewKey = Object.hash(
+      identityHashCode(widget.features),
+      camera.zoom,
+      bounds.south,
+      bounds.west,
+      bounds.north,
+      bounds.east,
+      MapRenderingBudget.mapInteracting,
+    );
+    final cached = _cache.visibleBuildings;
+    if (cached != null && _cache.visibleBuildingsViewKey == viewKey) {
+      return cached;
+    }
+    if (camera.zoom < 15.5) {
+      _cache.visibleBuildingsViewKey = viewKey;
+      _cache.visibleBuildings = const [];
+      return const [];
     }
     final buildings =
-        features.areas
+        widget.features.areas
             .where(
               (area) =>
                   area.kind == MapFeatureKind.building &&
-                  MapRenderingBudget.areaMayBeVisible(
-                    area,
-                    camera.visibleBounds,
-                  ),
+                  MapRenderingBudget.areaMayBeVisible(area, bounds),
             )
             .toList(growable: false)
           ..sort((a, b) => _sortKey(a).compareTo(_sortKey(b)));
-    if (buildings.isEmpty) return const SizedBox.expand();
-    final limited = buildings.length <= 240
+    final limit = MapRenderingBudget.urbanPaintLimit();
+    final result = buildings.length <= limit
         ? buildings
-        : buildings.take(240).toList(growable: false);
+        : buildings.take(limit).toList(growable: false);
+    _cache.visibleBuildingsViewKey = viewKey;
+    _cache.visibleBuildings = List.unmodifiable(result);
+    return _cache.visibleBuildings!;
+  }
+
+  Widget _buildLayer(
+    MapCamera camera,
+    LatLng? pivot,
+    List<_ProjectedBuilding> projectedBuildings,
+  ) {
+    // Before the first GPS fix there is no meaningful depth pivot. Keep one
+    // complete background pass and suppress the foreground duplicate.
+    if (pivot == null && widget.slice == ProjectedDepthSlice.inFrontOfPivot) {
+      return const SizedBox.expand();
+    }
+    final pivotBoundary = pivot == null
+        ? null
+        : ProjectedDepthOrder.firstInFrontIndex(
+            projectedBuildings,
+            camera.latLngToScreenOffset(pivot),
+            (building) => building.foot,
+          );
     final child = LayoutBuilder(
       builder: (context, constraints) => SizedBox(
         width: constraints.maxWidth,
@@ -66,9 +131,9 @@ class OsmPixelUrbanLayer extends StatelessWidget {
         child: CustomPaint(
           painter: _UrbanPainter(
             camera: camera,
-            buildings: limited,
-            depthPivot: pivot,
-            slice: slice,
+            projectedBuildings: projectedBuildings,
+            pivotBoundary: pivotBoundary,
+            slice: widget.slice,
           ),
         ),
       ),
@@ -79,34 +144,31 @@ class OsmPixelUrbanLayer extends StatelessWidget {
   static String _sortKey(AreaFeature area) =>
       '${area.sourceId ?? ''}:'
       '${StructureFootprint.centroid(area.ring).latitude.toStringAsFixed(7)}';
-}
 
-class _UrbanPainter extends CustomPainter {
-  const _UrbanPainter({
-    required this.camera,
-    required this.buildings,
-    required this.depthPivot,
-    required this.slice,
-  });
-
-  final MapCamera camera;
-  final List<AreaFeature> buildings;
-  final LatLng? depthPivot;
-  final ProjectedDepthSlice slice;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final scale = MapRenderingBudget.decorativeScale(
+  List<_ProjectedBuilding> _projectBuildings(
+    MapCamera camera,
+    List<AreaFeature> buildings,
+  ) {
+    final bounds = camera.visibleBounds;
+    final viewKey = Object.hash(
+      identityHashCode(buildings),
+      camera.center.latitude,
+      camera.center.longitude,
       camera.zoom,
-      min: .35,
-      max: 1.1,
+      camera.rotation,
+      bounds.south,
+      bounds.west,
+      bounds.north,
+      bounds.east,
+      MapRenderingBudget.mapInteracting,
     );
-    final detail = ((camera.zoom - 12) / 3).clamp(0.0, 1.0);
-    final extrusion = (1.5 + 2.5 * detail) * scale;
-    final pivotFoot = depthPivot == null
-        ? null
-        : camera.latLngToScreenOffset(depthPivot!);
-    for (final area in buildings) {
+    final cached = _cache._projectedBuildings;
+    if (cached != null && _cache.projectedBuildingsViewKey == viewKey) {
+      return cached;
+    }
+    final projectedBuildings = <_ProjectedBuilding>[];
+    for (final indexed in buildings.indexed) {
+      final area = indexed.$2;
       final ring = StructureFootprint.sanitize(area.ring);
       if (ring == null) continue;
       final raw = [
@@ -117,25 +179,110 @@ class _UrbanPainter extends CustomPainter {
           if (StructureFootprint.sanitize(hole) case final cleanHole?)
             [for (final point in cleanHole) camera.latLngToScreenOffset(point)],
       ];
-      if (pivotFoot != null &&
-          !ProjectedDepthOrder.belongsToSlice(
-            objectFoot: camera.latLngToScreenOffset(
-              StructureFootprint.centroid(ring),
-            ),
-            pivotFoot: pivotFoot,
-            slice: slice,
-          )) {
-        continue;
-      }
-      // Snap the polygon as one rigid object. Snapping every vertex
-      // independently changed its silhouette at fractional zoom values.
       final snapDelta = _snap(raw.first) - raw.first;
       final projected = [for (final point in raw) point + snapDelta];
       final projectedHoles = [
         for (final hole in rawHoles)
           [for (final point in hole) point + snapDelta],
       ];
+      projectedBuildings.add(
+        _ProjectedBuilding(
+          projected: projected,
+          holes: projectedHoles,
+          foot: ProjectedDepthOrder.footprintAnchor(projected),
+          stableOrder: indexed.$1,
+        ),
+      );
+    }
+    projectedBuildings.sort((a, b) {
+      final depth = ProjectedDepthOrder.compare(
+        firstFoot: a.foot,
+        secondFoot: b.foot,
+      );
+      return depth != 0 ? depth : a.stableOrder.compareTo(b.stableOrder);
+    });
+    _cache.projectedBuildingsViewKey = viewKey;
+    _cache._projectedBuildings = List.unmodifiable(projectedBuildings);
+    return _cache._projectedBuildings!;
+  }
+
+  static Offset _snap(Offset point) =>
+      Offset(point.dx.roundToDouble(), point.dy.roundToDouble());
+}
+
+/// Per-camera cache owned by the map composition, rather than one depth
+/// slice. Its internals stay library-private because only this layer paints
+/// the projected footprint data.
+class UrbanRenderCache {
+  MapFeatureCollection? _source;
+  int? visibleBuildingsViewKey;
+  List<AreaFeature>? visibleBuildings;
+  int? projectedBuildingsViewKey;
+  List<_ProjectedBuilding>? _projectedBuildings;
+
+  void prepare(MapFeatureCollection source) {
+    if (identical(_source, source)) return;
+    _source = source;
+    visibleBuildingsViewKey = null;
+    visibleBuildings = null;
+    projectedBuildingsViewKey = null;
+    _projectedBuildings = null;
+  }
+
+  /// Retains the OSM source identity but releases camera-dependent polygons.
+  void clearTransient() {
+    visibleBuildingsViewKey = null;
+    visibleBuildings = null;
+    projectedBuildingsViewKey = null;
+    _projectedBuildings = null;
+  }
+}
+
+class _UrbanPainter extends CustomPainter {
+  const _UrbanPainter({
+    required this.camera,
+    required this.projectedBuildings,
+    required this.pivotBoundary,
+    required this.slice,
+  });
+
+  final MapCamera camera;
+  final List<_ProjectedBuilding> projectedBuildings;
+  final int? pivotBoundary;
+  final ProjectedDepthSlice slice;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = MapRenderingBudget.decorativeScale(
+      camera.zoom,
+      min: .35,
+      max: 1.1,
+    );
+    final detail = MapRenderingBudget.mapInteracting
+        ? 0.0
+        : ((camera.zoom - 12) / 3).clamp(0.0, 1.0);
+    final extrusion = (1.5 + 2.5 * detail) * scale;
+    var start = 0;
+    var end = projectedBuildings.length;
+    final boundary = pivotBoundary;
+    if (boundary != null) {
+      switch (slice) {
+        case ProjectedDepthSlice.all:
+          break;
+        case ProjectedDepthSlice.behindPivot:
+          end = boundary;
+        case ProjectedDepthSlice.inFrontOfPivot:
+          start = boundary;
+      }
+    }
+    for (var index = start; index < end; index++) {
+      final building = projectedBuildings[index];
+      final projected = building.projected;
+      final projectedHoles = building.holes;
       final roof = _path(projected, holes: projectedHoles);
+      if (!roof.getBounds().inflate(8 * scale).overlaps(Offset.zero & size)) {
+        continue;
+      }
       final wall = _path(
         [for (final point in projected) point.translate(0, extrusion)],
         holes: [
@@ -173,9 +320,6 @@ class _UrbanPainter extends CustomPainter {
       }
     }
   }
-
-  Offset _snap(Offset point) =>
-      Offset(point.dx.roundToDouble(), point.dy.roundToDouble());
 
   ui.Path _path(List<Offset> points, {List<List<Offset>> holes = const []}) {
     final path = ui.Path()
@@ -247,7 +391,22 @@ class _UrbanPainter extends CustomPainter {
   bool shouldRepaint(_UrbanPainter oldDelegate) =>
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
-      oldDelegate.buildings != buildings ||
-      oldDelegate.depthPivot != depthPivot ||
+      oldDelegate.camera.rotation != camera.rotation ||
+      oldDelegate.projectedBuildings != projectedBuildings ||
+      oldDelegate.pivotBoundary != pivotBoundary ||
       oldDelegate.slice != slice;
+}
+
+class _ProjectedBuilding {
+  const _ProjectedBuilding({
+    required this.projected,
+    required this.holes,
+    required this.foot,
+    required this.stableOrder,
+  });
+
+  final List<Offset> projected;
+  final List<List<Offset>> holes;
+  final Offset foot;
+  final int stableOrder;
 }

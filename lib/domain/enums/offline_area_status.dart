@@ -1,1 +1,1 @@
-enum OfflineAreaStatus { queued, downloading, completed, failed }
+enum OfflineAreaStatus { queued, downloading, completed, failed, cancelled }

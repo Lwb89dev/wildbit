@@ -181,3 +181,8 @@ visuali con overlay debug attivabile:
 3. Comporre una scena test statica che eserciti tutti gli otto test visuali.
 4. Correggere coordinate, collisioni e draw order.
 5. Solo allora sostituire una famiglia alla volta con sprite pixel-art finali.
+
+Il catalogo mantiene inoltre il contratto nativo degli sprite arborei (percorso,
+dimensioni PNG e ancora). I test Flutter decodificano i quattro asset reali,
+così una modifica grafica che cambia canvas o allineamento viene rilevata prima
+del rendering sul dispositivo.

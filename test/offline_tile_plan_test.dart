@@ -126,4 +126,41 @@ void main() {
       expect(await cache.cacheBytes(), 3);
     },
   );
+
+  test('removes only tiles not retained by another offline area', () async {
+    final root = await Directory.systemTemp.createTemp('wildbit_remove_');
+    addTearDown(() => root.delete(recursive: true));
+    final cache = OfflineTileCache(
+      client: MockClient(
+        (_) async => http.Response.bytes(const [1, 2, 3], 200),
+      ),
+      rootDirectory: () async => root,
+      minZoom: 12,
+      maxZoom: 12,
+      maxTiles: 20,
+    );
+    await cache.downloadBounds(bounds);
+    final tiles = OfflineTilePlan.forBounds(bounds, minZoom: 12, maxZoom: 12);
+
+    expect(
+      await cache.removeBounds(
+        bounds,
+        requestedMinZoom: 12,
+        requestedMaxZoom: 12,
+        retainedKeys: {for (final tile in tiles) tile.key},
+      ),
+      0,
+    );
+    expect(await cache.cacheBytes(), greaterThan(0));
+
+    expect(
+      await cache.removeBounds(
+        bounds,
+        requestedMinZoom: 12,
+        requestedMaxZoom: 12,
+      ),
+      greaterThan(0),
+    );
+    expect(await cache.cacheBytes(), 0);
+  });
 }

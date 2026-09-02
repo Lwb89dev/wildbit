@@ -7,6 +7,7 @@ import '../domain/entities/offline_region.dart';
 import '../domain/enums/offline_area_status.dart';
 import '../domain/repositories/offline_region_repository.dart';
 import 'offline_tile_cache.dart';
+import 'offline_tile_plan.dart';
 
 /// Downloads every OSM grid cell covering an area and marks it available
 /// offline. Resuming after an interrupted download is "free": cells already
@@ -39,6 +40,8 @@ class OfflineDownloadManager {
     int? minZoom,
     int? maxZoom,
   }) async {
+    final effectiveMinZoom = minZoom ?? _tileCache.minZoom;
+    final effectiveMaxZoom = maxZoom ?? _tileCache.maxZoom;
     final id = await _areaRepository.create(
       OfflineRegion(
         name: name,
@@ -46,15 +49,12 @@ class OfflineDownloadManager {
         status: OfflineAreaStatus.queued,
         progress: 0,
         requestedAt: DateTime.now(),
+        minZoom: effectiveMinZoom,
+        maxZoom: effectiveMaxZoom,
       ),
     );
     unawaited(
-      _run(
-        id,
-        bounds,
-        minZoom: minZoom ?? _tileCache.minZoom,
-        maxZoom: maxZoom ?? _tileCache.maxZoom,
-      ),
+      _run(id, bounds, minZoom: effectiveMinZoom, maxZoom: effectiveMaxZoom),
     );
     return id;
   }
@@ -107,10 +107,36 @@ class OfflineDownloadManager {
 
   /// Retries a previously failed/interrupted download from where it left
   /// off (already-cached cells are skipped by the repository itself).
-  Future<void> retry(OfflineRegion area) => _run(
-    area.id!,
-    area.bounds,
-    minZoom: _tileCache.minZoom,
-    maxZoom: _tileCache.maxZoom,
-  );
+  Future<void> retry(OfflineRegion area) =>
+      _run(area.id!, area.bounds, minZoom: area.minZoom, maxZoom: area.maxZoom);
+
+  /// Frees an area's private raster tiles while retaining any tile selected by
+  /// another offline area. Downloads in progress are intentionally not
+  /// removable from the UI: a network response racing deletion could otherwise
+  /// recreate a file after it has been accounted as freed.
+  Future<int> delete(OfflineRegion area) async {
+    final id = area.id;
+    if (id == null) return 0;
+    final retained = <String>{};
+    final areas = await _areaRepository.listAreas();
+    for (final other in areas) {
+      if (other.id == id) continue;
+      retained.addAll(
+        OfflineTilePlan.forBounds(
+          other.bounds,
+          minZoom: other.minZoom,
+          maxZoom: other.maxZoom,
+          maxTiles: _tileCache.maxTiles,
+        ).map((tile) => tile.key),
+      );
+    }
+    final removed = await _tileCache.removeBounds(
+      area.bounds,
+      requestedMinZoom: area.minZoom,
+      requestedMaxZoom: area.maxZoom,
+      retainedKeys: retained,
+    );
+    await _areaRepository.deleteArea(id);
+    return removed;
+  }
 }

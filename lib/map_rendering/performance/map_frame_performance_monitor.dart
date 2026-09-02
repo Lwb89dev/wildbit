@@ -11,6 +11,7 @@ class MapFrameStats {
     required this.slowFrameCount,
     required this.averageBuildMicros,
     required this.averageRasterMicros,
+    required this.p95FrameMicros,
     required this.worstFrameMicros,
   });
 
@@ -19,12 +20,17 @@ class MapFrameStats {
       slowFrameCount = 0,
       averageBuildMicros = 0,
       averageRasterMicros = 0,
+      p95FrameMicros = 0,
       worstFrameMicros = 0;
 
   final int sampleCount;
   final int slowFrameCount;
   final int averageBuildMicros;
   final int averageRasterMicros;
+
+  /// 95th percentile of the slower between build and raster for each frame.
+  /// Unlike [worstFrameMicros], this is resilient to one-off shader warm-up.
+  final int p95FrameMicros;
   final int worstFrameMicros;
 
   double get slowFrameRate =>
@@ -37,21 +43,30 @@ class MapFrameStats {
 ///
 /// The rolling window bounds memory and keeps the debug signal useful when a
 /// single expensive Overpass response or a one-off shader compilation occurs.
-/// The monitor is deliberately opt-in: production builds can leave it stopped
-/// so it has no battery or frame-time cost.
+/// The monitor itself is intentionally compact: production builds use the
+/// rolling signal only to select a safer decorative tier, while the diagnostic
+/// panel remains debug/profile-only.
 class MapFramePerformanceMonitor {
   MapFramePerformanceMonitor({
     this.targetFrameMicros = 16667,
     this.windowSize = 60,
+    this.publishEvery = 4,
   }) : assert(targetFrameMicros > 0),
-       assert(windowSize > 0);
+       assert(windowSize > 0),
+       assert(publishEvery > 0);
 
   final int targetFrameMicros;
   final int windowSize;
+
+  /// Number of samples collected before notifying listeners. Frame timings
+  /// are still retained individually; throttling only avoids a Dart rebuild
+  /// and quality-budget decision on every display refresh.
+  final int publishEvery;
   final ValueNotifier<MapFrameStats> stats = ValueNotifier<MapFrameStats>(
     const MapFrameStats.empty(),
   );
   final List<_FrameSample> _samples = <_FrameSample>[];
+  int _pendingPublications = 0;
   bool _running = false;
 
   bool get isRunning => _running;
@@ -83,7 +98,11 @@ class MapFramePerformanceMonitor {
     if (_samples.length > windowSize) {
       _samples.removeRange(0, _samples.length - windowSize);
     }
-    _publish();
+    _pendingPublications++;
+    if (_pendingPublications >= publishEvery) {
+      _pendingPublications = 0;
+      _publish();
+    }
   }
 
   void _onTimings(List<ui.FrameTiming> timings) {
@@ -101,6 +120,7 @@ class MapFramePerformanceMonitor {
     var rasterTotal = 0;
     var worst = 0;
     var slow = 0;
+    final frameSamples = <int>[];
     for (final sample in _samples) {
       buildTotal += sample.buildMicros;
       rasterTotal += sample.rasterMicros;
@@ -112,21 +132,37 @@ class MapFramePerformanceMonitor {
           : sample.rasterMicros;
       if (frameMicros > worst) worst = frameMicros;
       if (frameMicros > targetFrameMicros) slow++;
+      frameSamples.add(frameMicros);
     }
+    frameSamples.sort();
+    final p95Index = ((frameSamples.length - 1) * .95).ceil();
     stats.value = MapFrameStats(
       sampleCount: _samples.length,
       slowFrameCount: slow,
       averageBuildMicros: (buildTotal / _samples.length).round(),
       averageRasterMicros: (rasterTotal / _samples.length).round(),
+      p95FrameMicros: frameSamples[p95Index],
       worstFrameMicros: worst,
     );
   }
 
-  @visibleForTesting
-  void clear() {
+  /// Starts a fresh measurement window without unregistering the timing hook.
+  /// Used by the local renderer benchmark before its scripted camera gesture.
+  void reset() {
     _samples.clear();
+    _pendingPublications = 0;
     _publish();
   }
+
+  /// Publishes the current rolling window immediately. A scripted benchmark
+  /// uses this at its end so its result is not delayed by [publishEvery].
+  void flush() {
+    _pendingPublications = 0;
+    _publish();
+  }
+
+  @visibleForTesting
+  void clear() => reset();
 }
 
 class _FrameSample {

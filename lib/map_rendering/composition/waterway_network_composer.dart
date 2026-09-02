@@ -2,6 +2,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../../domain/entities/line_feature.dart';
 import '../../domain/enums/map_feature_kind.dart';
+import 'geographic_ring_topology.dart';
 import 'waterway_flow_resolver.dart';
 
 /// A continuous paint stroke assembled from one or more OSM waterway ways.
@@ -162,7 +163,8 @@ abstract final class WaterwayNetworkComposer {
       if (index == null) continue;
       if (visited.contains(index) || candidate == current) continue;
       if (!_compatible(current, candidate)) continue;
-      if (candidate.nodeIds.first == node || candidate.nodeIds.last == node) {
+      if ((candidate.nodeIds.first == node || candidate.nodeIds.last == node) &&
+          _sharedNodeCoordinatesAgree(current, candidate, node)) {
         return index;
       }
     }
@@ -172,6 +174,24 @@ abstract final class WaterwayNetworkComposer {
   static bool _compatible(LineFeature first, LineFeature second) {
     return first.metadata.waterwayTag == second.metadata.waterwayTag &&
         first.metadata.flowDirection == second.metadata.flowDirection;
+  }
+
+  static bool _sharedNodeCoordinatesAgree(
+    LineFeature first,
+    LineFeature second,
+    String node,
+  ) {
+    LatLng? endpoint(LineFeature feature) {
+      if (feature.nodeIds.first == node) return feature.points.first;
+      if (feature.nodeIds.last == node) return feature.points.last;
+      return null;
+    }
+
+    final firstPoint = endpoint(first);
+    final secondPoint = endpoint(second);
+    return firstPoint != null &&
+        secondPoint != null &&
+        GeographicRingTopology.sameCoordinate(firstPoint, secondPoint);
   }
 
   static bool _hasCompleteTopology(LineFeature feature) {

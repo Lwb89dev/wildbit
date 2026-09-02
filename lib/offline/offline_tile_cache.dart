@@ -10,6 +10,10 @@ import 'offline_tile_plan.dart';
 
 typedef OfflineTileProgress = FutureOr<void> Function(int completed, int total);
 
+class OfflineTileDownloadCancelled implements Exception {
+  const OfflineTileDownloadCancelled();
+}
+
 enum OfflineTileSource {
   osm('osm', OfflineTileCache.osmTemplate),
   hiking('hiking', OfflineTileCache.hikingTemplate);
@@ -76,6 +80,7 @@ class OfflineTileCache {
     OfflineTileProgress? onProgress,
     int? requestedMinZoom,
     int? requestedMaxZoom,
+    bool Function()? shouldCancel,
   }) async {
     final effectiveMinZoom = requestedMinZoom ?? minZoom;
     final effectiveMaxZoom = requestedMaxZoom ?? maxZoom;
@@ -92,6 +97,9 @@ class OfflineTileCache {
     final root = await _root();
     for (final tile in tiles) {
       for (final source in sources) {
+        if (shouldCancel?.call() ?? false) {
+          throw const OfflineTileDownloadCancelled();
+        }
         final file = File(
           path.join(
             root.path,
@@ -116,6 +124,9 @@ class OfflineTileCache {
             throw HttpException(
               'Tile ${source.directoryName}/${tile.key} HTTP ${response.statusCode}',
             );
+          }
+          if (shouldCancel?.call() ?? false) {
+            throw const OfflineTileDownloadCancelled();
           }
           await file.parent.create(recursive: true);
           final partial = File('${file.path}.part');
@@ -161,6 +172,48 @@ class OfflineTileCache {
         await entity.delete();
       } on FileSystemException {
         // Ignore a file removed by a concurrent download retry.
+      }
+    }
+    return removedBytes;
+  }
+
+  /// Removes tiles belonging only to a deleted offline area. [retainedKeys]
+  /// is the union of all remaining region tile keys, so overlapping downloads
+  /// keep their shared OSM and hiking overlay files intact.
+  Future<int> removeBounds(
+    GeoBounds bounds, {
+    required int requestedMinZoom,
+    required int requestedMaxZoom,
+    Set<String> retainedKeys = const {},
+  }) async {
+    final tiles = OfflineTilePlan.forBounds(
+      bounds,
+      minZoom: requestedMinZoom,
+      maxZoom: requestedMaxZoom,
+      maxTiles: maxTiles,
+    );
+    final root = await _root();
+    var removedBytes = 0;
+    for (final tile in tiles) {
+      if (retainedKeys.contains(tile.key)) continue;
+      for (final source in OfflineTileSource.values) {
+        final file = File(
+          path.join(
+            root.path,
+            'tiles',
+            source.directoryName,
+            '${tile.zoom}',
+            '${tile.x}',
+            '${tile.y}.png',
+          ),
+        );
+        try {
+          if (!await file.exists()) continue;
+          removedBytes += await file.length();
+          await file.delete();
+        } on FileSystemException {
+          // A concurrent cleanup or failed retry may already have removed it.
+        }
       }
     }
     return removedBytes;

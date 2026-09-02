@@ -14,7 +14,9 @@ class DriftOfflineRegionRepository implements OfflineRegionRepository {
 
   @override
   Future<int> create(OfflineRegion area) {
-    return _database.into(_database.offlineAreas).insert(
+    return _database
+        .into(_database.offlineAreas)
+        .insert(
           OfflineAreasCompanion.insert(
             name: area.name,
             southWestLat: area.bounds.southWest.latitude,
@@ -23,27 +25,43 @@ class DriftOfflineRegionRepository implements OfflineRegionRepository {
             northEastLng: area.bounds.northEast.longitude,
             status: Value(area.status.name),
             progress: Value(area.progress),
+            minZoom: Value(area.minZoom),
+            maxZoom: Value(area.maxZoom),
             requestedAt: area.requestedAt,
           ),
         );
   }
 
   @override
-  Future<void> updateStatus(int id, {required OfflineAreaStatus status, double? progress}) async {
-    await (_database.update(_database.offlineAreas)..where((t) => t.id.equals(id))).write(
+  Future<void> updateStatus(
+    int id, {
+    required OfflineAreaStatus status,
+    double? progress,
+    int? retryCount,
+    String? lastError,
+  }) async {
+    await (_database.update(
+      _database.offlineAreas,
+    )..where((t) => t.id.equals(id))).write(
       OfflineAreasCompanion(
         status: Value(status.name),
         progress: progress == null ? const Value.absent() : Value(progress),
-        completedAt: status == OfflineAreaStatus.completed ? Value(DateTime.now()) : const Value.absent(),
+        retryCount: retryCount == null
+            ? const Value.absent()
+            : Value(retryCount),
+        lastError: lastError == null ? const Value.absent() : Value(lastError),
+        completedAt: status == OfflineAreaStatus.completed
+            ? Value(DateTime.now())
+            : const Value.absent(),
       ),
     );
   }
 
   @override
   Future<List<OfflineRegion>> listAreas() async {
-    final rows = await (_database.select(_database.offlineAreas)
-          ..orderBy([(t) => OrderingTerm.desc(t.requestedAt)]))
-        .get();
+    final rows = await (_database.select(
+      _database.offlineAreas,
+    )..orderBy([(t) => OrderingTerm.desc(t.requestedAt)])).get();
     return [
       for (final row in rows)
         OfflineRegion(
@@ -56,6 +74,10 @@ class DriftOfflineRegionRepository implements OfflineRegionRepository {
           status: OfflineAreaStatus.values.byName(row.status),
           progress: row.progress,
           requestedAt: row.requestedAt,
+          minZoom: row.minZoom,
+          maxZoom: row.maxZoom,
+          retryCount: row.retryCount,
+          lastError: row.lastError,
           completedAt: row.completedAt,
         ),
     ];
@@ -63,6 +85,8 @@ class DriftOfflineRegionRepository implements OfflineRegionRepository {
 
   @override
   Future<void> deleteArea(int id) async {
-    await (_database.delete(_database.offlineAreas)..where((t) => t.id.equals(id))).go();
+    await (_database.delete(
+      _database.offlineAreas,
+    )..where((t) => t.id.equals(id))).go();
   }
 }

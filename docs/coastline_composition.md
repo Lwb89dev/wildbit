@@ -15,11 +15,20 @@ quindi costruire una geometria renderizzabile dalla semantica OSM.
    con un offset locale su ogni vertice, non con una sola normale agli estremi:
    baie, promontori e frammenti tagliati dal viewport non possono quindi
    richiudersi accidentalmente verso terra.
-6. Rami ambigui, assenza di node ID, mismatch geometria/node ID e ring chiusi
-   degeneri vengono registrati e non vengono ricomposti artificialmente.
+6. Rami ambigui, assenza di node ID, mismatch geometria/node ID, coordinate
+   discordanti sullo stesso node ID e ring chiusi degeneri o autointersecanti
+   vengono registrati e non vengono ricomposti artificialmente. La validazione
+   viene ripetuta dopo l'unione di più way, non soltanto sui frammenti iniziali.
 7. Prima della rotazione della camera, le coordinate proiettate vengono
    riunite nel world-copy più vicino al viewport: un’isola o una costa che
    attraversa l’antimeridiano non genera segmenti attraverso mezzo globo.
+8. I ring chiusi proiettati vengono normalizzati e classificati per profondità
+   alternata (isola, acqua interna, isola annidata). Ring che si toccano o si
+   intersecano vengono omessi perché la parità terra/acqua non è dimostrabile.
+9. Anche i multipolygon di laghi e biomi usano predicati geografici con
+   longitudine unwrapped. Ruoli relation non riconosciuti, inner ring che
+   toccano l'outer e endpoint con più continuazioni invalidano il fill e
+   mantengono il fallback dei way autonomi.
 
 Questa geometria è **solo cartografica**. Non è usata per ricerca percorsi,
 navigazione o valutazioni di sicurezza.

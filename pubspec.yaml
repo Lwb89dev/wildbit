@@ -85,6 +85,14 @@ dev_dependencies:
   build_runner: ^2.15.1
   flutter_launcher_icons: ^0.14.4
 
+# Keep Android positioning de-Googled just as in Roadstr: this vendored MIT
+# fork removes play-services-location and always uses Android LocationManager.
+# The Dart API is unchanged, while every GPS path below also explicitly sets
+# forceLocationManager for readability and future plugin updates.
+dependency_overrides:
+  geolocator_android:
+    path: third_party/geolocator_android
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

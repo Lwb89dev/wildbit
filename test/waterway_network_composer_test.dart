@@ -73,4 +73,19 @@ void main() {
 
     expect(result, hasLength(2));
   });
+
+  test('does not join a shared node whose coordinates disagree', () {
+    final result = WaterwayNetworkComposer.compose([
+      _way(
+        nodes: const ['node-a', 'shared'],
+        points: const [LatLng(45, 9), LatLng(45.01, 9.01)],
+      ),
+      _way(
+        nodes: const ['shared', 'node-b'],
+        points: const [LatLng(45.02, 9.01), LatLng(45.03, 9.02)],
+      ),
+    ]);
+
+    expect(result, hasLength(2));
+  });
 }

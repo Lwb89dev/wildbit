@@ -1477,6 +1477,30 @@ class $OfflineAreasTable extends OfflineAreas
     requiredDuringInsert: false,
     defaultValue: const Constant(0),
   );
+  static const VerificationMeta _minZoomMeta = const VerificationMeta(
+    'minZoom',
+  );
+  @override
+  late final GeneratedColumn<int> minZoom = GeneratedColumn<int>(
+    'min_zoom',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(12),
+  );
+  static const VerificationMeta _maxZoomMeta = const VerificationMeta(
+    'maxZoom',
+  );
+  @override
+  late final GeneratedColumn<int> maxZoom = GeneratedColumn<int>(
+    'max_zoom',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(15),
+  );
   static const VerificationMeta _requestedAtMeta = const VerificationMeta(
     'requestedAt',
   );
@@ -1509,6 +1533,8 @@ class $OfflineAreasTable extends OfflineAreas
     northEastLng,
     status,
     progress,
+    minZoom,
+    maxZoom,
     requestedAt,
     completedAt,
   ];
@@ -1591,6 +1617,18 @@ class $OfflineAreasTable extends OfflineAreas
         progress.isAcceptableOrUnknown(data['progress']!, _progressMeta),
       );
     }
+    if (data.containsKey('min_zoom')) {
+      context.handle(
+        _minZoomMeta,
+        minZoom.isAcceptableOrUnknown(data['min_zoom']!, _minZoomMeta),
+      );
+    }
+    if (data.containsKey('max_zoom')) {
+      context.handle(
+        _maxZoomMeta,
+        maxZoom.isAcceptableOrUnknown(data['max_zoom']!, _maxZoomMeta),
+      );
+    }
     if (data.containsKey('requested_at')) {
       context.handle(
         _requestedAtMeta,
@@ -1652,6 +1690,14 @@ class $OfflineAreasTable extends OfflineAreas
         DriftSqlType.double,
         data['${effectivePrefix}progress'],
       )!,
+      minZoom: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}min_zoom'],
+      )!,
+      maxZoom: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}max_zoom'],
+      )!,
       requestedAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}requested_at'],
@@ -1678,6 +1724,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
   final double northEastLng;
   final String status;
   final double progress;
+  final int minZoom;
+  final int maxZoom;
   final DateTime requestedAt;
   final DateTime? completedAt;
   const OfflineArea({
@@ -1689,6 +1737,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
     required this.northEastLng,
     required this.status,
     required this.progress,
+    required this.minZoom,
+    required this.maxZoom,
     required this.requestedAt,
     this.completedAt,
   });
@@ -1703,6 +1753,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
     map['north_east_lng'] = Variable<double>(northEastLng);
     map['status'] = Variable<String>(status);
     map['progress'] = Variable<double>(progress);
+    map['min_zoom'] = Variable<int>(minZoom);
+    map['max_zoom'] = Variable<int>(maxZoom);
     map['requested_at'] = Variable<DateTime>(requestedAt);
     if (!nullToAbsent || completedAt != null) {
       map['completed_at'] = Variable<DateTime>(completedAt);
@@ -1720,6 +1772,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
       northEastLng: Value(northEastLng),
       status: Value(status),
       progress: Value(progress),
+      minZoom: Value(minZoom),
+      maxZoom: Value(maxZoom),
       requestedAt: Value(requestedAt),
       completedAt: completedAt == null && nullToAbsent
           ? const Value.absent()
@@ -1741,6 +1795,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
       northEastLng: serializer.fromJson<double>(json['northEastLng']),
       status: serializer.fromJson<String>(json['status']),
       progress: serializer.fromJson<double>(json['progress']),
+      minZoom: serializer.fromJson<int>(json['minZoom']),
+      maxZoom: serializer.fromJson<int>(json['maxZoom']),
       requestedAt: serializer.fromJson<DateTime>(json['requestedAt']),
       completedAt: serializer.fromJson<DateTime?>(json['completedAt']),
     );
@@ -1757,6 +1813,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
       'northEastLng': serializer.toJson<double>(northEastLng),
       'status': serializer.toJson<String>(status),
       'progress': serializer.toJson<double>(progress),
+      'minZoom': serializer.toJson<int>(minZoom),
+      'maxZoom': serializer.toJson<int>(maxZoom),
       'requestedAt': serializer.toJson<DateTime>(requestedAt),
       'completedAt': serializer.toJson<DateTime?>(completedAt),
     };
@@ -1771,6 +1829,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
     double? northEastLng,
     String? status,
     double? progress,
+    int? minZoom,
+    int? maxZoom,
     DateTime? requestedAt,
     Value<DateTime?> completedAt = const Value.absent(),
   }) => OfflineArea(
@@ -1782,6 +1842,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
     northEastLng: northEastLng ?? this.northEastLng,
     status: status ?? this.status,
     progress: progress ?? this.progress,
+    minZoom: minZoom ?? this.minZoom,
+    maxZoom: maxZoom ?? this.maxZoom,
     requestedAt: requestedAt ?? this.requestedAt,
     completedAt: completedAt.present ? completedAt.value : this.completedAt,
   );
@@ -1803,6 +1865,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
           : this.northEastLng,
       status: data.status.present ? data.status.value : this.status,
       progress: data.progress.present ? data.progress.value : this.progress,
+      minZoom: data.minZoom.present ? data.minZoom.value : this.minZoom,
+      maxZoom: data.maxZoom.present ? data.maxZoom.value : this.maxZoom,
       requestedAt: data.requestedAt.present
           ? data.requestedAt.value
           : this.requestedAt,
@@ -1823,6 +1887,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
           ..write('northEastLng: $northEastLng, ')
           ..write('status: $status, ')
           ..write('progress: $progress, ')
+          ..write('minZoom: $minZoom, ')
+          ..write('maxZoom: $maxZoom, ')
           ..write('requestedAt: $requestedAt, ')
           ..write('completedAt: $completedAt')
           ..write(')'))
@@ -1839,6 +1905,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
     northEastLng,
     status,
     progress,
+    minZoom,
+    maxZoom,
     requestedAt,
     completedAt,
   );
@@ -1854,6 +1922,8 @@ class OfflineArea extends DataClass implements Insertable<OfflineArea> {
           other.northEastLng == this.northEastLng &&
           other.status == this.status &&
           other.progress == this.progress &&
+          other.minZoom == this.minZoom &&
+          other.maxZoom == this.maxZoom &&
           other.requestedAt == this.requestedAt &&
           other.completedAt == this.completedAt);
 }
@@ -1867,6 +1937,8 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
   final Value<double> northEastLng;
   final Value<String> status;
   final Value<double> progress;
+  final Value<int> minZoom;
+  final Value<int> maxZoom;
   final Value<DateTime> requestedAt;
   final Value<DateTime?> completedAt;
   const OfflineAreasCompanion({
@@ -1878,6 +1950,8 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
     this.northEastLng = const Value.absent(),
     this.status = const Value.absent(),
     this.progress = const Value.absent(),
+    this.minZoom = const Value.absent(),
+    this.maxZoom = const Value.absent(),
     this.requestedAt = const Value.absent(),
     this.completedAt = const Value.absent(),
   });
@@ -1890,6 +1964,8 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
     required double northEastLng,
     this.status = const Value.absent(),
     this.progress = const Value.absent(),
+    this.minZoom = const Value.absent(),
+    this.maxZoom = const Value.absent(),
     required DateTime requestedAt,
     this.completedAt = const Value.absent(),
   }) : name = Value(name),
@@ -1907,6 +1983,8 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
     Expression<double>? northEastLng,
     Expression<String>? status,
     Expression<double>? progress,
+    Expression<int>? minZoom,
+    Expression<int>? maxZoom,
     Expression<DateTime>? requestedAt,
     Expression<DateTime>? completedAt,
   }) {
@@ -1919,6 +1997,8 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
       if (northEastLng != null) 'north_east_lng': northEastLng,
       if (status != null) 'status': status,
       if (progress != null) 'progress': progress,
+      if (minZoom != null) 'min_zoom': minZoom,
+      if (maxZoom != null) 'max_zoom': maxZoom,
       if (requestedAt != null) 'requested_at': requestedAt,
       if (completedAt != null) 'completed_at': completedAt,
     });
@@ -1933,6 +2013,8 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
     Value<double>? northEastLng,
     Value<String>? status,
     Value<double>? progress,
+    Value<int>? minZoom,
+    Value<int>? maxZoom,
     Value<DateTime>? requestedAt,
     Value<DateTime?>? completedAt,
   }) {
@@ -1945,6 +2027,8 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
       northEastLng: northEastLng ?? this.northEastLng,
       status: status ?? this.status,
       progress: progress ?? this.progress,
+      minZoom: minZoom ?? this.minZoom,
+      maxZoom: maxZoom ?? this.maxZoom,
       requestedAt: requestedAt ?? this.requestedAt,
       completedAt: completedAt ?? this.completedAt,
     );
@@ -1977,6 +2061,12 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
     if (progress.present) {
       map['progress'] = Variable<double>(progress.value);
     }
+    if (minZoom.present) {
+      map['min_zoom'] = Variable<int>(minZoom.value);
+    }
+    if (maxZoom.present) {
+      map['max_zoom'] = Variable<int>(maxZoom.value);
+    }
     if (requestedAt.present) {
       map['requested_at'] = Variable<DateTime>(requestedAt.value);
     }
@@ -1997,8 +2087,433 @@ class OfflineAreasCompanion extends UpdateCompanion<OfflineArea> {
           ..write('northEastLng: $northEastLng, ')
           ..write('status: $status, ')
           ..write('progress: $progress, ')
+          ..write('minZoom: $minZoom, ')
+          ..write('maxZoom: $maxZoom, ')
           ..write('requestedAt: $requestedAt, ')
           ..write('completedAt: $completedAt')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $PendingNostrPublicationsTable extends PendingNostrPublications
+    with TableInfo<$PendingNostrPublicationsTable, PendingNostrPublication> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $PendingNostrPublicationsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _eventJsonMeta = const VerificationMeta(
+    'eventJson',
+  );
+  @override
+  late final GeneratedColumn<String> eventJson = GeneratedColumn<String>(
+    'event_json',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _retryCountMeta = const VerificationMeta(
+    'retryCount',
+  );
+  @override
+  late final GeneratedColumn<int> retryCount = GeneratedColumn<int>(
+    'retry_count',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _lastAttemptAtMeta = const VerificationMeta(
+    'lastAttemptAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> lastAttemptAt =
+      GeneratedColumn<DateTime>(
+        'last_attempt_at',
+        aliasedName,
+        true,
+        type: DriftSqlType.dateTime,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _lastErrorMeta = const VerificationMeta(
+    'lastError',
+  );
+  @override
+  late final GeneratedColumn<String> lastError = GeneratedColumn<String>(
+    'last_error',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    eventJson,
+    createdAt,
+    retryCount,
+    lastAttemptAt,
+    lastError,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'pending_nostr_publications';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<PendingNostrPublication> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('event_json')) {
+      context.handle(
+        _eventJsonMeta,
+        eventJson.isAcceptableOrUnknown(data['event_json']!, _eventJsonMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_eventJsonMeta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('retry_count')) {
+      context.handle(
+        _retryCountMeta,
+        retryCount.isAcceptableOrUnknown(data['retry_count']!, _retryCountMeta),
+      );
+    }
+    if (data.containsKey('last_attempt_at')) {
+      context.handle(
+        _lastAttemptAtMeta,
+        lastAttemptAt.isAcceptableOrUnknown(
+          data['last_attempt_at']!,
+          _lastAttemptAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('last_error')) {
+      context.handle(
+        _lastErrorMeta,
+        lastError.isAcceptableOrUnknown(data['last_error']!, _lastErrorMeta),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  PendingNostrPublication map(
+    Map<String, dynamic> data, {
+    String? tablePrefix,
+  }) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return PendingNostrPublication(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      eventJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}event_json'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      retryCount: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}retry_count'],
+      )!,
+      lastAttemptAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}last_attempt_at'],
+      ),
+      lastError: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}last_error'],
+      ),
+    );
+  }
+
+  @override
+  $PendingNostrPublicationsTable createAlias(String alias) {
+    return $PendingNostrPublicationsTable(attachedDatabase, alias);
+  }
+}
+
+class PendingNostrPublication extends DataClass
+    implements Insertable<PendingNostrPublication> {
+  final int id;
+  final String eventJson;
+  final DateTime createdAt;
+  final int retryCount;
+  final DateTime? lastAttemptAt;
+  final String? lastError;
+  const PendingNostrPublication({
+    required this.id,
+    required this.eventJson,
+    required this.createdAt,
+    required this.retryCount,
+    this.lastAttemptAt,
+    this.lastError,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['event_json'] = Variable<String>(eventJson);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['retry_count'] = Variable<int>(retryCount);
+    if (!nullToAbsent || lastAttemptAt != null) {
+      map['last_attempt_at'] = Variable<DateTime>(lastAttemptAt);
+    }
+    if (!nullToAbsent || lastError != null) {
+      map['last_error'] = Variable<String>(lastError);
+    }
+    return map;
+  }
+
+  PendingNostrPublicationsCompanion toCompanion(bool nullToAbsent) {
+    return PendingNostrPublicationsCompanion(
+      id: Value(id),
+      eventJson: Value(eventJson),
+      createdAt: Value(createdAt),
+      retryCount: Value(retryCount),
+      lastAttemptAt: lastAttemptAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastAttemptAt),
+      lastError: lastError == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastError),
+    );
+  }
+
+  factory PendingNostrPublication.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return PendingNostrPublication(
+      id: serializer.fromJson<int>(json['id']),
+      eventJson: serializer.fromJson<String>(json['eventJson']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      retryCount: serializer.fromJson<int>(json['retryCount']),
+      lastAttemptAt: serializer.fromJson<DateTime?>(json['lastAttemptAt']),
+      lastError: serializer.fromJson<String?>(json['lastError']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'eventJson': serializer.toJson<String>(eventJson),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'retryCount': serializer.toJson<int>(retryCount),
+      'lastAttemptAt': serializer.toJson<DateTime?>(lastAttemptAt),
+      'lastError': serializer.toJson<String?>(lastError),
+    };
+  }
+
+  PendingNostrPublication copyWith({
+    int? id,
+    String? eventJson,
+    DateTime? createdAt,
+    int? retryCount,
+    Value<DateTime?> lastAttemptAt = const Value.absent(),
+    Value<String?> lastError = const Value.absent(),
+  }) => PendingNostrPublication(
+    id: id ?? this.id,
+    eventJson: eventJson ?? this.eventJson,
+    createdAt: createdAt ?? this.createdAt,
+    retryCount: retryCount ?? this.retryCount,
+    lastAttemptAt: lastAttemptAt.present
+        ? lastAttemptAt.value
+        : this.lastAttemptAt,
+    lastError: lastError.present ? lastError.value : this.lastError,
+  );
+  PendingNostrPublication copyWithCompanion(
+    PendingNostrPublicationsCompanion data,
+  ) {
+    return PendingNostrPublication(
+      id: data.id.present ? data.id.value : this.id,
+      eventJson: data.eventJson.present ? data.eventJson.value : this.eventJson,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      retryCount: data.retryCount.present
+          ? data.retryCount.value
+          : this.retryCount,
+      lastAttemptAt: data.lastAttemptAt.present
+          ? data.lastAttemptAt.value
+          : this.lastAttemptAt,
+      lastError: data.lastError.present ? data.lastError.value : this.lastError,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PendingNostrPublication(')
+          ..write('id: $id, ')
+          ..write('eventJson: $eventJson, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('retryCount: $retryCount, ')
+          ..write('lastAttemptAt: $lastAttemptAt, ')
+          ..write('lastError: $lastError')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    eventJson,
+    createdAt,
+    retryCount,
+    lastAttemptAt,
+    lastError,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is PendingNostrPublication &&
+          other.id == this.id &&
+          other.eventJson == this.eventJson &&
+          other.createdAt == this.createdAt &&
+          other.retryCount == this.retryCount &&
+          other.lastAttemptAt == this.lastAttemptAt &&
+          other.lastError == this.lastError);
+}
+
+class PendingNostrPublicationsCompanion
+    extends UpdateCompanion<PendingNostrPublication> {
+  final Value<int> id;
+  final Value<String> eventJson;
+  final Value<DateTime> createdAt;
+  final Value<int> retryCount;
+  final Value<DateTime?> lastAttemptAt;
+  final Value<String?> lastError;
+  const PendingNostrPublicationsCompanion({
+    this.id = const Value.absent(),
+    this.eventJson = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.retryCount = const Value.absent(),
+    this.lastAttemptAt = const Value.absent(),
+    this.lastError = const Value.absent(),
+  });
+  PendingNostrPublicationsCompanion.insert({
+    this.id = const Value.absent(),
+    required String eventJson,
+    required DateTime createdAt,
+    this.retryCount = const Value.absent(),
+    this.lastAttemptAt = const Value.absent(),
+    this.lastError = const Value.absent(),
+  }) : eventJson = Value(eventJson),
+       createdAt = Value(createdAt);
+  static Insertable<PendingNostrPublication> custom({
+    Expression<int>? id,
+    Expression<String>? eventJson,
+    Expression<DateTime>? createdAt,
+    Expression<int>? retryCount,
+    Expression<DateTime>? lastAttemptAt,
+    Expression<String>? lastError,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (eventJson != null) 'event_json': eventJson,
+      if (createdAt != null) 'created_at': createdAt,
+      if (retryCount != null) 'retry_count': retryCount,
+      if (lastAttemptAt != null) 'last_attempt_at': lastAttemptAt,
+      if (lastError != null) 'last_error': lastError,
+    });
+  }
+
+  PendingNostrPublicationsCompanion copyWith({
+    Value<int>? id,
+    Value<String>? eventJson,
+    Value<DateTime>? createdAt,
+    Value<int>? retryCount,
+    Value<DateTime?>? lastAttemptAt,
+    Value<String?>? lastError,
+  }) {
+    return PendingNostrPublicationsCompanion(
+      id: id ?? this.id,
+      eventJson: eventJson ?? this.eventJson,
+      createdAt: createdAt ?? this.createdAt,
+      retryCount: retryCount ?? this.retryCount,
+      lastAttemptAt: lastAttemptAt ?? this.lastAttemptAt,
+      lastError: lastError ?? this.lastError,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (eventJson.present) {
+      map['event_json'] = Variable<String>(eventJson.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (retryCount.present) {
+      map['retry_count'] = Variable<int>(retryCount.value);
+    }
+    if (lastAttemptAt.present) {
+      map['last_attempt_at'] = Variable<DateTime>(lastAttemptAt.value);
+    }
+    if (lastError.present) {
+      map['last_error'] = Variable<String>(lastError.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PendingNostrPublicationsCompanion(')
+          ..write('id: $id, ')
+          ..write('eventJson: $eventJson, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('retryCount: $retryCount, ')
+          ..write('lastAttemptAt: $lastAttemptAt, ')
+          ..write('lastError: $lastError')
           ..write(')'))
         .toString();
   }
@@ -2011,6 +2526,8 @@ abstract class _$WildBitDatabase extends GeneratedDatabase {
   late final $TrackPointsTable trackPoints = $TrackPointsTable(this);
   late final $CachedMapCellsTable cachedMapCells = $CachedMapCellsTable(this);
   late final $OfflineAreasTable offlineAreas = $OfflineAreasTable(this);
+  late final $PendingNostrPublicationsTable pendingNostrPublications =
+      $PendingNostrPublicationsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -2020,6 +2537,7 @@ abstract class _$WildBitDatabase extends GeneratedDatabase {
     trackPoints,
     cachedMapCells,
     offlineAreas,
+    pendingNostrPublications,
   ];
   @override
   StreamQueryUpdateRules get streamUpdateRules => const StreamQueryUpdateRules([
@@ -2961,6 +3479,8 @@ typedef $$OfflineAreasTableCreateCompanionBuilder =
       required double northEastLng,
       Value<String> status,
       Value<double> progress,
+      Value<int> minZoom,
+      Value<int> maxZoom,
       required DateTime requestedAt,
       Value<DateTime?> completedAt,
     });
@@ -2974,6 +3494,8 @@ typedef $$OfflineAreasTableUpdateCompanionBuilder =
       Value<double> northEastLng,
       Value<String> status,
       Value<double> progress,
+      Value<int> minZoom,
+      Value<int> maxZoom,
       Value<DateTime> requestedAt,
       Value<DateTime?> completedAt,
     });
@@ -3024,6 +3546,16 @@ class $$OfflineAreasTableFilterComposer
 
   ColumnFilters<double> get progress => $composableBuilder(
     column: $table.progress,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get minZoom => $composableBuilder(
+    column: $table.minZoom,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get maxZoom => $composableBuilder(
+    column: $table.maxZoom,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3087,6 +3619,16 @@ class $$OfflineAreasTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get minZoom => $composableBuilder(
+    column: $table.minZoom,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get maxZoom => $composableBuilder(
+    column: $table.maxZoom,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get requestedAt => $composableBuilder(
     column: $table.requestedAt,
     builder: (column) => ColumnOrderings(column),
@@ -3138,6 +3680,12 @@ class $$OfflineAreasTableAnnotationComposer
 
   GeneratedColumn<double> get progress =>
       $composableBuilder(column: $table.progress, builder: (column) => column);
+
+  GeneratedColumn<int> get minZoom =>
+      $composableBuilder(column: $table.minZoom, builder: (column) => column);
+
+  GeneratedColumn<int> get maxZoom =>
+      $composableBuilder(column: $table.maxZoom, builder: (column) => column);
 
   GeneratedColumn<DateTime> get requestedAt => $composableBuilder(
     column: $table.requestedAt,
@@ -3191,6 +3739,8 @@ class $$OfflineAreasTableTableManager
                 Value<double> northEastLng = const Value.absent(),
                 Value<String> status = const Value.absent(),
                 Value<double> progress = const Value.absent(),
+                Value<int> minZoom = const Value.absent(),
+                Value<int> maxZoom = const Value.absent(),
                 Value<DateTime> requestedAt = const Value.absent(),
                 Value<DateTime?> completedAt = const Value.absent(),
               }) => OfflineAreasCompanion(
@@ -3202,6 +3752,8 @@ class $$OfflineAreasTableTableManager
                 northEastLng: northEastLng,
                 status: status,
                 progress: progress,
+                minZoom: minZoom,
+                maxZoom: maxZoom,
                 requestedAt: requestedAt,
                 completedAt: completedAt,
               ),
@@ -3215,6 +3767,8 @@ class $$OfflineAreasTableTableManager
                 required double northEastLng,
                 Value<String> status = const Value.absent(),
                 Value<double> progress = const Value.absent(),
+                Value<int> minZoom = const Value.absent(),
+                Value<int> maxZoom = const Value.absent(),
                 required DateTime requestedAt,
                 Value<DateTime?> completedAt = const Value.absent(),
               }) => OfflineAreasCompanion.insert(
@@ -3226,6 +3780,8 @@ class $$OfflineAreasTableTableManager
                 northEastLng: northEastLng,
                 status: status,
                 progress: progress,
+                minZoom: minZoom,
+                maxZoom: maxZoom,
                 requestedAt: requestedAt,
                 completedAt: completedAt,
               ),
@@ -3254,6 +3810,242 @@ typedef $$OfflineAreasTableProcessedTableManager =
       OfflineArea,
       PrefetchHooks Function()
     >;
+typedef $$PendingNostrPublicationsTableCreateCompanionBuilder =
+    PendingNostrPublicationsCompanion Function({
+      Value<int> id,
+      required String eventJson,
+      required DateTime createdAt,
+      Value<int> retryCount,
+      Value<DateTime?> lastAttemptAt,
+      Value<String?> lastError,
+    });
+typedef $$PendingNostrPublicationsTableUpdateCompanionBuilder =
+    PendingNostrPublicationsCompanion Function({
+      Value<int> id,
+      Value<String> eventJson,
+      Value<DateTime> createdAt,
+      Value<int> retryCount,
+      Value<DateTime?> lastAttemptAt,
+      Value<String?> lastError,
+    });
+
+class $$PendingNostrPublicationsTableFilterComposer
+    extends Composer<_$WildBitDatabase, $PendingNostrPublicationsTable> {
+  $$PendingNostrPublicationsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get eventJson => $composableBuilder(
+    column: $table.eventJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get retryCount => $composableBuilder(
+    column: $table.retryCount,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get lastAttemptAt => $composableBuilder(
+    column: $table.lastAttemptAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get lastError => $composableBuilder(
+    column: $table.lastError,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$PendingNostrPublicationsTableOrderingComposer
+    extends Composer<_$WildBitDatabase, $PendingNostrPublicationsTable> {
+  $$PendingNostrPublicationsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get eventJson => $composableBuilder(
+    column: $table.eventJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get retryCount => $composableBuilder(
+    column: $table.retryCount,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get lastAttemptAt => $composableBuilder(
+    column: $table.lastAttemptAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get lastError => $composableBuilder(
+    column: $table.lastError,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$PendingNostrPublicationsTableAnnotationComposer
+    extends Composer<_$WildBitDatabase, $PendingNostrPublicationsTable> {
+  $$PendingNostrPublicationsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get eventJson =>
+      $composableBuilder(column: $table.eventJson, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<int> get retryCount => $composableBuilder(
+    column: $table.retryCount,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get lastAttemptAt => $composableBuilder(
+    column: $table.lastAttemptAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get lastError =>
+      $composableBuilder(column: $table.lastError, builder: (column) => column);
+}
+
+class $$PendingNostrPublicationsTableTableManager
+    extends
+        RootTableManager<
+          _$WildBitDatabase,
+          $PendingNostrPublicationsTable,
+          PendingNostrPublication,
+          $$PendingNostrPublicationsTableFilterComposer,
+          $$PendingNostrPublicationsTableOrderingComposer,
+          $$PendingNostrPublicationsTableAnnotationComposer,
+          $$PendingNostrPublicationsTableCreateCompanionBuilder,
+          $$PendingNostrPublicationsTableUpdateCompanionBuilder,
+          (
+            PendingNostrPublication,
+            BaseReferences<
+              _$WildBitDatabase,
+              $PendingNostrPublicationsTable,
+              PendingNostrPublication
+            >,
+          ),
+          PendingNostrPublication,
+          PrefetchHooks Function()
+        > {
+  $$PendingNostrPublicationsTableTableManager(
+    _$WildBitDatabase db,
+    $PendingNostrPublicationsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$PendingNostrPublicationsTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$PendingNostrPublicationsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$PendingNostrPublicationsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<String> eventJson = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<int> retryCount = const Value.absent(),
+                Value<DateTime?> lastAttemptAt = const Value.absent(),
+                Value<String?> lastError = const Value.absent(),
+              }) => PendingNostrPublicationsCompanion(
+                id: id,
+                eventJson: eventJson,
+                createdAt: createdAt,
+                retryCount: retryCount,
+                lastAttemptAt: lastAttemptAt,
+                lastError: lastError,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required String eventJson,
+                required DateTime createdAt,
+                Value<int> retryCount = const Value.absent(),
+                Value<DateTime?> lastAttemptAt = const Value.absent(),
+                Value<String?> lastError = const Value.absent(),
+              }) => PendingNostrPublicationsCompanion.insert(
+                id: id,
+                eventJson: eventJson,
+                createdAt: createdAt,
+                retryCount: retryCount,
+                lastAttemptAt: lastAttemptAt,
+                lastError: lastError,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$PendingNostrPublicationsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$WildBitDatabase,
+      $PendingNostrPublicationsTable,
+      PendingNostrPublication,
+      $$PendingNostrPublicationsTableFilterComposer,
+      $$PendingNostrPublicationsTableOrderingComposer,
+      $$PendingNostrPublicationsTableAnnotationComposer,
+      $$PendingNostrPublicationsTableCreateCompanionBuilder,
+      $$PendingNostrPublicationsTableUpdateCompanionBuilder,
+      (
+        PendingNostrPublication,
+        BaseReferences<
+          _$WildBitDatabase,
+          $PendingNostrPublicationsTable,
+          PendingNostrPublication
+        >,
+      ),
+      PendingNostrPublication,
+      PrefetchHooks Function()
+    >;
 
 class $WildBitDatabaseManager {
   final _$WildBitDatabase _db;
@@ -3266,4 +4058,9 @@ class $WildBitDatabaseManager {
       $$CachedMapCellsTableTableManager(_db, _db.cachedMapCells);
   $$OfflineAreasTableTableManager get offlineAreas =>
       $$OfflineAreasTableTableManager(_db, _db.offlineAreas);
+  $$PendingNostrPublicationsTableTableManager get pendingNostrPublications =>
+      $$PendingNostrPublicationsTableTableManager(
+        _db,
+        _db.pendingNostrPublications,
+      );
 }

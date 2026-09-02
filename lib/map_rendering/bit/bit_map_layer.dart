@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../domain/entities/geo_fix.dart';
 import '../../location/location_service.dart';
+import '../performance/map_rendering_budget.dart';
 import 'bit_animation_controller.dart';
 import 'bit_cursor.dart';
 
@@ -37,15 +37,14 @@ class BitMapLayer extends StatefulWidget {
   State<BitMapLayer> createState() => BitMapLayerState();
 }
 
-class BitMapLayerState extends State<BitMapLayer>
-    with SingleTickerProviderStateMixin {
+class BitMapLayerState extends State<BitMapLayer> {
   static const _distance = Distance();
   static const _interpolationWindow = Duration(milliseconds: 900);
   static const _depthPublishInterval = Duration(milliseconds: 80);
   static const _movingSpeedThreshold = 0.8; // m/s, rejects GPS jitter
 
-  late final Ticker _ticker;
   StreamSubscription<GeoFix>? _subscription;
+  bool _interpolationListening = false;
 
   LatLng? _previous;
   LatLng? _target;
@@ -58,7 +57,6 @@ class BitMapLayerState extends State<BitMapLayer>
   @override
   void initState() {
     super.initState();
-    _ticker = createTicker(_onTick)..start();
     unawaited(_startLocation());
   }
 
@@ -108,11 +106,28 @@ class BitMapLayerState extends State<BitMapLayer>
       _rendered = point.position;
       widget.renderedPosition?.value = point.position;
       if (mounted) setState(() {});
+    } else {
+      // Interpolate only while a new GNSS fix is being approached. Keeping a
+      // display-rate ticker alive after Bit has reached the fix wastes CPU and
+      // battery without changing a single pixel.
+      _startInterpolation();
     }
     widget.onPositionUpdate?.call(point);
   }
 
-  void _onTick(Duration elapsed) {
+  void _startInterpolation() {
+    if (_interpolationListening) return;
+    _interpolationListening = true;
+    MapRenderingBudget.actorClock.addListener(_onTick);
+  }
+
+  void _stopInterpolation() {
+    if (!_interpolationListening) return;
+    _interpolationListening = false;
+    MapRenderingBudget.actorClock.removeListener(_onTick);
+  }
+
+  void _onTick() {
     final target = _target;
     if (target == null) return;
 
@@ -128,7 +143,10 @@ class BitMapLayerState extends State<BitMapLayer>
       prev.latitude + (target.latitude - prev.latitude) * t,
       prev.longitude + (target.longitude - prev.longitude) * t,
     );
-    if (_rendered == next) return;
+    if (_rendered == next) {
+      if (t >= 1) _stopInterpolation();
+      return;
+    }
     setState(() => _rendered = next);
     final now = DateTime.now();
     final publishDepth =
@@ -138,11 +156,12 @@ class BitMapLayerState extends State<BitMapLayer>
       _lastDepthPublishedAt = now;
       widget.renderedPosition?.value = next;
     }
+    if (t >= 1) _stopInterpolation();
   }
 
   @override
   void dispose() {
-    _ticker.dispose();
+    _stopInterpolation();
     _subscription?.cancel();
     super.dispose();
   }
@@ -155,7 +174,10 @@ class BitMapLayerState extends State<BitMapLayer>
     if (rendered == null) return const SizedBox.shrink();
 
     final camera = MapCamera.of(context);
-    final pixelSize = (32 * math.pow(2, camera.zoom - 16))
+    // Keep the declared native size as the reference. Using a hard-coded 32
+    // here made callers unable to tune Bit's size for a compact handset or a
+    // mock scene, even though [pixelSize] was part of the public API.
+    final pixelSize = (widget.pixelSize * math.pow(2, camera.zoom - 16))
         .clamp(18.0, 56.0)
         .toDouble();
     final offset = camera.latLngToScreenOffset(rendered);

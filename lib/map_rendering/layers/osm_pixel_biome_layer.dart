@@ -16,17 +16,26 @@ class OsmPixelBiomeLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
-    final areas = features.areas.where(
-      (area) =>
-          (area.kind == MapFeatureKind.forest ||
-              area.kind == MapFeatureKind.meadow ||
-              area.kind == MapFeatureKind.park) &&
-          MapRenderingBudget.areaMayBeVisible(area, camera.visibleBounds),
-    ).toList(growable: false);
+    final areas = features.areas
+        .where(
+          (area) =>
+              (area.kind == MapFeatureKind.forest ||
+                  area.kind == MapFeatureKind.meadow ||
+                  area.kind == MapFeatureKind.park) &&
+              MapRenderingBudget.areaMayBeVisible(area, camera.visibleBounds),
+        )
+        .toList(growable: false);
     if (areas.isEmpty) return const SizedBox.expand();
     return IgnorePointer(
       child: ProjectedTextureAreaBatch(
         camera: camera,
+        // A forest cannot turn into a flat green polygon while the finger is
+        // down: that fast path produced a conspicuous material flash on every
+        // pan and pinch. Texture continuity is part of orientation, so keep
+        // this already-cached low-cost base material; moving water, labels,
+        // dense urban detail and ambient highlights remain the gesture-time
+        // savings instead.
+        textureEnabled: true,
         areas: [
           for (final area in areas)
             ProjectedTextureAreaSpec(

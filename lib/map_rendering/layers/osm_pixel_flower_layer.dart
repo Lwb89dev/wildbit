@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -10,6 +9,7 @@ import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../composition/map_geometry_rules.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/projected_depth_order.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Tiny pixel flowers are decorative texture, never map evidence. Their
@@ -24,23 +24,19 @@ class OsmPixelFlowerLayer extends StatefulWidget {
   State<OsmPixelFlowerLayer> createState() => _OsmPixelFlowerLayerState();
 }
 
-class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
-    with WidgetsBindingObserver {
-  static const _candidateLimit = 300;
-  static const _windStep = Duration(milliseconds: 120);
+class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer> {
+  static const _candidateLimit = 140;
 
-  final ValueNotifier<double> _windPhase = ValueNotifier(0);
   List<_FlowerPoint> _candidates = const [];
   late int _featureSignature;
-  Timer? _windTimer;
+  int? _projectedViewKey;
+  List<_ProjectedFlower>? _projectedFlowers;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _featureSignature = _signature(widget.features);
     _candidates = _composeCandidates();
-    _startWind();
   }
 
   @override
@@ -50,75 +46,76 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
     if (signature == _featureSignature) return;
     _featureSignature = signature;
     _candidates = _composeCandidates();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _startWind();
-    } else {
-      _windTimer?.cancel();
-      _windTimer = null;
-    }
-  }
-
-  void _startWind() {
-    if (_windTimer?.isActive ?? false) return;
-    _windTimer = Timer.periodic(_windStep, (_) {
-      // Pixel art benefits from deliberate stepped motion; eight updates per
-      // second are enough and avoid forcing a permanent 60 fps map repaint.
-      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
-        return;
-      }
-      _windPhase.value = (_windPhase.value + 1 / 24) % 1;
-    });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _windTimer?.cancel();
-    _windPhase.dispose();
-    super.dispose();
+    _projectedViewKey = null;
+    _projectedFlowers = null;
   }
 
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
+    final flowers = _projectForCamera(camera);
+    if (flowers.isEmpty) return const SizedBox.expand();
+    return IgnorePointer(
+      child: LayoutBuilder(
+        builder: (context, constraints) => RepaintBoundary(
+          child: CustomPaint(
+            size: constraints.biggest,
+            painter: _FlowerPainter(camera, flowers, constraints.biggest),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<_ProjectedFlower> _projectForCamera(MapCamera camera) {
+    final bounds = camera.visibleBounds;
+    final viewKey = Object.hash(
+      _featureSignature,
+      camera.center.latitude,
+      camera.center.longitude,
+      camera.zoom,
+      camera.rotation,
+      bounds.south,
+      bounds.west,
+      bounds.north,
+      bounds.east,
+      MapRenderingBudget.decorativeQuality,
+    );
+    final cached = _projectedFlowers;
+    if (cached != null && _projectedViewKey == viewKey) return cached;
     final budgeted = MapRenderingBudget.stableDecorativeSubset(
       _candidates,
-      count: MapRenderingBudget.decorativeCount(
+      count: MapRenderingBudget.decorativeLodCount(
         camera.zoom,
-        overview: 60,
+        overview: 32,
         close: _candidates.length,
       ),
       rank: (flower) =>
           flower.position.latitude.hashCode ^
           flower.position.longitude.hashCode,
     );
-    final flowers = budgeted
-        .where((flower) => camera.visibleBounds.contains(flower.position))
-        .toList(growable: false);
-    flowers.sort((a, b) => b.position.latitude.compareTo(a.position.latitude));
-    if (flowers.isEmpty) return const SizedBox.expand();
-    return IgnorePointer(
-      child: LayoutBuilder(
-        builder: (context, constraints) => RepaintBoundary(
-          child: AnimatedBuilder(
-            animation: _windPhase,
-            builder: (context, _) => CustomPaint(
-              size: constraints.biggest,
-              painter: _FlowerPainter(
-                camera,
-                flowers,
-                constraints.biggest,
-                _windPhase.value,
+    // Reuse each camera projection for visibility, depth and paint. Calling
+    // `latLngToScreenOffset` from the sort comparator projected the same
+    // flower O(n log n) times on every camera update.
+    final flowers =
+        <_ProjectedFlower>[
+          for (final flower in budgeted)
+            if (camera.visibleBounds.contains(flower.position))
+              _ProjectedFlower(
+                flower,
+                camera.latLngToScreenOffset(flower.position),
               ),
-            ),
+        ]..sort(
+          (a, b) => ProjectedDepthOrder.compare(
+            firstFoot: a.foot,
+            secondFoot: b.foot,
+            firstTieBreaker: a.flower.variant,
+            secondTieBreaker: b.flower.variant,
           ),
-        ),
-      ),
-    );
+        );
+    _projectedViewKey = viewKey;
+    _projectedFlowers = List.unmodifiable(flowers);
+    return _projectedFlowers!;
   }
 
   bool _isFlowerArea(AreaFeature area) =>
@@ -130,7 +127,7 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
         .toList(growable: false);
     if (areas.isEmpty) return const [];
     final result = <_FlowerPoint>[];
-    final perArea = math.max(24, (_candidateLimit / areas.length).ceil());
+    final perArea = math.max(8, (_candidateLimit / areas.length).ceil());
     for (final area in areas) {
       if (result.length >= _candidateLimit) break;
       result.addAll(
@@ -153,6 +150,14 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
       east = math.max(east, point.longitude);
     }
     final random = math.Random(_seed(area));
+    final localAreas = MapGeometryRules.areasNearArea(
+      area,
+      widget.features.areas,
+    );
+    final localLines = MapGeometryRules.linesNearArea(
+      area,
+      widget.features.lines,
+    );
     final clusterCenters = [
       (
         south + random.nextDouble() * (north - south),
@@ -170,7 +175,7 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
     final result = <_FlowerPoint>[];
     for (
       var attempt = 0;
-      attempt < remaining * 10 && result.length < remaining;
+      attempt < remaining * 6 && result.length < remaining;
       attempt++
     ) {
       final cluster = clusterCenters[random.nextInt(clusterCenters.length)];
@@ -179,10 +184,10 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer>
         cluster.$2 + (random.nextDouble() - .5) * (east - west) * .28,
       );
       if (!MapGeometryRules.pointInArea(position, area) ||
-          MapGeometryRules.insideAnyWater(position, widget.features.areas) ||
+          MapGeometryRules.insideAnyWater(position, localAreas) ||
           MapGeometryRules.nearAnyLine(
             position,
-            widget.features.lines,
+            localLines,
             thresholdDegrees: .00018,
           )) {
         continue;
@@ -219,13 +224,19 @@ class _FlowerPoint {
   final int variant;
 }
 
+class _ProjectedFlower {
+  const _ProjectedFlower(this.flower, this.foot);
+
+  final _FlowerPoint flower;
+  final Offset foot;
+}
+
 class _FlowerPainter extends CustomPainter {
-  const _FlowerPainter(this.camera, this.flowers, this.size, this.phase);
+  const _FlowerPainter(this.camera, this.flowers, this.size);
 
   final MapCamera camera;
-  final List<_FlowerPoint> flowers;
+  final List<_ProjectedFlower> flowers;
   final Size size;
-  final double phase;
 
   @override
   void paint(Canvas canvas, Size _) {
@@ -242,13 +253,9 @@ class _FlowerPainter extends CustomPainter {
       Color(0xFFEDE9D5),
       Color(0xFFB58BDB),
     ];
-    for (final flower in flowers) {
-      final base = camera.latLngToScreenOffset(flower.position);
-      // A continuous loop: the previous amplitude envelope jumped whenever
-      // the controller wrapped from 1 back to 0.
-      final sway =
-          math.sin((phase * math.pi * 2) + flower.variant) * .65 * scale;
-      final point = base.translate(sway, 0);
+    for (final projected in flowers) {
+      final flower = projected.flower;
+      final point = projected.foot;
       if (point.dx < -8 ||
           point.dy < -8 ||
           point.dx > size.width + 8 ||
@@ -287,6 +294,6 @@ class _FlowerPainter extends CustomPainter {
   bool shouldRepaint(_FlowerPainter oldDelegate) =>
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
-      oldDelegate.flowers != flowers ||
-      oldDelegate.phase != phase;
+      oldDelegate.camera.rotation != camera.rotation ||
+      oldDelegate.flowers != flowers;
 }

@@ -9,14 +9,15 @@ import 'package:flutter_map/flutter_map.dart';
 import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
+import '../assets/map_visual_asset_warmup.dart';
 import '../composition/map_geometry_rules.dart';
 import '../composition/osm_water_polygon_projector.dart';
 import '../composition/water_edge_composer.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Batched production pass for OSM water polygons, shores and riparian detail.
-/// One animation clock and one Canvas replace the previous timer, clip tree and
-/// set of image widgets allocated for every visible lake or pond.
+/// The static fill/bank pass is split from the sparse animated highlights, so
+/// a large lake does not repaint its whole texture on every ambient tick.
 class OsmPixelWaterLayer extends StatefulWidget {
   const OsmPixelWaterLayer({super.key, required this.features});
 
@@ -26,9 +27,7 @@ class OsmPixelWaterLayer extends StatefulWidget {
   State<OsmPixelWaterLayer> createState() => _OsmPixelWaterLayerState();
 }
 
-class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
-    with WidgetsBindingObserver {
-  static const _flowStep = Duration(milliseconds: 140);
+class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
   static const _assets = [
     'assets/map/mock/terrain/water_still_1.png',
     'assets/map/mock/terrain/water_still_2.png',
@@ -40,21 +39,42 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
     'assets/map/mock/objects/shrub_riverside.png',
   ];
 
-  final ValueNotifier<double> _flowPhase = ValueNotifier(0);
-  final Map<String, ui.Image> _images = {};
+  // These maps are replaced atomically when an asset becomes available. Their
+  // identities stay stable during GPS/UI rebuilds, so an otherwise static
+  // lake does not repaint merely because a parent widget rebuilt.
+  Map<String, ui.Image> _images = const {};
+  Map<String, ui.Shader> _shaders = const {};
   final Set<String> _loading = {};
-  Timer? _flowTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _startFlow();
-  }
+  final Map<AreaFeature, WaterEdgeMaterial> _materialCache = {};
+  int? _renderViewKey;
+  List<_WaterAreaRender>? _cachedRenders;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _ensureImages();
+  }
+
+  @override
+  void didUpdateWidget(covariant OsmPixelWaterLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.features, widget.features)) {
+      // Rock adjacency is geographic data, not camera state. Reuse it while
+      // the user pans/zooms, but discard it as soon as a new OSM snapshot
+      // arrives so a refreshed coastline cannot inherit stale bank material.
+      _materialCache.clear();
+      _renderViewKey = null;
+      _cachedRenders = null;
+    }
+    _ensureImages();
+  }
+
+  void _ensureImages() {
+    if (!widget.features.areas.any(
+      (area) => area.kind == MapFeatureKind.water,
+    )) {
+      return;
+    }
     for (final asset in _assets) {
       if (_images.containsKey(asset) || !_loading.add(asset)) continue;
       _loadImage(asset);
@@ -62,25 +82,19 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
   }
 
   Future<void> _loadImage(String asset) async {
-    final completer = Completer<ui.Image>();
-    final stream = AssetImage(
-      asset,
-    ).resolve(createLocalImageConfiguration(context));
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (image, _) {
-        stream.removeListener(listener);
-        completer.complete(image.image);
-      },
-      onError: (error, stackTrace) {
-        stream.removeListener(listener);
-        completer.completeError(error, stackTrace);
-      },
-    );
-    stream.addListener(listener);
     try {
-      final image = await completer.future;
-      if (mounted) setState(() => _images[asset] = image);
+      final image = await MapVisualAssetWarmup.resolveImage(context, asset);
+      if (mounted) {
+        setState(() {
+          _images = Map.unmodifiable({..._images, asset: image});
+          if (asset.contains('water_still_')) {
+            _shaders = Map.unmodifiable({
+              ..._shaders,
+              asset: _shaderFor(image),
+            });
+          }
+        });
+      }
     } catch (_) {
       // Solid water and geometric shore fallbacks remain available.
     } finally {
@@ -88,39 +102,103 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
     }
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _startFlow();
-    } else {
-      _flowTimer?.cancel();
-      _flowTimer = null;
-    }
-  }
-
-  void _startFlow() {
-    if (_flowTimer?.isActive ?? false) return;
-    _flowTimer = Timer.periodic(_flowStep, (_) {
-      // Camera gestures already invalidate the water layer; avoid scheduling
-      // another repaint until the gesture has settled.
-      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
-        return;
-      }
-      _flowPhase.value = (_flowPhase.value + 1 / 20) % 1;
-    });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _flowTimer?.cancel();
-    _flowPhase.dispose();
-    super.dispose();
-  }
+  ui.Shader _shaderFor(ui.Image image) => ui.ImageShader(
+    image,
+    ui.TileMode.repeated,
+    ui.TileMode.repeated,
+    Float64List.fromList(const [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+    ]),
+    filterQuality: ui.FilterQuality.none,
+  );
 
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
+    final renders = _rendersForCamera(camera);
+    if (renders.isEmpty) return const SizedBox.expand();
+    final scale = _scaleForZoom(camera.zoom);
+    final showAmbientDetails =
+        MapRenderingBudget.ambientDetailEnabled &&
+        !MapRenderingBudget.mapInteracting;
+    // Most of a lake/sea frame is geographically static.  Keeping the fill,
+    // banks and shore modules in their own repaint boundary prevents the
+    // ambient clock from re-rasterising every water polygon just to move a
+    // handful of subtle highlights.
+    return IgnorePointer(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          RepaintBoundary(
+            child: CustomPaint(
+              size: Size.infinite,
+              painter: _WaterBasePainter(
+                renders: renders,
+                // Do not trade the static water material for a solid fallback
+                // while the user is panning. Apart from the visible blue
+                // flash this made a moving river expose a different surface
+                // from the same river at rest. The expensive animated pass
+                // and bank sprites remain suspended below; the tiled base is
+                // cached and is the visual continuity anchor.
+                images: _images,
+                shaders: _shaders,
+                scale: scale,
+                showBankSprites: showAmbientDetails,
+              ),
+            ),
+          ),
+          if (showAmbientDetails)
+            RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: MapRenderingBudget.ambientClock,
+                builder: (context, _) => CustomPaint(
+                  size: Size.infinite,
+                  painter: _WaterAmbientPainter(
+                    renders: renders,
+                    phase: MapRenderingBudget.ambientClock.phase,
+                    scale: scale,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<_WaterAreaRender> _rendersForCamera(MapCamera camera) {
+    final bounds = camera.visibleBounds;
+    final scale = _scaleForZoom(camera.zoom);
+    final viewKey = Object.hash(
+      identityHashCode(widget.features),
+      camera.center.latitude,
+      camera.center.longitude,
+      camera.zoom,
+      camera.rotation,
+      bounds.south,
+      bounds.west,
+      bounds.north,
+      bounds.east,
+      scale,
+      MapRenderingBudget.decorativeQuality,
+    );
+    final cached = _cachedRenders;
+    if (cached != null && _renderViewKey == viewKey) return cached;
     final waterAreas =
         widget.features.areas
             .where(
@@ -137,7 +215,6 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
               b.ring,
             ).compareTo(MapGeometryRules.polygonArea(a.ring)),
           );
-    final scale = _scaleForZoom(camera.zoom);
     final renders = <_WaterAreaRender>[];
     for (final area in waterAreas) {
       final polygon = OsmWaterPolygonProjector.project(
@@ -149,12 +226,20 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
       final seed = OsmWaterPolygonProjector.seedFor(area);
       final projectedHoles = [
         for (final hole in area.holes)
-          [for (final point in hole) camera.latLngToScreenOffset(point)],
+          OsmWaterPolygonProjector.projectRing(
+            hole,
+            camera.latLngToScreenOffset,
+          ),
       ];
+      final path = Path()..fillType = PathFillType.evenOdd;
+      path.addPolygon(polygon, true);
+      for (final hole in projectedHoles) {
+        if (hole.length >= 3) path.addPolygon(hole, true);
+      }
       renders.add(
         _WaterAreaRender(
-          polygon: polygon,
-          holes: projectedHoles,
+          path: path,
+          bounds: path.getBounds(),
           material: material,
           seed: seed,
           edges: _shorePlacements(
@@ -168,23 +253,9 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
         ),
       );
     }
-    if (renders.isEmpty) return const SizedBox.expand();
-    return RepaintBoundary(
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: _flowPhase,
-          builder: (context, _) => CustomPaint(
-            size: Size.infinite,
-            painter: _WaterBatchPainter(
-              renders: renders,
-              images: Map.unmodifiable(_images),
-              phase: _flowPhase.value,
-              scale: scale,
-            ),
-          ),
-        ),
-      ),
-    );
+    _renderViewKey = viewKey;
+    _cachedRenders = List.unmodifiable(renders);
+    return _cachedRenders!;
   }
 
   double _scaleForZoom(double zoom) =>
@@ -201,14 +272,18 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
           (start.latitude + end.latitude) * math.pi / 360,
         );
         final dy = end.latitude - start.latitude;
-        final dx = (end.longitude - start.longitude) * latitudeScale;
+        var longitudeDelta = end.longitude - start.longitude;
+        if (longitudeDelta > 180) longitudeDelta -= 360;
+        if (longitudeDelta < -180) longitudeDelta += 360;
+        final dx = longitudeDelta * latitudeScale;
         perimeter += math.sqrt(dx * dx + dy * dy);
       }
     }
-    return (perimeter / .00038).round().clamp(
+    final requested = (perimeter / .00038).round().clamp(
       4,
       MapRenderingBudget.maxShoreSpritesPerPolygon,
     );
+    return MapRenderingBudget.shoreDetailCount(requested);
   }
 
   List<WaterEdgePlacement> _shorePlacements({
@@ -278,7 +353,10 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
     return total;
   }
 
-  WaterEdgeMaterial _materialFor(AreaFeature water) {
+  WaterEdgeMaterial _materialFor(AreaFeature water) =>
+      _materialCache.putIfAbsent(water, () => _computeMaterial(water));
+
+  WaterEdgeMaterial _computeMaterial(AreaFeature water) {
     for (final terrain in widget.features.areas) {
       if (terrain.kind != MapFeatureKind.mountainRock) continue;
       for (final point in water.ring) {
@@ -300,71 +378,45 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer>
 
 class _WaterAreaRender {
   const _WaterAreaRender({
-    required this.polygon,
-    required this.holes,
+    required this.path,
+    required this.bounds,
     required this.material,
     required this.seed,
     required this.edges,
   });
 
-  final List<Offset> polygon;
-  final List<List<Offset>> holes;
+  final Path path;
+  final Rect bounds;
   final WaterEdgeMaterial material;
   final int seed;
   final List<WaterEdgePlacement> edges;
 }
 
-class _WaterBatchPainter extends CustomPainter {
-  const _WaterBatchPainter({
+class _WaterBasePainter extends CustomPainter {
+  const _WaterBasePainter({
     required this.renders,
     required this.images,
-    required this.phase,
+    required this.shaders,
     required this.scale,
+    required this.showBankSprites,
   });
 
   final List<_WaterAreaRender> renders;
   final Map<String, ui.Image> images;
-  final double phase;
+  final Map<String, ui.Shader> shaders;
   final double scale;
+  final bool showBankSprites;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final shaders = <String, ui.Shader>{
-      for (final entry in images.entries.where(
-        (entry) => entry.key.contains('water_still_'),
-      ))
-        entry.key: ui.ImageShader(
-          entry.value,
-          ui.TileMode.repeated,
-          ui.TileMode.repeated,
-          Float64List.fromList(const [
-            1,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            1,
-          ]),
-          filterQuality: ui.FilterQuality.none,
-        ),
-    };
-
     // All water fills are composed first. Shore modules can then form one
     // clean foreground edge without being covered by a later pond polygon.
     for (final render in renders) {
-      final path = _pathForRender(render);
-      final bounds = path.getBounds();
+      final path = render.path;
+      final bounds = render.bounds;
       if (bounds.isEmpty || !bounds.overlaps(Offset.zero & size)) continue;
+      final visible = bounds.intersect(Offset.zero & size);
+      if (visible.isEmpty) continue;
       final asset =
           'assets/map/mock/terrain/water_still_${render.seed.abs() % 3 + 1}.png';
       final shader = shaders[asset];
@@ -372,22 +424,17 @@ class _WaterBatchPainter extends CustomPainter {
         canvas.drawPath(path, Paint()..color = const Color(0xFF3987A3));
         continue;
       }
-      canvas.save();
-      canvas.clipPath(path);
-      canvas.translate(bounds.left - 16 * phase, bounds.top);
-      canvas.drawRect(
-        Rect.fromLTWH(0, 0, bounds.width + 16, bounds.height),
+      canvas.drawPath(
+        path,
         Paint()
           ..shader = shader
           ..filterQuality = FilterQuality.none,
       );
-      canvas.restore();
-      _paintWaterHighlights(canvas, path, bounds, render.seed, size);
     }
 
     for (final render in renders) {
-      final shorePath = _pathForRender(render);
-      _paintContinuousShore(canvas, shorePath, render.material);
+      _paintContinuousShore(canvas, render.path, render.material);
+      if (!showBankSprites) continue;
       final shoreAsset = switch (render.material) {
         WaterEdgeMaterial.grass => 'assets/map/mock/terrain/shore_grass.png',
         WaterEdgeMaterial.rock =>
@@ -437,63 +484,6 @@ class _WaterBatchPainter extends CustomPainter {
         );
       }
     }
-  }
-
-  Path _pathForRender(_WaterAreaRender render) {
-    final path = Path()..fillType = PathFillType.evenOdd;
-    path.addPolygon(render.polygon, true);
-    for (final hole in render.holes) {
-      if (hole.length >= 3) path.addPolygon(hole, true);
-    }
-    return path;
-  }
-
-  void _paintWaterHighlights(
-    Canvas canvas,
-    Path path,
-    Rect bounds,
-    int seed,
-    Size canvasSize,
-  ) {
-    final visible = bounds.intersect(Offset.zero & canvasSize);
-    if (visible.isEmpty) return;
-    final spacingY = 25 * scale;
-    final spacingX = 54 * scale;
-    final light = Paint()
-      ..color = const Color(0x99BFE8E5)
-      ..isAntiAlias = false;
-    final shade = Paint()
-      ..color = const Color(0x55305F78)
-      ..isAntiAlias = false;
-    canvas.save();
-    canvas.clipPath(path);
-    final seedOffset = (seed.abs() % 17) * scale;
-    for (
-      var y = visible.top + seedOffset % spacingY;
-      y < visible.bottom;
-      y += spacingY
-    ) {
-      final row = ((y - bounds.top) / spacingY).floor();
-      final rowOffset = ((row * 19 + seed.abs()) % 31) * scale;
-      for (
-        var x = visible.left - spacingX + rowOffset;
-        x < visible.right;
-        x += spacingX
-      ) {
-        final waveWidth = (8 + ((row + seed) & 7)) * scale;
-        final pixel = math.max(1.0, 1.35 * scale);
-        canvas.drawRect(
-          Rect.fromLTWH(x + 2 * scale, y + 2 * scale, waveWidth, pixel),
-          shade,
-        );
-        canvas.drawRect(Rect.fromLTWH(x, y, waveWidth, pixel), light);
-        canvas.drawRect(
-          Rect.fromLTWH(x + waveWidth * .28, y - pixel, waveWidth * .44, pixel),
-          light,
-        );
-      }
-    }
-    canvas.restore();
   }
 
   void _paintContinuousShore(
@@ -584,9 +574,97 @@ class _WaterBatchPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_WaterBatchPainter oldDelegate) =>
+  bool shouldRepaint(_WaterBasePainter oldDelegate) =>
       oldDelegate.renders != renders ||
       oldDelegate.images != images ||
+      oldDelegate.shaders != shaders ||
+      oldDelegate.scale != scale ||
+      oldDelegate.showBankSprites != showBankSprites;
+}
+
+/// Only the tiny lake/sea highlights repaint with the ambient clock.  The
+/// textured water fill and all shore geometry stay in [_WaterBasePainter].
+class _WaterAmbientPainter extends CustomPainter {
+  const _WaterAmbientPainter({
+    required this.renders,
+    required this.phase,
+    required this.scale,
+  });
+
+  final List<_WaterAreaRender> renders;
+  final double phase;
+  final double scale;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final render in renders) {
+      if (!render.bounds.overlaps(Offset.zero & size)) continue;
+      _paintWaterHighlights(
+        canvas,
+        render.path,
+        render.bounds,
+        render.seed,
+        size,
+        phase,
+        scale,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WaterAmbientPainter oldDelegate) =>
+      oldDelegate.renders != renders ||
       oldDelegate.phase != phase ||
       oldDelegate.scale != scale;
+}
+
+void _paintWaterHighlights(
+  Canvas canvas,
+  Path path,
+  Rect bounds,
+  int seed,
+  Size canvasSize,
+  double phase,
+  double scale,
+) {
+  final visible = bounds.intersect(Offset.zero & canvasSize);
+  if (visible.isEmpty) return;
+  final spacingY = 25 * scale;
+  final spacingX = 54 * scale;
+  final light = Paint()
+    ..color = const Color(0x99BFE8E5)
+    ..isAntiAlias = false;
+  final shade = Paint()
+    ..color = const Color(0x55305F78)
+    ..isAntiAlias = false;
+  canvas.save();
+  canvas.clipPath(path);
+  final seedOffset = (seed.abs() % 17) * scale;
+  final phaseOffset = phase * spacingX;
+  for (
+    var y = visible.top + seedOffset % spacingY;
+    y < visible.bottom;
+    y += spacingY
+  ) {
+    final row = ((y - bounds.top) / spacingY).floor();
+    final rowOffset = ((row * 19 + seed.abs()) % 31) * scale;
+    for (
+      var x = visible.left - spacingX + rowOffset + phaseOffset;
+      x < visible.right + spacingX;
+      x += spacingX
+    ) {
+      final waveWidth = (8 + ((row + seed) & 7)) * scale;
+      final pixel = math.max(1.0, 1.35 * scale);
+      canvas.drawRect(
+        Rect.fromLTWH(x + 2 * scale, y + 2 * scale, waveWidth, pixel),
+        shade,
+      );
+      canvas.drawRect(Rect.fromLTWH(x, y, waveWidth, pixel), light);
+      canvas.drawRect(
+        Rect.fromLTWH(x + waveWidth * .28, y - pixel, waveWidth * .44, pixel),
+        light,
+      );
+    }
+  }
+  canvas.restore();
 }

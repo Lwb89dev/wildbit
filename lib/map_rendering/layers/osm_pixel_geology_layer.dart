@@ -30,6 +30,10 @@ class OsmPixelGeologyLayer extends StatelessWidget {
     return IgnorePointer(
       child: ProjectedTextureAreaBatch(
         camera: camera,
+        // Keep the ground material stable during camera motion. Switching to
+        // the fallback fill for a gesture makes rock/land-cover zones flash,
+        // which is more disorienting than the small cost of a cached shader.
+        textureEnabled: true,
         areas: [
           for (final area in areas)
             ProjectedTextureAreaSpec(
@@ -43,8 +47,7 @@ class OsmPixelGeologyLayer extends StatelessWidget {
               borderColor: area.kind == MapFeatureKind.snow
                   ? const Color(0xFFB7C4BD)
                   : const Color(0xFF514B43),
-              borderWidth:
-                  .7 + .5 * ((camera.zoom - 9) / 5).clamp(0.0, 1.0),
+              borderWidth: .7 + .5 * ((camera.zoom - 9) / 5).clamp(0.0, 1.0),
             ),
         ],
       ),

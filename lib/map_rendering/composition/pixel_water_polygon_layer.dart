@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -38,48 +37,7 @@ class PixelWaterPolygonLayer extends StatefulWidget {
   State<PixelWaterPolygonLayer> createState() => _PixelWaterPolygonLayerState();
 }
 
-class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
-    with WidgetsBindingObserver {
-  static const _flowStep = Duration(milliseconds: 140);
-
-  final ValueNotifier<double> _flowPhase = ValueNotifier(0);
-  Timer? _flowTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    if (widget.flowDirection != null) _startFlow();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      if (widget.flowDirection != null) _startFlow();
-    } else {
-      _flowTimer?.cancel();
-      _flowTimer = null;
-    }
-  }
-
-  void _startFlow() {
-    if (_flowTimer?.isActive ?? false) return;
-    _flowTimer = Timer.periodic(_flowStep, (_) {
-      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
-        return;
-      }
-      _flowPhase.value = (_flowPhase.value + 1 / 20) % 1;
-    });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _flowTimer?.cancel();
-    _flowPhase.dispose();
-    super.dispose();
-  }
-
+class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer> {
   @override
   Widget build(BuildContext context) {
     final edges =
@@ -102,7 +60,7 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
       clipBehavior: Clip.hardEdge,
       children: [
         AnimatedBuilder(
-          animation: _flowPhase,
+          animation: MapRenderingBudget.ambientClock,
           builder: (context, _) => ClipPath(
             clipper: _PolygonClipper(widget.polygon),
             child: Stack(
@@ -221,7 +179,7 @@ class _PixelWaterPolygonLayerState extends State<PixelWaterPolygonLayer>
     final direction = widget.flowDirection;
     if (direction == null || direction.distance == 0) return Offset.zero;
     final normalized = direction / direction.distance;
-    return normalized * (16 * _flowPhase.value);
+    return normalized * (16 * MapRenderingBudget.ambientClock.phase);
   }
 }
 

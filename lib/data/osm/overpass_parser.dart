@@ -274,19 +274,24 @@ abstract final class OverpassParser {
     final members = <MultipolygonMember>[];
     for (final rawMember in relation['members'] as List? ?? const []) {
       if (rawMember is! Map || rawMember['type'] != 'way') continue;
-      final geometry = (rawMember['geometry'] as List?)
-          ?.map(
-            (point) => LatLng(
-              (point['lat'] as num).toDouble(),
-              (point['lon'] as num).toDouble(),
-            ),
-          )
-          .toList(growable: false);
-      final role = rawMember['role']?.toString();
-      if (geometry == null || geometry.length < 2) continue;
-      if (role == 'outer' || role == 'inner') {
-        members.add(MultipolygonMember(role: role!, points: geometry));
+      final geometry = <LatLng>[];
+      for (final rawPoint in rawMember['geometry'] as List? ?? const []) {
+        if (rawPoint is! Map) continue;
+        final latitude = rawPoint['lat'];
+        final longitude = rawPoint['lon'];
+        if (latitude is num && longitude is num) {
+          geometry.add(LatLng(latitude.toDouble(), longitude.toDouble()));
+        }
       }
+      // Preserve unknown roles and missing geometry as explicit invalid input.
+      // Silently discarding them could make an incomplete relation appear
+      // complete and suppress the safe standalone-way fallback.
+      members.add(
+        MultipolygonMember(
+          role: rawMember['role']?.toString() ?? '',
+          points: List.unmodifiable(geometry),
+        ),
+      );
     }
     return members;
   }

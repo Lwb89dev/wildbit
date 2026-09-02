@@ -14,6 +14,7 @@ import '../../data/repositories/osm_map_data_repository.dart';
 import '../../data/test_data/test_region.dart';
 import '../../domain/entities/geo_bounds.dart';
 import '../../domain/entities/map_feature_collection.dart';
+import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/geo_fix.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/entities/poi.dart';
@@ -23,6 +24,7 @@ import '../../location/compass_heading_service.dart';
 import '../../location/location_service.dart';
 import '../../map_rendering/bit/bit_animation_controller.dart';
 import '../../map_rendering/bit/bit_map_layer.dart';
+import '../../map_rendering/assets/map_visual_asset_warmup.dart';
 import '../../map_rendering/layers/osm_pixel_bridge_layer.dart';
 import '../../map_rendering/layers/osm_pixel_biome_layer.dart';
 import '../../map_rendering/layers/osm_pixel_coastline_layer.dart';
@@ -43,17 +45,29 @@ import '../../map_rendering/layers/pixel_position_marker.dart';
 import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
 import '../../map_rendering/performance/map_rendering_budget.dart';
 import '../../map_rendering/performance/map_frame_performance_monitor.dart';
+import '../../map_rendering/performance/map_scene_metrics.dart';
+import '../../map_rendering/performance/renderer_replay_bundle.dart';
 import '../../map_rendering/composition/coastline_topology_composer.dart';
 import '../../map_rendering/composition/osm_line_projector.dart';
 import '../../map_rendering/composition/projected_depth_order.dart';
 import '../../services/kokoro/wildbit_voice_service.dart';
+import '../../services/renderer_replay_file_service.dart';
 import '../../services/track_recorder.dart';
 import 'compass_fab.dart';
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key, required this.locationService});
+  const MapScreen({
+    super.key,
+    required this.locationService,
+    this.initialCenter,
+    this.initialZoom,
+    this.onViewportSnapshot,
+  });
 
   final LocationService locationService;
+  final LatLng? initialCenter;
+  final double? initialZoom;
+  final void Function(LatLng center, double zoom)? onViewportSnapshot;
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -64,6 +78,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final _bitLayerKey = GlobalKey<BitMapLayerState>();
   final _bitRenderedPosition = ValueNotifier<LatLng?>(null);
   final _lineProjectionCache = ProjectedLineCache();
+  final _urbanRenderCache = UrbanRenderCache();
+  final _poiProjectionCache = PoiProjectionCache();
+  final _foregroundVegetationRenderCache = ForegroundVegetationRenderCache();
   final _frameMonitor = MapFramePerformanceMonitor();
   late final _bitController = BitAnimationController();
   OsmMapDataRepository? _dataRepository;
@@ -71,9 +88,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Timer? _interactionIdle;
   Timer? _partialCoverageRetry;
   final Set<Timer> _featureFetchTimers = <Timer>{};
+  Completer<void>? _featureRequestAbort;
   int _featureRequestId = 0;
+  int? _lastStreamedFeatureRequestId;
   LatLng? _lastGpsFeatureFetch;
   final List<GeoBounds> _loadedFeatureRegions = [];
+  final Map<String, _RetainedMapCell> _retainedMapCells = {};
+  static const _maxRetainedMapCells = 6;
 
   MapFeatureCollection _features = const MapFeatureCollection(
     areas: [],
@@ -84,6 +105,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     chains: [],
     issues: [],
   );
+  List<LineFeature> _coastlineLines = const [];
   bool _followUser = true;
   bool _isLoadingFeatures = false;
   String? _mapDataError;
@@ -94,6 +116,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _showTrails = true;
   bool _showRoads = true;
   bool _showPois = true;
+  bool _showLabels = false;
   MapFeatureCollection? _visibleFeaturesCache;
   MapFeatureCollection? _visibleFeaturesSource;
   bool? _cachedShowTrails;
@@ -112,14 +135,46 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StreamSubscription<double>? _compassSub;
   double _mapRotationDegrees = 0;
   bool _headingModeActive = false;
+  Timer? _ambientIdleTimer;
 
   @override
   void initState() {
     super.initState();
+    _zoom = widget.initialZoom ?? _zoom;
     MapRenderingBudget.setMapVisible(true);
+    MapRenderingBudget.setAmbientIdle(false);
     WidgetsBinding.instance.addObserver(this);
     _compassSub = _compassService.headingStream.listen(_onCompassHeading);
-    if (kDebugMode) _frameMonitor.start();
+    // The timing monitor is deliberately compact (a 60-frame rolling
+    // window). It also runs in release so a slow field device can lower
+    // purely decorative work rather than remaining under sustained pressure.
+    _frameMonitor.stats.addListener(_onFrameStats);
+    _frameMonitor.start();
+    _scheduleAmbientIdle();
+    // RootShell warms these on first launch. Repeating this idempotent call
+    // means a Map recreated after a memory-pressure purge recovers its small
+    // essentials asynchronously, without retaining the full renderer.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(MapVisualAssetWarmup.warmup(context));
+    });
+  }
+
+  void _onFrameStats() {
+    final stats = _frameMonitor.stats.value;
+    // A scene can be expensive even after a pan settles (for example a dense
+    // forest whose ambient water/Bit frame is still costly). Apply the same
+    // strictly decorative budget in that state as well; waiting for another
+    // gesture used to leave slower phones at full workload indefinitely.
+    if (stats.sampleCount == 0 || !MapRenderingBudget.mapVisible) return;
+    final changed = MapRenderingBudget.configureFramePressure(
+      averageBuildMicros: stats.averageBuildMicros,
+      averageRasterMicros: stats.averageRasterMicros,
+      p95FrameMicros: stats.p95FrameMicros,
+      targetFrameMicros: _frameMonitor.targetFrameMicros,
+    );
+    // Only quality-tier changes rebuild the scene; the per-frame timings
+    // themselves never create a setState loop.
+    if (changed && mounted) setState(() {});
   }
 
   void _onCompassHeading(double headingDegrees) {
@@ -142,10 +197,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   // it; heading mode resumes on its own once the app is visible again.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    MapRenderingBudget.setAppActive(state == AppLifecycleState.resumed);
     if (state != AppLifecycleState.resumed) {
       _interactionIdle?.cancel();
+      _ambientIdleTimer?.cancel();
       _fetchDebounce?.cancel();
       MapRenderingBudget.setMapInteracting(false);
+    } else {
+      _scheduleAmbientIdle();
     }
     if (!_headingModeActive) return;
     if (state == AppLifecycleState.resumed) {
@@ -153,6 +212,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     } else {
       _compassService.stop();
     }
+  }
+
+  @override
+  void didHaveMemoryPressure() {
+    // Never discard the current OSM scene: it contains the hiker's immediate
+    // map evidence and must remain usable offline. Everything released here
+    // is either a screen-space projection or a decoded copy recoverable from
+    // the encrypted SQLite cache.
+    _lineProjectionCache.clearTransient();
+    _urbanRenderCache.clearTransient();
+    _poiProjectionCache.clearTransient();
+    _foregroundVegetationRenderCache.clearTransient();
+    _dataRepository?.releaseTransientMemory();
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    MapVisualAssetWarmup.releaseForMemoryPressure();
+    debugPrint('WildBit renderer: memoria transitoria rilasciata');
   }
 
   @override
@@ -169,17 +245,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    try {
+      final camera = _mapController.camera;
+      widget.onViewportSnapshot?.call(camera.center, camera.zoom);
+    } catch (_) {
+      // The controller may not be attached if the shell changes tab during
+      // the first map frame; there is simply no camera to preserve yet.
+    }
     WidgetsBinding.instance.removeObserver(this);
     _fetchDebounce?.cancel();
     _interactionIdle?.cancel();
+    _ambientIdleTimer?.cancel();
     _partialCoverageRetry?.cancel();
     for (final timer in _featureFetchTimers) {
       timer.cancel();
     }
     _featureFetchTimers.clear();
+    _cancelActiveFeatureRequest();
     MapRenderingBudget.setMapInteracting(false);
     MapRenderingBudget.setMapVisible(false);
     _bitRenderedPosition.dispose();
+    _frameMonitor.stats.removeListener(_onFrameStats);
     _frameMonitor.dispose();
     _compassSub?.cancel();
     _compassService.dispose();
@@ -197,12 +283,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _fetchForCurrentViewport() async {
     final bounds = _padded(_mapController.camera.visibleBounds);
-    await _fetchFeaturesIfNeeded(bounds);
+    await _fetchFeaturesIfNeeded(
+      bounds,
+      priorityPosition: _lastFix?.position ?? _bitRenderedPosition.value,
+    );
   }
 
-  Future<void> _fetchFeaturesIfNeeded(GeoBounds bounds) async {
+  Future<void> _fetchFeaturesIfNeeded(
+    GeoBounds bounds, {
+    LatLng? priorityPosition,
+  }) async {
     if (_isFeatureAreaCovered(bounds)) return;
-    await _fetchFeatures(bounds);
+    await _fetchFeatures(bounds, priorityPosition: priorityPosition);
   }
 
   bool _isFeatureAreaCovered(GeoBounds bounds) =>
@@ -235,19 +327,45 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           position.longitude + longitudeRadius,
         ),
       ),
+      priorityPosition: position,
     );
   }
 
-  Future<void> _fetchFeatures(GeoBounds bounds) async {
+  Future<void> _fetchFeatures(
+    GeoBounds bounds, {
+    LatLng? priorityPosition,
+  }) async {
     final repository = _dataRepository;
     if (repository == null) return;
+    _cancelActiveFeatureRequest();
+    final abort = Completer<void>();
+    _featureRequestAbort = abort;
     final requestId = ++_featureRequestId;
 
     setState(() => _isLoadingFeatures = true);
     final load = repository.loadFeatures(
       bounds,
-      onCellLoaded: (cell, features) =>
-          _commitCellFeatures(features, cell: cell, requestId: requestId),
+      // Building footprints are useful only at walking/city zoom. Avoid
+      // downloading thousands of urban polygons while the user is viewing a
+      // broad hiking area; trails, water and terrain remain in the base query.
+      // In WildBit urban footprints are deliberately secondary. Defer them
+      // until an inspection-scale zoom: this protects the first render near
+      // towns while the forest, water and every route remain available.
+      includeBuildings: _mapController.camera.zoom >= 15.5,
+      // Forest polygons stay in the base response at every zoom. Individual
+      // OSM tree nodes are requested only close enough to distinguish them;
+      // at broader hiking zoom they add network, memory and draw cost without
+      // improving route legibility.
+      includeIndividualTrees: _mapController.camera.zoom >= 15.5,
+      shouldContinue: () => mounted && requestId == _featureRequestId,
+      priorityPosition: priorityPosition,
+      abortTrigger: abort.future,
+      onCellLoaded: (cell, features) => _commitCellFeatures(
+        features,
+        cell: cell,
+        requestBounds: bounds,
+        requestId: requestId,
+      ),
     );
     try {
       final features = await _withFetchBudget(load);
@@ -274,16 +392,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         }
       });
       _updatePartialCoverageRetry(bounds);
-      // The repository operation is intentionally not cancelled: an eventual
-      // successful response is still valuable for the cell cache and should
-      // replace the preview only if this request is still the current one.
-      unawaited(
-        load.then(
-          (features) =>
-              _commitFeatures(features, bounds: bounds, requestId: requestId),
-          onError: (Object _) {},
-        ),
-      );
       return;
     } catch (_) {
       if (mounted && requestId == _featureRequestId) {
@@ -320,6 +428,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     timer = Timer(_featureFetchBudget, () {
       _featureFetchTimers.remove(timer);
       if (!result.isCompleted) {
+        // This is a UI responsiveness budget, not a network cancellation.
+        // Keeping the in-flight request alive lets the repository finish a
+        // retry on another Overpass endpoint and publish its streamed cell
+        // through onCellLoaded. A pan, disposal or a newer viewport still
+        // calls _cancelActiveFeatureRequest and aborts the HTTP request.
         result.completeError(
           TimeoutException('OSM feature fetch exceeded $_featureFetchBudget'),
         );
@@ -339,6 +452,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       },
     );
     return result.future;
+  }
+
+  void _cancelActiveFeatureRequest() {
+    final abort = _featureRequestAbort;
+    if (abort != null && !abort.isCompleted) abort.complete();
+    _featureRequestAbort = null;
   }
 
   void _commitFeatures(
@@ -364,13 +483,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final useLocalPreview =
         kDebugMode && hasNoFeatures && repository.lastLoadError != null;
     final hasPartialCoverage = !_isFeatureAreaCovered(bounds);
+    // Every available cell has already been committed through onCellLoaded.
+    // Replacing the same scene here would rebuild all projected layers once
+    // more just to dismiss the loading state, which the cell commit already
+    // did. Keep the current collection identity and only maintain retry state.
+    if (_lastStreamedFeatureRequestId == requestId && !useLocalPreview) {
+      _updatePartialCoverageRetry(bounds);
+      return;
+    }
+    final nextFeatures = useLocalPreview
+        ? testRegionFeatures
+        : _retainedMapCells.isEmpty
+        ? _mergeFeatures(features, _features)
+        : _mergeRetainedMapCells();
+    final nextTopology = _topologyFor(nextFeatures);
     setState(() {
-      _features = useLocalPreview
-          ? testRegionFeatures
-          : _mergeFeatures(features, _features);
-      _coastlineTopology = CoastlineTopologyComposer.compose(
-        _features.lines.where((line) => line.kind == MapFeatureKind.coastline),
-      );
+      _features = nextFeatures;
+      _coastlineTopology = nextTopology;
       _isLoadingFeatures = false;
       _usingLocalPreview = useLocalPreview;
       _mapDataError = hasNoFeatures && repository.lastLoadError != null
@@ -387,20 +516,83 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void _commitCellFeatures(
     MapFeatureCollection features, {
     required GeoBounds cell,
+    required GeoBounds requestBounds,
     required int requestId,
   }) {
     if (!mounted || requestId != _featureRequestId) return;
+    final key = MapCellGrid.keyFor(cell);
+    _retainedMapCells[key] = _RetainedMapCell(cell: cell, features: features);
+    _evictDistantMapCells();
+    _lastStreamedFeatureRequestId = requestId;
+    final nextFeatures = _mergeRetainedMapCells();
+    final nextTopology = _topologyFor(nextFeatures);
+    final hasPartialCoverage = !_isFeatureAreaCovered(requestBounds);
     setState(() {
-      _features = _mergeFeatures(features, _features);
-      _coastlineTopology = CoastlineTopologyComposer.compose(
-        _features.lines.where((line) => line.kind == MapFeatureKind.coastline),
-      );
-      if (!_loadedFeatureRegions.any((region) => region.containsBounds(cell))) {
-        _loadedFeatureRegions.add(cell);
-      }
+      _features = nextFeatures;
+      _coastlineTopology = nextTopology;
+      _isLoadingFeatures = false;
+      _loadedFeatureRegions
+        ..clear()
+        ..addAll(_retainedMapCells.values.map((entry) => entry.cell));
       _usingLocalPreview = false;
-      _mapDataError = null;
+      _mapDataError = hasPartialCoverage
+          ? 'Copertura mappa parziale · caricamento in corso'
+          : null;
     });
+  }
+
+  void _evictDistantMapCells() {
+    if (_retainedMapCells.length <= _maxRetainedMapCells) return;
+    final center = _mapController.camera.center;
+    final ranked = _retainedMapCells.entries.toList()
+      ..sort((first, second) {
+        double distanceSquared(_RetainedMapCell entry) {
+          final cellCenter = LatLng(
+            (entry.cell.southWest.latitude + entry.cell.northEast.latitude) / 2,
+            (entry.cell.southWest.longitude + entry.cell.northEast.longitude) /
+                2,
+          );
+          final dLat = cellCenter.latitude - center.latitude;
+          final dLng = cellCenter.longitude - center.longitude;
+          return dLat * dLat + dLng * dLng;
+        }
+
+        final distance = distanceSquared(
+          first.value,
+        ).compareTo(distanceSquared(second.value));
+        return distance != 0 ? distance : first.key.compareTo(second.key);
+      });
+    while (ranked.length > _maxRetainedMapCells) {
+      _retainedMapCells.remove(ranked.removeLast().key);
+    }
+  }
+
+  MapFeatureCollection _mergeRetainedMapCells() {
+    final collections = _retainedMapCells.values.map((entry) => entry.features);
+    return MapFeatureCollection(
+      areas: [for (final collection in collections) ...collection.areas],
+      lines: [for (final collection in collections) ...collection.lines],
+      pois: [for (final collection in collections) ...collection.pois],
+    ).deduplicated();
+  }
+
+  CoastlineTopology _topologyFor(MapFeatureCollection features) {
+    final lines = features.lines
+        .where((line) => line.kind == MapFeatureKind.coastline)
+        .toList(growable: false);
+    if (_sameCoastlineLines(lines, _coastlineLines)) {
+      return _coastlineTopology;
+    }
+    _coastlineLines = lines;
+    return CoastlineTopologyComposer.compose(lines);
+  }
+
+  bool _sameCoastlineLines(List<LineFeature> first, List<LineFeature> second) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (!identical(first[index], second[index])) return false;
+    }
+    return true;
   }
 
   void _updatePartialCoverageRetry(GeoBounds bounds) {
@@ -436,6 +628,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _setMapInteracting(bool interacting) {
     _interactionIdle?.cancel();
+    _ambientIdleTimer?.cancel();
     final changed = MapRenderingBudget.mapInteracting != interacting;
     MapRenderingBudget.setMapInteracting(interacting);
     if (changed && mounted) setState(() {});
@@ -444,12 +637,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         if (!mounted) return;
         MapRenderingBudget.setMapInteracting(false);
         setState(() {});
+        _scheduleAmbientIdle();
         // Do not query Overpass while the camera is still moving. The first
         // fetch after the gesture is idle also gives the renderer one quiet
         // frame to restore its full decorative budget.
         _scheduleFetch();
       });
+    } else {
+      _scheduleAmbientIdle();
     }
+  }
+
+  void _scheduleAmbientIdle() {
+    _ambientIdleTimer?.cancel();
+    // Rendering a static map must not retain a periodic high-frequency paint
+    // merely for small water highlights.  Keep a short grace period so the
+    // cadence does not flap while a pan or pinch settles.
+    _ambientIdleTimer = Timer(const Duration(seconds: 4), () {
+      if (!mounted || MapRenderingBudget.mapInteracting) return;
+      MapRenderingBudget.setAmbientIdle(true);
+    });
   }
 
   void _onPositionUpdate(GeoFix point) {
@@ -518,7 +725,37 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final newZoom = (camera.zoom + delta).clamp(3.0, 19.0);
     setState(() => _zoom = newZoom);
     _mapController.move(camera.center, newZoom);
-    _fetchForCurrentViewport();
+    // Consecutive +/- taps are one camera operation from the user's point of
+    // view. Reuse the gesture debounce so they produce one OSM request for
+    // the final zoom, rather than a burst of obsolete intermediate fetches.
+    _scheduleFetch();
+  }
+
+  Future<void> _exportRendererReplay() async {
+    if (!kDebugMode && !kProfileMode) return;
+    final camera = _mapController.camera;
+    final features = _visibleFeatures;
+    try {
+      final file = await RendererReplayFileService().save(
+        RendererReplayBundle(
+          capturedAt: DateTime.now(),
+          center: camera.center,
+          zoom: camera.zoom,
+          rotation: camera.rotation,
+          label: 'Snapshot locale renderer',
+          features: features,
+        ),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Replay renderer salvato in ${file.path}')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Esportazione replay non riuscita: $error')),
+      );
+    }
   }
 
   void _openLayersSheet() {
@@ -586,12 +823,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     'La topologia verifica solo i nodi OSM: non equivale a un percorso sicuro o consigliato.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  if (kDebugMode) ...[
+                  if (kDebugMode || kProfileMode) ...[
                     const SizedBox(height: 8),
                     Text(
                       'Debug OSM: ${_features.areas.where((a) => a.kind == MapFeatureKind.building).length} edifici · '
                       '${_features.pois.where((p) => p.type == PoiType.tree).length} alberi',
                       style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    Builder(
+                      builder: (context) {
+                        final metrics = MapSceneMetrics.fromFeatures(
+                          _visibleFeatures,
+                        );
+                        return Text(
+                          'Scena ${metrics.loadBand}: '
+                          '${metrics.areaCount} aree · ${metrics.lineCount} vie · '
+                          '${metrics.poiCount} POI · ${metrics.totalVertices} vertici '
+                          '(${metrics.waterAreas} acqua, ${metrics.forestAreas} bosco)',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        );
+                      },
                     ),
                     ValueListenableBuilder<MapFrameStats>(
                       valueListenable: _frameMonitor.stats,
@@ -605,6 +856,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       '${_lineProjectionCache.misses} miss · '
                       '${(_lineProjectionCache.hitRate * 100).toStringAsFixed(0)}% cache',
                       style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 6),
+                    OutlinedButton.icon(
+                      onPressed: _exportRendererReplay,
+                      icon: const Icon(Icons.save_alt_outlined),
+                      label: const Text('Salva replay locale renderer'),
                     ),
                     if (_dataRepository?.lastLoadError != null)
                       Text(
@@ -678,18 +935,31 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final media = MediaQuery.maybeOf(context);
+    if (media != null) {
+      MapRenderingBudget.configureDevice(
+        logicalWidth: media.size.width,
+        logicalHeight: media.size.height,
+        devicePixelRatio: media.devicePixelRatio,
+      );
+    }
     final visibleFeatures = _visibleFeatures;
     final recorder = context.read<TrackRecorderController>();
     return Scaffold(
       body: Stack(
         children: [
+          // The terrain texture is deliberately outside FlutterMap. It is
+          // screen-anchored decoration, not geographic geometry; this keeps
+          // the large repeated raster out of camera transforms during pan.
+          const Positioned.fill(child: PixelTerrainBaseLayer()),
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
-              initialCenter: testRegionCenter,
+              initialCenter: widget.initialCenter ?? testRegionCenter,
               initialZoom: _zoom,
               minZoom: 3,
               maxZoom: 19,
+              backgroundColor: Colors.transparent,
               onPositionChanged: (camera, hasGesture) {
                 if (hasGesture) _setMapInteracting(true);
                 if (camera.rotation != _mapRotationDegrees) {
@@ -706,9 +976,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               },
             ),
             children: [
-              // No filtered raster basemap: every visible mark is either a
-              // WildBit pixel asset or a feature decoded from OSM data.
-              const PixelTerrainBaseLayer(),
+              // No filtered raster basemap: every geographic mark is either
+              // a WildBit pixel asset or a feature decoded from OSM data.
               _ViewportFeatureScope(
                 features: visibleFeatures,
                 builder: (context, viewportFeatures) => Stack(
@@ -724,6 +993,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       features: viewportFeatures,
                       depthPivot: _bitRenderedPosition,
                       slice: ProjectedDepthSlice.behindPivot,
+                      renderCache: _urbanRenderCache,
                     ),
                     OsmPixelRouteLayer(
                       features: viewportFeatures,
@@ -738,6 +1008,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     OsmPixelFlowerLayer(features: viewportFeatures),
                     OsmPixelForegroundVegetationLayer(
                       features: viewportFeatures,
+                      depthPivot: _bitRenderedPosition,
+                      slice: ProjectedDepthSlice.behindPivot,
+                      renderCache: _foregroundVegetationRenderCache,
+                    ),
+                    OsmPixelPoiLayer(
+                      features: viewportFeatures,
+                      depthPivot: _bitRenderedPosition,
+                      slice: ProjectedDepthSlice.behindPivot,
+                      showLabels: false,
+                      interactive: false,
+                      projectionCache: _poiProjectionCache,
                     ),
                     if (_lastFix != null)
                       MarkerLayer(
@@ -761,18 +1042,34 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         onPositionUpdate: _onPositionUpdate,
                       ),
                     ),
+                    // Low vegetation participates in the same depth split as
+                    // tall trees: shrubs in front cover only Bit's lower
+                    // silhouette, while shrubs behind him never float over
+                    // the actor when the camera rotates.
+                    OsmPixelForegroundVegetationLayer(
+                      features: viewportFeatures,
+                      depthPivot: _bitRenderedPosition,
+                      slice: ProjectedDepthSlice.inFrontOfPivot,
+                      renderCache: _foregroundVegetationRenderCache,
+                    ),
                     OsmPixelUrbanLayer(
                       features: viewportFeatures,
                       depthPivot: _bitRenderedPosition,
                       slice: ProjectedDepthSlice.inFrontOfPivot,
+                      renderCache: _urbanRenderCache,
                     ),
-                    OsmPixelRouteLabelLayer(
-                      features: viewportFeatures,
-                      projectionCache: _lineProjectionCache,
-                    ),
+                    if (_showLabels)
+                      OsmPixelRouteLabelLayer(
+                        features: viewportFeatures,
+                        projectionCache: _lineProjectionCache,
+                      ),
                     OsmPixelPoiLayer(
                       features: viewportFeatures,
                       onPoiTap: _openPoiDetails,
+                      depthPivot: _bitRenderedPosition,
+                      showLabels: _showLabels,
+                      slice: ProjectedDepthSlice.inFrontOfPivot,
+                      projectionCache: _poiProjectionCache,
                     ),
                   ],
                 ),
@@ -814,6 +1111,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onZoomIn: () => _zoomBy(1),
             onZoomOut: () => _zoomBy(-1),
           ),
+          _LabelToggleControl(
+            enabled: _showLabels,
+            onTap: () => setState(() => _showLabels = !_showLabels),
+          ),
         ],
       ),
       floatingActionButton: FloatingActionButton(
@@ -822,6 +1123,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+class _RetainedMapCell {
+  const _RetainedMapCell({required this.cell, required this.features});
+
+  final GeoBounds cell;
+  final MapFeatureCollection features;
 }
 
 typedef _ViewportFeatureBuilder =
@@ -860,6 +1168,7 @@ class _ViewportFeatureScopeState extends State<_ViewportFeatureScope> {
       // shrub and flower layers do not regenerate their candidates.
       if (previous == null || !_sameCollection(previous, next)) {
         _viewportFeatures = next;
+        MapRenderingBudget.configureScene(next);
         if (kDebugMode) {
           debugPrint(
             'WildBit renderer viewport: '
@@ -889,8 +1198,12 @@ class _ViewportFeatureScopeState extends State<_ViewportFeatureScope> {
       outer != null &&
       outer.south <= inner.south &&
       outer.north >= inner.north &&
-      outer.west <= inner.west &&
-      outer.east >= inner.east;
+      MapRenderingBudget.longitudeIntervalContains(
+        outer.west,
+        outer.east,
+        inner.west,
+        inner.east,
+      );
 
   MapFeatureCollection _cull(
     MapFeatureCollection features,
@@ -1289,7 +1602,8 @@ class _ZoomControls extends StatelessWidget {
   Widget build(BuildContext context) {
     return Positioned(
       right: 12,
-      bottom: 100,
+      // Leave one compact control slot between zoom and GPS centring.
+      bottom: 160,
       child: Column(
         children: [
           _RoundIconButton(
@@ -1306,6 +1620,48 @@ class _ZoomControls extends StatelessWidget {
             iconSize: _iconSize,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _LabelToggleControl extends StatelessWidget {
+  const _LabelToggleControl({required this.enabled, required this.onTap});
+
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = enabled ? 'Nascondi etichette' : 'Mostra etichette';
+    return Positioned(
+      right: 12,
+      bottom: 100,
+      child: Tooltip(
+        message: label,
+        child: Semantics(
+          button: true,
+          label: label,
+          child: Material(
+            color: enabled
+                ? WildBitColors.forestGreen
+                : Colors.white.withValues(alpha: 0.92),
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onTap,
+              child: SizedBox(
+                width: 44,
+                height: 44,
+                child: Icon(
+                  enabled ? Icons.label : Icons.label_off_outlined,
+                  color: enabled ? Colors.white : WildBitColors.forestGreen,
+                  size: 22,
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -97,8 +97,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
         title: const Text('Esplora sentieri'),
         actions: [
           IconButton(
-          tooltip: 'Aggiorna',
-          onPressed: _isLoading ? null : () => _loadTrails(forceRefresh: true),
+            tooltip: 'Aggiorna',
+            onPressed: _isLoading
+                ? null
+                : () => _loadTrails(forceRefresh: true),
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -157,6 +159,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   TextField(
                     controller: _searchController,
                     textInputAction: TextInputAction.search,
+                    onChanged: (_) => setState(() {}),
                     onSubmitted: (value) => _loadTrails(query: value),
                     decoration: InputDecoration(
                       hintText: 'Cerca un sentiero per nome',
@@ -238,8 +241,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
                 blocked
                     ? Icons.block
                     : curated
-                        ? Icons.route
-                        : Icons.warning_amber_rounded,
+                    ? Icons.route
+                    : Icons.warning_amber_rounded,
               ),
             ),
             title: Text(trail.name),
@@ -290,7 +293,9 @@ class _LocalResultsNotice extends StatelessWidget {
         children: [
           Icon(Icons.offline_bolt_outlined, size: 17),
           SizedBox(width: 7),
-          Expanded(child: Text('Risultati salvati localmente · verifica la data')),
+          Expanded(
+            child: Text('Risultati salvati localmente · verifica la data'),
+          ),
         ],
       ),
     ),

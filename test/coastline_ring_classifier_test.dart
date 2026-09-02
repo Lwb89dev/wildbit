@@ -27,4 +27,29 @@ void main() {
       everyElement(CoastlineRingRole.outerIsland),
     );
   });
+
+  test('classifies three nested shoreline levels with alternating parity', () {
+    final rings = CoastlineRingClassifier.classify([
+      const [Offset(0, 0), Offset(120, 0), Offset(120, 120), Offset(0, 120)],
+      const [
+        Offset(20, 20),
+        Offset(100, 20),
+        Offset(100, 100),
+        Offset(20, 100),
+      ],
+      const [Offset(40, 40), Offset(80, 40), Offset(80, 80), Offset(40, 80)],
+    ]);
+
+    expect(rings.map((ring) => ring.depth), [0, 1, 2]);
+    expect(rings.last.role, CoastlineRingRole.outerIsland);
+  });
+
+  test('omits touching rings whose water parity is ambiguous', () {
+    final rings = CoastlineRingClassifier.classify([
+      const [Offset(0, 0), Offset(20, 0), Offset(20, 20), Offset(0, 20)],
+      const [Offset(20, 5), Offset(35, 5), Offset(35, 15), Offset(20, 15)],
+    ]);
+
+    expect(rings, isEmpty);
+  });
 }

@@ -77,4 +77,29 @@ void main() {
     expect(placement!.start.dx, 8);
     expect(placement.end.dx, 32);
   });
+
+  test('rejects a water interval too far from the finite bridge way', () {
+    final placement = PixelBridgePlacement.fromWaterPolygon(
+      polygon: const [
+        Offset(100, 0),
+        Offset(140, 0),
+        Offset(140, 40),
+        Offset(100, 40),
+      ],
+      center: const Offset(10, 20),
+      direction: const Offset(20, 0),
+      maximumAxisGap: 18,
+    );
+
+    expect(placement, isNull);
+  });
+
+  test('measures distance from the original way to an anchored bridge', () {
+    const placement = PixelBridgePlacement(
+      start: Offset(10, 20),
+      end: Offset(30, 20),
+    );
+    expect(placement.distanceTo(const Offset(20, 20)), 0);
+    expect(placement.distanceTo(const Offset(40, 20)), 10);
+  });
 }

@@ -11,6 +11,7 @@ import '../location/location_service.dart';
 import '../offline/offline_download_manager.dart';
 import '../services/kokoro/wildbit_voice_service.dart';
 import '../services/nostr/amber_signer_service.dart';
+import '../services/nostr/track_share_service.dart';
 import '../services/security/database_key_manager.dart';
 import '../services/track_recorder.dart';
 import '../storage/database.dart';
@@ -59,6 +60,19 @@ class WildBitProviders extends StatelessWidget {
         Provider<WildBitDatabase>(
           create: (_) => WildBitDatabase(databaseKey),
           dispose: (_, db) => db.close(),
+        ),
+        ProxyProvider3<
+          WildBitDatabase,
+          DatabaseKeyManager,
+          AmberSignerService,
+          TrackShareService
+        >(
+          update: (context, database, keyManager, amber, previous) =>
+              TrackShareService(
+                database: database,
+                keyManager: keyManager,
+                amber: amber,
+              ),
         ),
         ProxyProvider<WildBitDatabase, TrackRepository>(
           update: (context, db, previous) => DriftTrackRepository(db),

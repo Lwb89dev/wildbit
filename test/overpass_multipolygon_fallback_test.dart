@@ -55,4 +55,57 @@ void main() {
     expect(collection.areas.single.sourceId, '10');
     expect(collection.areas.single.ring.first, const LatLng(0, 0));
   });
+
+  test(
+    'does not suppress standalone geometry for an unknown relation role',
+    () {
+      final collection = OverpassParser.parse({
+        'elements': [
+          {
+            'type': 'way',
+            'id': 20,
+            'tags': {'natural': 'water'},
+            'geometry': [
+              {'lat': 0, 'lon': 0},
+              {'lat': 0, 'lon': 2},
+              {'lat': 2, 'lon': 2},
+              {'lat': 2, 'lon': 0},
+              {'lat': 0, 'lon': 0},
+            ],
+          },
+          {
+            'type': 'relation',
+            'id': 100,
+            'tags': {'type': 'multipolygon', 'natural': 'water'},
+            'members': [
+              {
+                'type': 'way',
+                'ref': 20,
+                'role': 'outer',
+                'geometry': [
+                  {'lat': 0, 'lon': 0},
+                  {'lat': 0, 'lon': 2},
+                  {'lat': 2, 'lon': 2},
+                  {'lat': 2, 'lon': 0},
+                  {'lat': 0, 'lon': 0},
+                ],
+              },
+              {
+                'type': 'way',
+                'ref': 21,
+                'role': 'side',
+                'geometry': [
+                  {'lat': 5, 'lon': 5},
+                  {'lat': 5, 'lon': 6},
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(collection.areas, hasLength(1));
+      expect(collection.areas.single.sourceId, '20');
+    },
+  );
 }

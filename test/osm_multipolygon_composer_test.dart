@@ -126,4 +126,109 @@ void main() {
       contains('outer multipolygon ring repeats an interior vertex'),
     );
   });
+
+  test('rejects an ambiguous endpoint instead of choosing a branch', () {
+    final result = OsmMultipolygonComposer.compose([
+      const MultipolygonMember(
+        role: 'outer',
+        points: [LatLng(0, 0), LatLng(0, 1)],
+      ),
+      const MultipolygonMember(
+        role: 'outer',
+        points: [LatLng(0, 1), LatLng(1, 1)],
+      ),
+      const MultipolygonMember(
+        role: 'outer',
+        points: [LatLng(0, 1), LatLng(-1, 1)],
+      ),
+    ]);
+
+    expect(result.isComplete, isFalse);
+    expect(result.issues, contains('outer multipolygon endpoint is ambiguous'));
+  });
+
+  test('rejects unknown member roles and incomplete geometry', () {
+    final result = OsmMultipolygonComposer.compose([
+      const MultipolygonMember(role: 'side', points: []),
+      const MultipolygonMember(
+        role: 'outer',
+        points: [
+          LatLng(0, 0),
+          LatLng(0, 1),
+          LatLng(1, 1),
+          LatLng(1, 0),
+          LatLng(0, 0),
+        ],
+      ),
+    ]);
+
+    expect(result.isComplete, isFalse);
+    expect(
+      result.issues,
+      contains('multipolygon contains an unsupported member role'),
+    );
+    expect(
+      result.issues,
+      contains('multipolygon contains a member without usable geometry'),
+    );
+  });
+
+  test('supports a water multipolygon crossing the antimeridian', () {
+    final result = OsmMultipolygonComposer.compose([
+      const MultipolygonMember(
+        role: 'outer',
+        points: [
+          LatLng(10, 179),
+          LatLng(10, -179),
+          LatLng(12, -179),
+          LatLng(12, 179),
+          LatLng(10, 179),
+        ],
+      ),
+      const MultipolygonMember(
+        role: 'inner',
+        points: [
+          LatLng(10.5, 179.5),
+          LatLng(10.5, -179.5),
+          LatLng(11.5, -179.5),
+          LatLng(11.5, 179.5),
+          LatLng(10.5, 179.5),
+        ],
+      ),
+    ]);
+
+    expect(result.isComplete, isTrue);
+    expect(result.polygons.single.holes, hasLength(1));
+  });
+
+  test('rejects an inner ring touching the outer shoreline', () {
+    final result = OsmMultipolygonComposer.compose([
+      const MultipolygonMember(
+        role: 'outer',
+        points: [
+          LatLng(0, 0),
+          LatLng(0, 4),
+          LatLng(4, 4),
+          LatLng(4, 0),
+          LatLng(0, 0),
+        ],
+      ),
+      const MultipolygonMember(
+        role: 'inner',
+        points: [
+          LatLng(0, 1),
+          LatLng(1, 1),
+          LatLng(1, 2),
+          LatLng(0, 2),
+          LatLng(0, 1),
+        ],
+      ),
+    ]);
+
+    expect(result.isComplete, isFalse);
+    expect(
+      result.issues,
+      contains('an inner ring touches or crosses an outer ring'),
+    );
+  });
 }

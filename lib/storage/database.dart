@@ -9,7 +9,15 @@ import 'tables.dart';
 
 part 'database.g.dart';
 
-@DriftDatabase(tables: [Tracks, TrackPoints, CachedMapCells, OfflineAreas])
+@DriftDatabase(
+  tables: [
+    Tracks,
+    TrackPoints,
+    CachedMapCells,
+    OfflineAreas,
+    PendingNostrPublications,
+  ],
+)
 class WildBitDatabase extends _$WildBitDatabase {
   /// [encryptionKey] must be a 64-character hex string (32 bytes) — see
   /// `DatabaseKeyManager`. The database file is genuinely encrypted at rest
@@ -19,7 +27,24 @@ class WildBitDatabase extends _$WildBitDatabase {
   WildBitDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 4;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onUpgrade: (migrator, from, to) async {
+      if (from < 2) {
+        await migrator.createTable(pendingNostrPublications);
+      }
+      if (from < 3) {
+        await migrator.addColumn(offlineAreas, offlineAreas.minZoom);
+        await migrator.addColumn(offlineAreas, offlineAreas.maxZoom);
+      }
+      if (from < 4) {
+        await migrator.addColumn(offlineAreas, offlineAreas.retryCount);
+        await migrator.addColumn(offlineAreas, offlineAreas.lastError);
+      }
+    },
+  );
 }
 
 LazyDatabase _openConnection(String encryptionKey) {

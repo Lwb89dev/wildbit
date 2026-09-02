@@ -8,6 +8,7 @@ import 'package:flutter_map/flutter_map.dart';
 
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
+import '../assets/map_visual_asset_warmup.dart';
 import '../composition/osm_line_projector.dart';
 import '../composition/waterway_network_composer.dart';
 import '../performance/map_rendering_budget.dart';
@@ -28,54 +29,51 @@ class OsmPixelWaterwayLayer extends StatefulWidget {
 class _OsmPixelWaterwayLayerState extends State<OsmPixelWaterwayLayer> {
   static const _asset = 'assets/map/mock/terrain/water_flow.png';
   static const _mudAsset = 'assets/map/mock/terrain/shore_mud_bank.png';
-  static const _flowStep = Duration(milliseconds: 140);
 
   ui.Image? _image;
+  ui.Shader? _textureShader;
   ui.Image? _mudImage;
   Future<void>? _loading;
   Future<void>? _mudLoading;
-  final ValueNotifier<double> _flowPhase = ValueNotifier(0);
-  Timer? _flowTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _flowTimer = Timer.periodic(_flowStep, (_) {
-      // Keep the animated texture quiet while the camera is already being
-      // repainted by a pan, pinch or rotation.
-      if (!MapRenderingBudget.mapVisible || MapRenderingBudget.mapInteracting) {
-        return;
-      }
-      _flowPhase.value = (_flowPhase.value + 1 / 20) % 1;
-    });
-  }
+  int? _waterwaySourceSignature;
+  List<WaterwayRenderStroke>? _composedWaterways;
+  int? _projectedViewKey;
+  List<_ProjectedWaterwayStroke>? _projectedWaterways;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _ensureImages();
+  }
+
+  @override
+  void didUpdateWidget(covariant OsmPixelWaterwayLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The source collection is immutable in practice, but its identity can
+    // change when a retained OSM cell is merged. Invalidate only the geometry
+    // snapshots, not the already loaded artwork.
+    if (_waterwaySignature(widget.features) != _waterwaySourceSignature) {
+      _waterwaySourceSignature = null;
+      _composedWaterways = null;
+      _projectedViewKey = null;
+      _projectedWaterways = null;
+    }
+    _ensureImages();
+  }
+
+  void _ensureImages() {
+    if (!widget.features.lines.any(
+      (line) => line.kind == MapFeatureKind.waterway,
+    )) {
+      return;
+    }
     if (_image == null) _loading ??= _loadImage();
     if (_mudImage == null) _mudLoading ??= _loadMudImage();
   }
 
   Future<void> _loadMudImage() async {
-    final completer = Completer<ui.Image>();
-    final stream = const AssetImage(
-      _mudAsset,
-    ).resolve(createLocalImageConfiguration(context));
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (image, _) {
-        stream.removeListener(listener);
-        completer.complete(image.image);
-      },
-      onError: (error, stackTrace) {
-        stream.removeListener(listener);
-        completer.completeError(error, stackTrace);
-      },
-    );
-    stream.addListener(listener);
     try {
-      final image = await completer.future;
+      final image = await MapVisualAssetWarmup.resolveImage(context, _mudAsset);
       if (mounted) setState(() => _mudImage = image);
     } catch (_) {
       // The mud-colour stroke below remains as a safe fallback.
@@ -85,25 +83,14 @@ class _OsmPixelWaterwayLayerState extends State<OsmPixelWaterwayLayer> {
   }
 
   Future<void> _loadImage() async {
-    final completer = Completer<ui.Image>();
-    final stream = const AssetImage(
-      _asset,
-    ).resolve(createLocalImageConfiguration(context));
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (image, _) {
-        stream.removeListener(listener);
-        completer.complete(image.image);
-      },
-      onError: (error, stackTrace) {
-        stream.removeListener(listener);
-        completer.completeError(error, stackTrace);
-      },
-    );
-    stream.addListener(listener);
     try {
-      final image = await completer.future;
-      if (mounted) setState(() => _image = image);
+      final image = await MapVisualAssetWarmup.resolveImage(context, _asset);
+      if (mounted) {
+        setState(() {
+          _image = image;
+          _textureShader = _shaderFor(image);
+        });
+      }
     } catch (_) {
       // The solid fallback below keeps waterways visible without the asset.
     } finally {
@@ -111,99 +98,175 @@ class _OsmPixelWaterwayLayerState extends State<OsmPixelWaterwayLayer> {
     }
   }
 
-  @override
-  void dispose() {
-    _flowTimer?.cancel();
-    _flowPhase.dispose();
-    super.dispose();
-  }
+  ui.Shader _shaderFor(ui.Image image) => ui.ImageShader(
+    image,
+    ui.TileMode.repeated,
+    ui.TileMode.repeated,
+    Float64List.fromList(const [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+    ]),
+    filterQuality: ui.FilterQuality.none,
+  );
 
   @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
-    // Network composition is topology work, not paint work.  Keeping it
-    // outside the phase-driven painter prevents every 140ms water tick from
-    // re-walking all OSM endpoints and rebuilding the same river chains.
-    final waterways = WaterwayNetworkComposer.compose(
-      widget.features.lines
-          .where((line) => line.kind == MapFeatureKind.waterway)
-          .where(
-            (line) =>
-                MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
-          ),
-    );
-    return RepaintBoundary(
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: _flowPhase,
-          builder: (context, _) => CustomPaint(
-            size: Size.infinite,
-            painter: _WaterwayPainter(
-              camera: MapCamera.of(context),
-              waterways: waterways,
-              image: _image,
-              mudImage: _mudImage,
-              phase: _flowPhase.value,
+    // Network composition is topology work, not paint work. Cache it by the
+    // source geometry so parent rebuilds (Bit movement, layer toggles, debug
+    // sheets) do not re-walk every OSM endpoint. Camera projection remains a
+    // separate cache because only that part changes while panning.
+    final waterways = _composedForSource();
+    final projectedWaterways = _projectedForCamera(camera, waterways);
+    // Do not keep the shared ambient clock alive solely for an empty Canvas:
+    // many inland viewports contain no linear waterway at all.
+    if (projectedWaterways.isEmpty) return const SizedBox.expand();
+    final showAmbientDetails =
+        MapRenderingBudget.ambientDetailEnabled &&
+        !MapRenderingBudget.mapInteracting;
+    final animateFlow =
+        showAmbientDetails && _image != null && _textureShader != null;
+    return IgnorePointer(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Banks, the water underlay and mud tiles are geographic context.
+          // Keep them in their own boundary so ambient flow frames never
+          // redraw the expensive static geometry.
+          RepaintBoundary(
+            child: CustomPaint(
+              size: Size.infinite,
+              painter: _WaterwayBasePainter(
+                camera: camera,
+                waterways: projectedWaterways,
+                mudImage: _mudImage,
+                showMudBanks: MapRenderingBudget.ambientDetailEnabled,
+              ),
             ),
           ),
-        ),
+          if (animateFlow)
+            RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: MapRenderingBudget.ambientClock,
+                builder: (context, _) => CustomPaint(
+                  size: Size.infinite,
+                  painter: _WaterwayFlowPainter(
+                    camera: camera,
+                    waterways: projectedWaterways,
+                    image: _image!,
+                    texture: _textureShader!,
+                    phase: MapRenderingBudget.ambientClock.phase,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
+
+  List<WaterwayRenderStroke> _composedForSource() {
+    final source = widget.features.lines.where(
+      (line) => line.kind == MapFeatureKind.waterway,
+    );
+    final signature = _waterwaySignature(widget.features);
+    if (_composedWaterways != null && _waterwaySourceSignature == signature) {
+      return _composedWaterways!;
+    }
+    final composed = WaterwayNetworkComposer.compose(source);
+    _waterwaySourceSignature = signature;
+    _composedWaterways = List.unmodifiable(composed);
+    _projectedViewKey = null;
+    _projectedWaterways = null;
+    return _composedWaterways!;
+  }
+
+  List<_ProjectedWaterwayStroke> _projectedForCamera(
+    MapCamera camera,
+    List<WaterwayRenderStroke> waterways,
+  ) {
+    final bounds = camera.visibleBounds;
+    final viewKey = Object.hash(
+      _waterwaySourceSignature,
+      camera.center.latitude,
+      camera.center.longitude,
+      camera.zoom,
+      camera.rotation,
+      bounds.south,
+      bounds.west,
+      bounds.north,
+      bounds.east,
+      MapRenderingBudget.mapInteracting,
+    );
+    if (_projectedWaterways != null && _projectedViewKey == viewKey) {
+      return _projectedWaterways!;
+    }
+    final projected = <_ProjectedWaterwayStroke>[];
+    for (final waterway in waterways) {
+      if (!MapRenderingBudget.pointsMayBeVisible(waterway.points, bounds)) {
+        continue;
+      }
+      final points = OsmLineProjector.projectSimplifiedPoints(
+        waterway.points,
+        camera.latLngToScreenOffset,
+        minimumDistancePixels: MapRenderingBudget.minLinePointDistancePixels,
+        maximumPoints: MapRenderingBudget.waterwayMaximumPoints(camera.zoom),
+      );
+      if (points.length >= 2) {
+        projected.add(_ProjectedWaterwayStroke(points));
+      }
+    }
+    _projectedViewKey = viewKey;
+    _projectedWaterways = List.unmodifiable(projected);
+    return _projectedWaterways!;
+  }
+
+  int _waterwaySignature(MapFeatureCollection features) => Object.hashAll(
+    features.lines
+        .where((line) => line.kind == MapFeatureKind.waterway)
+        .map(
+          (line) => Object.hash(
+            OsmLineProjector.seedFor(line),
+            Object.hashAll(line.nodeIds),
+            line.metadata.waterwayTag,
+            line.metadata.flowDirection,
+          ),
+        ),
+  );
 }
 
-class _WaterwayPainter extends CustomPainter {
-  const _WaterwayPainter({
+class _WaterwayBasePainter extends CustomPainter {
+  const _WaterwayBasePainter({
     required this.camera,
     required this.waterways,
-    required this.image,
     required this.mudImage,
-    required this.phase,
+    required this.showMudBanks,
   });
 
   final MapCamera camera;
-  final List<WaterwayRenderStroke> waterways;
-  final ui.Image? image;
+  final List<_ProjectedWaterwayStroke> waterways;
   final ui.Image? mudImage;
-  final double phase;
+  final bool showMudBanks;
 
   @override
   void paint(Canvas canvas, Size size) {
     final width = 12 * math.pow(2, camera.zoom - 16).clamp(.6, 1.25).toDouble();
-    final texture = image == null
-        ? null
-        : ui.ImageShader(
-            image!,
-            ui.TileMode.repeated,
-            ui.TileMode.repeated,
-            Float64List.fromList(const [
-              1,
-              0,
-              0,
-              0,
-              0,
-              1,
-              0,
-              0,
-              0,
-              0,
-              1,
-              0,
-              0,
-              0,
-              0,
-              1,
-            ]),
-            filterQuality: ui.FilterQuality.none,
-          );
     for (final waterway in waterways) {
-      final sourcePoints = waterway.points;
-      final points = OsmLineProjector.projectSimplifiedPoints(
-        sourcePoints,
-        camera.latLngToScreenOffset,
-        minimumDistancePixels: MapRenderingBudget.minLinePointDistancePixels,
-      );
-      if (points.length < 2) continue;
+      final points = waterway.points;
       final path = Path()..moveTo(points.first.dx, points.first.dy);
       for (final point in points.skip(1)) {
         path.lineTo(point.dx, point.dy);
@@ -230,9 +293,8 @@ class _WaterwayPainter extends CustomPainter {
           ..strokeJoin = StrokeJoin.bevel
           ..isAntiAlias = false,
       );
-      // The animated texture is a detail pass. Keep a complete water body
-      // underneath it so gaps between simplified segments never expose the
-      // terrain below the river.
+      // Keep a complete water body underneath the animated texture so gaps
+      // between simplified segments never expose terrain below the river.
       canvas.drawPath(
         path,
         Paint()
@@ -267,58 +329,8 @@ class _WaterwayPainter extends CustomPainter {
           ..strokeJoin = StrokeJoin.bevel
           ..isAntiAlias = false,
       );
-      if (mudImage != null) {
+      if (showMudBanks && mudImage != null) {
         _paintMudBanks(canvas, points, width, mudImage!);
-      }
-      if (texture == null) {
-        continue;
-      }
-      final coverage = math.max(image!.width * 3.0, width * 2.0);
-      for (var index = 0; index + 1 < points.length; index++) {
-        final start = points[index];
-        final end = points[index + 1];
-        final delta = end - start;
-        final length = delta.distance;
-        if (length < 1) continue;
-        final center = Offset.lerp(start, end, .5)!;
-        canvas.save();
-        canvas.translate(center.dx, center.dy);
-        canvas.rotate(math.atan2(delta.dy, delta.dx));
-        // Local +X is the waterway tangent, so the phase can only travel
-        // along the river and never across its width.
-        canvas.translate(-phase * image!.width.toDouble(), 0);
-        canvas.drawRect(
-          Rect.fromLTWH(
-            -length / 2 - coverage,
-            -width / 2,
-            length + coverage * 2,
-            width,
-          ),
-          Paint()..shader = texture,
-        );
-        canvas.restore();
-      }
-      // Curved ways are painted one tangent-aligned segment at a time.
-      // Textured caps close the tiny bevel gaps at joins without changing the
-      // geographic centerline or inventing a wider river.
-      final joinPaint = Paint()..shader = texture;
-      for (final point in points) {
-        canvas.drawCircle(point, width / 2, joinPaint);
-      }
-      final highlightStrength = ((camera.zoom - 9) / 4.5).clamp(0.0, 1.0);
-      if (highlightStrength > 0) {
-        canvas.drawPath(
-          path,
-          Paint()
-            ..color = const Color(
-              0xFFC3E9E5,
-            ).withValues(alpha: .6 * highlightStrength)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = math.max(1, width * .12)
-            ..strokeCap = StrokeCap.square
-            ..strokeJoin = StrokeJoin.bevel
-            ..isAntiAlias = false,
-        );
       }
     }
   }
@@ -371,12 +383,102 @@ class _WaterwayPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_WaterwayPainter oldDelegate) =>
+  bool shouldRepaint(_WaterwayBasePainter oldDelegate) =>
+      oldDelegate.camera.center != camera.center ||
+      oldDelegate.camera.zoom != camera.zoom ||
+      oldDelegate.camera.rotation != camera.rotation ||
+      oldDelegate.waterways != waterways ||
+      oldDelegate.mudImage != mudImage ||
+      oldDelegate.showMudBanks != showMudBanks;
+}
+
+class _WaterwayFlowPainter extends CustomPainter {
+  const _WaterwayFlowPainter({
+    required this.camera,
+    required this.waterways,
+    required this.image,
+    required this.texture,
+    required this.phase,
+  });
+
+  final MapCamera camera;
+  final List<_ProjectedWaterwayStroke> waterways;
+  final ui.Image image;
+  final ui.Shader texture;
+  final double phase;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final width = 12 * math.pow(2, camera.zoom - 16).clamp(.6, 1.25).toDouble();
+    for (final waterway in waterways) {
+      final points = waterway.points;
+      final path = Path()..moveTo(points.first.dx, points.first.dy);
+      for (final point in points.skip(1)) {
+        path.lineTo(point.dx, point.dy);
+      }
+      final coverage = math.max(image.width * 3.0, width * 2.0);
+      for (var index = 0; index + 1 < points.length; index++) {
+        final start = points[index];
+        final end = points[index + 1];
+        final delta = end - start;
+        final length = delta.distance;
+        if (length < 1) continue;
+        final center = Offset.lerp(start, end, .5)!;
+        canvas.save();
+        canvas.translate(center.dx, center.dy);
+        canvas.rotate(math.atan2(delta.dy, delta.dx));
+        // Local +X is the waterway tangent, so the phase can only travel
+        // along the river and never across its width.
+        canvas.translate(-phase * image.width.toDouble(), 0);
+        canvas.drawRect(
+          Rect.fromLTWH(
+            -length / 2 - coverage,
+            -width / 2,
+            length + coverage * 2,
+            width,
+          ),
+          Paint()..shader = texture,
+        );
+        canvas.restore();
+      }
+      // Curved ways are painted one tangent-aligned segment at a time.
+      // Textured caps close the tiny bevel gaps at joins without changing the
+      // geographic centerline or inventing a wider river.
+      final joinPaint = Paint()..shader = texture;
+      for (final point in points) {
+        canvas.drawCircle(point, width / 2, joinPaint);
+      }
+      final highlightStrength = ((camera.zoom - 9) / 4.5).clamp(0.0, 1.0);
+      if (highlightStrength > 0) {
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = const Color(
+              0xFFC3E9E5,
+            ).withValues(alpha: .6 * highlightStrength)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = math.max(1, width * .12)
+            ..strokeCap = StrokeCap.square
+            ..strokeJoin = StrokeJoin.bevel
+            ..isAntiAlias = false,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WaterwayFlowPainter oldDelegate) =>
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
       oldDelegate.waterways != waterways ||
       oldDelegate.image != image ||
-      oldDelegate.mudImage != mudImage ||
+      oldDelegate.texture != texture ||
       oldDelegate.phase != phase;
+}
+
+class _ProjectedWaterwayStroke {
+  const _ProjectedWaterwayStroke(this.points);
+
+  final List<Offset> points;
 }

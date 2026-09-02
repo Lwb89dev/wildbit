@@ -1,6 +1,8 @@
 import '../../domain/entities/line_feature.dart';
 import 'package:latlong2/latlong.dart';
 
+import 'geographic_ring_topology.dart';
+
 /// A directed chain of coastline ways assembled through exact OSM node IDs.
 ///
 /// The order is kept exactly as OSM supplies it: land is on the left and sea
@@ -22,6 +24,8 @@ class CoastlineChain {
 enum CoastlineTopologyIssueKind {
   missingNodeReferences,
   geometryNodeCountMismatch,
+  sharedNodeGeometryMismatch,
+  degenerateGeometry,
   ambiguousContinuation,
   invalidClosedRing,
 }
@@ -78,24 +82,23 @@ abstract final class CoastlineTopologyComposer {
         continue;
       }
       final candidate = _MutableChain.fromLine(line, wayId);
-      if (candidate.isClosed) {
-        // A valid island ring contains at least three distinct nodes before
-        // repeating its first node. Repeated interior nodes create a
-        // self-touching/degenerate fill and are safer to omit than to turn
-        // into a false sea hole.
-        final ringNodes = candidate.nodeIds
-            .take(candidate.nodeIds.length - 1)
-            .toList(growable: false);
-        if (ringNodes.length < 3 ||
-            ringNodes.toSet().length != ringNodes.length) {
-          issues.add(
-            CoastlineTopologyIssue(
-              wayId: wayId,
-              kind: CoastlineTopologyIssueKind.invalidClosedRing,
-            ),
-          );
-          continue;
-        }
+      if (candidate.nodeIds.length < 2) {
+        issues.add(
+          CoastlineTopologyIssue(
+            wayId: wayId,
+            kind: CoastlineTopologyIssueKind.degenerateGeometry,
+          ),
+        );
+        continue;
+      }
+      if (candidate.isClosed && !_validClosedRing(candidate)) {
+        issues.add(
+          CoastlineTopologyIssue(
+            wayId: wayId,
+            kind: CoastlineTopologyIssueKind.invalidClosedRing,
+          ),
+        );
+        continue;
       }
       valid.add(candidate);
     }
@@ -122,10 +125,19 @@ abstract final class CoastlineTopologyComposer {
             .where(available.contains)
             .toList(growable: false);
         if (next.length == 1) {
-          chain.append(next.single);
-          remaining.remove(next.single);
-          available.remove(next.single);
-          extended = true;
+          if (chain.canAppend(next.single)) {
+            chain.append(next.single);
+            remaining.remove(next.single);
+            available.remove(next.single);
+            extended = true;
+          } else {
+            issues.add(
+              CoastlineTopologyIssue(
+                wayId: next.single.wayIds.first,
+                kind: CoastlineTopologyIssueKind.sharedNodeGeometryMismatch,
+              ),
+            );
+          }
         } else if (next.length > 1) {
           issues.add(
             CoastlineTopologyIssue(
@@ -140,10 +152,19 @@ abstract final class CoastlineTopologyComposer {
             .where(available.contains)
             .toList(growable: false);
         if (previous.length == 1) {
-          chain.prepend(previous.single);
-          remaining.remove(previous.single);
-          available.remove(previous.single);
-          extended = true;
+          if (chain.canPrepend(previous.single)) {
+            chain.prepend(previous.single);
+            remaining.remove(previous.single);
+            available.remove(previous.single);
+            extended = true;
+          } else {
+            issues.add(
+              CoastlineTopologyIssue(
+                wayId: previous.single.wayIds.last,
+                kind: CoastlineTopologyIssueKind.sharedNodeGeometryMismatch,
+              ),
+            );
+          }
         } else if (previous.length > 1) {
           issues.add(
             CoastlineTopologyIssue(
@@ -153,12 +174,32 @@ abstract final class CoastlineTopologyComposer {
           );
         }
       }
-      chains.add(chain.freeze());
+      if (chain.isClosed && !_validClosedRing(chain)) {
+        issues.add(
+          CoastlineTopologyIssue(
+            wayId: chain.wayIds.join(','),
+            kind: CoastlineTopologyIssueKind.invalidClosedRing,
+          ),
+        );
+      } else {
+        chains.add(chain.freeze());
+      }
     }
     return CoastlineTopology(
       chains: List.unmodifiable(chains),
       issues: List.unmodifiable(issues),
     );
+  }
+
+  static bool _validClosedRing(_MutableChain chain) {
+    if (!chain.isClosed || chain.points.length < 4) return false;
+    final nodes = chain.nodeIds.take(chain.nodeIds.length - 1).toList();
+    final points = chain.points.take(chain.points.length - 1).toList();
+    return nodes.length >= 3 &&
+        nodes.toSet().length == nodes.length &&
+        !GeographicRingTopology.hasRepeatedVertex(points) &&
+        !GeographicRingTopology.selfIntersects(points) &&
+        GeographicRingTopology.area(points) >= 1e-12;
   }
 }
 
@@ -191,6 +232,14 @@ class _MutableChain {
   String get firstNodeId => nodeIds.first;
   String get lastNodeId => nodeIds.last;
   bool get isClosed => nodeIds.length > 2 && firstNodeId == lastNodeId;
+
+  bool canAppend(_MutableChain next) =>
+      lastNodeId == next.firstNodeId &&
+      GeographicRingTopology.sameCoordinate(points.last, next.points.first);
+
+  bool canPrepend(_MutableChain previous) =>
+      previous.lastNodeId == firstNodeId &&
+      GeographicRingTopology.sameCoordinate(previous.points.last, points.first);
 
   void append(_MutableChain next) {
     nodeIds.addAll(next.nodeIds.skip(1));

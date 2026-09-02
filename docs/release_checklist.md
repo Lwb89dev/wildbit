@@ -55,5 +55,32 @@ Before publishing an APK/AAB:
    `docs/map_rendering_performance.md` on at least one mid-range Android
    device before signing the artifact.
 
+## Android 16 kB page-size validation
+
+Before distributing an Android build, build the release APK and validate its
+native packaging:
+
+```bash
+flutter build apk --release
+"$ANDROID_SDK_ROOT/build-tools/<version>/zipalign" -c -P 16 -v 4 \
+  build/app/outputs/flutter-apk/app-release.apk
+```
+
+`-P 16` richiede una versione recente di Android Build Tools. Su una macchina
+con il vecchio `zipalign` che espone solo `-p`, eseguire comunque il controllo
+di packaging:
+
+```bash
+zipalign -c -p -v 4 build/app/outputs/flutter-apk/app-release.apk
+```
+
+In quel caso la garanzia specifica dei segmenti ELF a 16 kB resta affidata al
+task Gradle descritto sotto, che ispeziona tutte le `.so` dell'APK finale.
+
+The Gradle `preBuild` task also verifies every committed eSpeak NG ELF has
+`PT_LOAD` segments aligned to at least 16 kB. Do not replace those binaries
+with a prebuilt library compiled for 4 kB pages. `assembleRelease` also checks
+all native libraries actually packaged in the final APK.
+
 The current debug signing fallback remains useful for local smoke tests only;
 it is not a distributable release configuration.

@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'dart:math' as math;
 
+import '../performance/map_rendering_budget.dart';
 import 'bit_animation_controller.dart';
 import 'bit_motion_state.dart';
 import 'bit_normalized_sprite.dart';
 import 'bit_sprite_atlas.dart';
 
 /// Bit himself: the animated sprite shown at the user's GPS position.
-/// Owns the ticker that drives [BitAnimationController] frame-by-frame so
-/// callers only need to feed it movement samples via [controller].
+/// Advances [BitAnimationController] from the shared, battery-bounded actor
+/// clock so callers only need to feed it movement samples via [controller].
 class BitCursor extends StatefulWidget {
   const BitCursor({super.key, required this.controller, this.pixelSize = 72});
 
@@ -20,27 +20,21 @@ class BitCursor extends StatefulWidget {
   State<BitCursor> createState() => _BitCursorState();
 }
 
-class _BitCursorState extends State<BitCursor>
-    with SingleTickerProviderStateMixin {
-  late final Ticker _ticker;
-  Duration _lastElapsed = Duration.zero;
+class _BitCursorState extends State<BitCursor> {
+  static const _tickInterval = Duration(milliseconds: 50);
   bool _precacheStarted = false;
 
   @override
   void initState() {
     super.initState();
-    _ticker = createTicker(_onTick)..start();
+    MapRenderingBudget.actorClock.addListener(_onTick);
   }
 
-  void _onTick(Duration elapsed) {
-    final delta = elapsed - _lastElapsed;
-    _lastElapsed = elapsed;
-    widget.controller.tick(delta);
-  }
+  void _onTick() => widget.controller.tick(_tickInterval);
 
   @override
   void dispose() {
-    _ticker.dispose();
+    MapRenderingBudget.actorClock.removeListener(_onTick);
     super.dispose();
   }
 

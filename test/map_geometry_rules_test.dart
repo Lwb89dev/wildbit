@@ -65,6 +65,24 @@ void main() {
     expect(MapGeometryRules.polygonArea(lake.ring), greaterThan(0));
   });
 
+  test('contains and measures polygons crossing the antimeridian', () {
+    const island = [
+      LatLng(10, 179.8),
+      LatLng(10, -179.8),
+      LatLng(10.2, -179.8),
+      LatLng(10.2, 179.8),
+    ];
+    expect(
+      MapGeometryRules.pointInPolygon(const LatLng(10.1, 179.95), island),
+      isTrue,
+    );
+    expect(
+      MapGeometryRules.pointInPolygon(const LatLng(10.1, -179.95), island),
+      isTrue,
+    );
+    expect(MapGeometryRules.polygonArea(island), lessThan(.1));
+  });
+
   test('detects the transition band along polygon boundaries', () {
     expect(
       MapGeometryRules.nearPolygonBoundary(
@@ -126,6 +144,44 @@ void main() {
     expect(
       MapRenderingBudget.biomeDensity(MapFeatureKind.park),
       greaterThan(MapRenderingBudget.biomeDensity(MapFeatureKind.meadow)),
+    );
+  });
+
+  test('keeps generated objects clear of mapped point anchors', () {
+    expect(
+      MapGeometryRules.nearAnyPoint(const LatLng(46.0001, 11.0001), const [
+        LatLng(46, 11),
+      ], thresholdDegrees: .0002),
+      isTrue,
+    );
+    expect(
+      MapGeometryRules.nearAnyPoint(const LatLng(46.001, 11.001), const [
+        LatLng(46, 11),
+      ], thresholdDegrees: .0002),
+      isFalse,
+    );
+  });
+
+  test('indexes mapped point anchors without losing dateline neighbours', () {
+    final index = MapPointAnchorIndex(const [
+      LatLng(46, 11),
+      LatLng(10, 179.999),
+    ]);
+
+    expect(
+      index.containsNear(
+        const LatLng(46.0001, 11.0001),
+        thresholdDegrees: .0002,
+      ),
+      isTrue,
+    );
+    expect(
+      index.containsNear(const LatLng(10, -179.999), thresholdDegrees: .003),
+      isTrue,
+    );
+    expect(
+      index.containsNear(const LatLng(46.001, 11.001), thresholdDegrees: .0002),
+      isFalse,
     );
   });
 

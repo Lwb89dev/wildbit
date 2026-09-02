@@ -14,12 +14,24 @@ class PixelBridgePlacement {
 
   double get length => (end - start).distance;
 
+  double distanceTo(Offset point) {
+    final segment = end - start;
+    final squaredLength = segment.dx * segment.dx + segment.dy * segment.dy;
+    if (squaredLength <= .000001) return (point - start).distance;
+    final fromStart = point - start;
+    final projection =
+        (fromStart.dx * segment.dx + fromStart.dy * segment.dy) / squaredLength;
+    final closest = start + segment * projection.clamp(0.0, 1.0);
+    return (point - closest).distance;
+  }
+
   static PixelBridgePlacement? fromWaterPolygon({
     required List<Offset> polygon,
     List<List<Offset>> holes = const [],
     required Offset center,
     required Offset direction,
     double shoreMargin = 4,
+    double? maximumAxisGap,
   }) {
     if (polygon.length < 3 || direction.distance < .001) return null;
     final axis = direction / direction.distance;
@@ -46,12 +58,22 @@ class PixelBridgePlacement {
       }
     }
     if (intervals.isEmpty) return null;
+    final nearbyIntervals = maximumAxisGap == null
+        ? intervals
+        : intervals
+              .where(
+                (candidate) =>
+                    candidate.start <= maximumAxisGap &&
+                    candidate.end >= -maximumAxisGap,
+              )
+              .toList(growable: false);
+    if (nearbyIntervals.isEmpty) return null;
     // Prefer the interval containing the bridge way's geographic midpoint.
     // If OSM gives a midpoint just outside a shore, use the nearest interval
     // rather than accidentally spanning a second bend of a concave lake.
-    final interval = intervals.firstWhere(
+    final interval = nearbyIntervals.firstWhere(
       (candidate) => candidate.start <= 0 && candidate.end >= 0,
-      orElse: () => intervals.reduce(
+      orElse: () => nearbyIntervals.reduce(
         (first, second) =>
             first.start.abs() + first.end.abs() <
                 second.start.abs() + second.end.abs()

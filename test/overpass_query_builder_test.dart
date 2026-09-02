@@ -35,9 +35,30 @@ void main() {
       ),
     );
     expect(structures, contains('way["building"]'));
+    expect(structures, contains('out body geom 240;'));
     expect(structures, contains('way["tourism"="alpine_hut"]'));
     expect(structures, contains('relation["tourism"="alpine_hut"]'));
     expect(structures, contains('way["tourism"="camp_site"]'));
     expect(structures, contains('relation["amenity"="parking"]'));
+
+    final hikingContext = OverpassQueryBuilder.structuresForBounds(
+      const GeoBounds(
+        southWest: LatLng(46, 11),
+        northEast: LatLng(46.01, 11.01),
+      ),
+      includeBuildings: false,
+    );
+    expect(hikingContext, isNot(contains('way["building"]')));
+    expect(hikingContext, isNot(contains('out body geom 240;')));
+    expect(hikingContext, contains('way["tourism"="alpine_hut"]'));
+
+    final trees = OverpassQueryBuilder.treesForBounds(
+      const GeoBounds(
+        southWest: LatLng(46, 11),
+        northEast: LatLng(46.01, 11.01),
+      ),
+    );
+    expect(trees, contains('node["natural"="tree"]'));
+    expect(trees, contains('out body 700;'));
   });
 }

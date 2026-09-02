@@ -16,7 +16,8 @@ class Tracks extends Table {
 /// A single GPS fix belonging to a track, in insertion order.
 class TrackPoints extends Table {
   IntColumn get id => integer().autoIncrement()();
-  IntColumn get trackId => integer().references(Tracks, #id, onDelete: KeyAction.cascade)();
+  IntColumn get trackId =>
+      integer().references(Tracks, #id, onDelete: KeyAction.cascade)();
   IntColumn get sequence => integer()();
   RealColumn get latitude => real()();
   RealColumn get longitude => real()();
@@ -49,6 +50,25 @@ class OfflineAreas extends Table {
   // 'queued' | 'downloading' | 'completed' | 'failed'.
   TextColumn get status => text().withDefault(const Constant('queued'))();
   RealColumn get progress => real().withDefault(const Constant(0))();
+  // Stored per area so a retry cannot silently turn a viewport-only download
+  // into the much larger default z12–15 package.
+  IntColumn get minZoom => integer().withDefault(const Constant(12))();
+  IntColumn get maxZoom => integer().withDefault(const Constant(15))();
+  IntColumn get retryCount => integer().withDefault(const Constant(0))();
+  TextColumn get lastError => text().nullable()();
   DateTimeColumn get requestedAt => dateTime()();
   DateTimeColumn get completedAt => dateTime().nullable()();
+}
+
+/// A Nostr event that the user explicitly chose to publish, but that no relay
+/// accepted while the device was offline. The containing database is encrypted
+/// at rest, so the signed event (and its exact GPS track) is never placed in
+/// preferences, logs or an unencrypted app file while it waits for a retry.
+class PendingNostrPublications extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get eventJson => text()();
+  DateTimeColumn get createdAt => dateTime()();
+  IntColumn get retryCount => integer().withDefault(const Constant(0))();
+  DateTimeColumn get lastAttemptAt => dateTime().nullable()();
+  TextColumn get lastError => text().nullable()();
 }

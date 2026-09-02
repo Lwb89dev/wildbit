@@ -98,6 +98,25 @@ class MockAssetSpec {
 /// Canonical specifications for the first mock scene. All instances are
 /// immutable so a chunk may safely reuse them while it composes sprites.
 abstract final class MockAssetCatalog {
+  /// Native artwork contracts used by both the desktop mock and the OSM
+  /// compositor. Keeping these paths beside the geometry spec prevents a
+  /// sprite replacement from silently drifting away from its anchor.
+  static const treeArtwork = <MockAssetKind, String>{
+    MockAssetKind.deciduousTreeSmall:
+        'assets/map/mock/objects/tree_deciduous_s.png',
+    MockAssetKind.deciduousTreeLarge:
+        'assets/map/mock/objects/tree_deciduous_l.png',
+    MockAssetKind.coniferTree: 'assets/map/mock/objects/tree_conifer.png',
+    MockAssetKind.coastalTree: 'assets/map/mock/objects/tree_coastal.png',
+  };
+
+  static const treeCanvasSize = <MockAssetKind, (int width, int height)>{
+    MockAssetKind.deciduousTreeSmall: (32, 48),
+    MockAssetKind.deciduousTreeLarge: (32, 48),
+    MockAssetKind.coniferTree: (32, 48),
+    MockAssetKind.coastalTree: (32, 48),
+  };
+
   static const specs = <MockAssetSpec>[
     MockAssetSpec(
       kind: MockAssetKind.deciduousTreeSmall,
@@ -112,8 +131,8 @@ abstract final class MockAssetCatalog {
     MockAssetSpec(
       kind: MockAssetKind.deciduousTreeLarge,
       canvasWidth: 32,
-      canvasHeight: 40,
-      anchor: PixelAnchor(16, 38),
+      canvasHeight: 48,
+      anchor: PixelAnchor(16, 47),
       footprint: PixelFootprint(width: 16, height: 10),
       layer: MapDrawLayer.foregroundVegetation,
       occlusionMask: OcclusionMask.lowerThird,

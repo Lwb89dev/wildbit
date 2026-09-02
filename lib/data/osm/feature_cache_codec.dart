@@ -18,9 +18,17 @@ abstract final class FeatureCacheCodec {
   // Version 17 removes the retired barrier-tag payload from cached geometry.
   static const currentFormatVersion = 17;
 
-  static String encode(MapFeatureCollection features) {
+  static String encode(
+    MapFeatureCollection features, {
+    bool includesBuildings = false,
+    bool includesIndividualTrees = false,
+  }) {
     return jsonEncode({
       'formatVersion': currentFormatVersion,
+      'coverage': {
+        'buildings': includesBuildings,
+        'individualTrees': includesIndividualTrees,
+      },
       'areas': [
         for (final a in features.areas)
           {
@@ -90,46 +98,57 @@ abstract final class FeatureCacheCodec {
     });
   }
 
-  static MapFeatureCollection decode(String json) {
+  static MapFeatureCollection decode(String json) => decodeEntry(json).features;
+
+  static FeatureCacheEntry decodeEntry(String json) {
     final map = jsonDecode(json) as Map<String, dynamic>;
-    return MapFeatureCollection(
-      areas: [
-        for (final a in (map['areas'] as List))
-          AreaFeature(
-            kind: MapFeatureKind.values.byName(a['kind'] as String),
-            ring: _decodePoints(a['ring'] as List),
-            holes: [
-              for (final hole in a['holes'] as List? ?? const [])
-                _decodePoints(hole as List),
-            ],
-            sourceId: a['sourceId'] as String?,
-          ),
-      ],
-      lines: [
-        for (final l in (map['lines'] as List))
-          LineFeature(
-            kind: MapFeatureKind.values.byName(l['kind'] as String),
-            name: l['name'] as String?,
-            points: _decodePoints(l['points'] as List),
-            nodeIds: (l['nodeIds'] as List? ?? const [])
-                .map((nodeId) => nodeId.toString())
-                .toList(growable: false),
-            metadata: _decodeRouteMetadata(l['metadata']),
-          ),
-      ],
-      pois: [
-        for (final p in (map['pois'] as List))
-          Poi(
-            id: p['id'] as String,
-            name: p['name'] as String,
-            type: PoiType.values.byName(p['type'] as String),
-            position: LatLng(
-              (p['lat'] as num).toDouble(),
-              (p['lng'] as num).toDouble(),
+    final coverage = map['coverage'];
+    return FeatureCacheEntry(
+      includesBuildings: coverage is Map
+          ? coverage['buildings'] as bool?
+          : null,
+      includesIndividualTrees: coverage is Map
+          ? coverage['individualTrees'] as bool?
+          : null,
+      features: MapFeatureCollection(
+        areas: [
+          for (final a in (map['areas'] as List))
+            AreaFeature(
+              kind: MapFeatureKind.values.byName(a['kind'] as String),
+              ring: _decodePoints(a['ring'] as List),
+              holes: [
+                for (final hole in a['holes'] as List? ?? const [])
+                  _decodePoints(hole as List),
+              ],
+              sourceId: a['sourceId'] as String?,
             ),
-            metadata: _decodePoiMetadata(p['metadata']),
-          ),
-      ],
+        ],
+        lines: [
+          for (final l in (map['lines'] as List))
+            LineFeature(
+              kind: MapFeatureKind.values.byName(l['kind'] as String),
+              name: l['name'] as String?,
+              points: _decodePoints(l['points'] as List),
+              nodeIds: (l['nodeIds'] as List? ?? const [])
+                  .map((nodeId) => nodeId.toString())
+                  .toList(growable: false),
+              metadata: _decodeRouteMetadata(l['metadata']),
+            ),
+        ],
+        pois: [
+          for (final p in (map['pois'] as List))
+            Poi(
+              id: p['id'] as String,
+              name: p['name'] as String,
+              type: PoiType.values.byName(p['type'] as String),
+              position: LatLng(
+                (p['lat'] as num).toDouble(),
+                (p['lng'] as num).toDouble(),
+              ),
+              metadata: _decodePoiMetadata(p['metadata']),
+            ),
+        ],
+      ),
     );
   }
 
@@ -137,12 +156,14 @@ abstract final class FeatureCacheCodec {
   /// readable for an offline fallback, but must not be considered fresh for
   /// global coastline assembly.
   static bool isCurrentFormat(String json) {
-    try {
-      final map = jsonDecode(json);
-      return map is Map && map['formatVersion'] == currentFormatVersion;
-    } catch (_) {
-      return false;
-    }
+    // `featuresJson` can be several megabytes. Fully decoding it here used to
+    // block Flutter's UI isolate, only for `decodeEntry` to decode it again in
+    // a worker isolate immediately afterwards. The encoder writes this header
+    // first; inspect only a bounded prefix and let worker decoding validate the
+    // complete payload.
+    final prefix = json.substring(0, json.length.clamp(0, 256));
+    final match = RegExp(r'"formatVersion"\s*:\s*(\d+)').firstMatch(prefix);
+    return int.tryParse(match?.group(1) ?? '') == currentFormatVersion;
   }
 
   static List<List<double>> _encodePoints(List<LatLng> points) {
@@ -204,4 +225,18 @@ abstract final class FeatureCacheCodec {
       shelterType: raw['shelterType'] as String?,
     );
   }
+}
+
+/// Decoded feature payload plus proof of which optional queries completed.
+/// Nullable flags preserve compatibility with pre-metadata version-17 cells.
+class FeatureCacheEntry {
+  const FeatureCacheEntry({
+    required this.features,
+    required this.includesBuildings,
+    required this.includesIndividualTrees,
+  });
+
+  final MapFeatureCollection features;
+  final bool? includesBuildings;
+  final bool? includesIndividualTrees;
 }

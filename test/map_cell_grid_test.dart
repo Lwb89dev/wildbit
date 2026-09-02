@@ -21,6 +21,16 @@ void main() {
     );
   });
 
+  test('explicit Bit position takes priority over viewport centre', () {
+    const bitNearNorthEast = LatLng(44.4318, 12.2198);
+    final ordered = MapCellGrid.cellsCoveringPrioritized(
+      gpsViewport,
+      priority: bitNearNorthEast,
+    );
+
+    expect(ordered.first.contains(bitNearNorthEast), isTrue);
+  });
+
   test('bounds ending on a grid edge do not add an extra row or column', () {
     const oneCell = GeoBounds(
       southWest: LatLng(44.42, 12.20),

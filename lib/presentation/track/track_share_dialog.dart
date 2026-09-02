@@ -7,15 +7,14 @@ import '../../domain/entities/saved_track.dart';
 import '../../domain/entities/track_summary.dart';
 import '../../map_rendering/layers/hd_terrain_layer.dart';
 import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
-import '../../services/nostr/amber_signer_service.dart';
 import '../../services/nostr/track_share_service.dart';
-import '../../services/security/database_key_manager.dart';
 
 /// Nostr sharing dialog shared by the just-recorded track flow
 /// ([TrackScreen]) and the saved/archived track flow ([TrackDetailScreen]),
 /// so both offer the same consent copy and publish behaviour.
 void showTrackShareDialog(BuildContext context, SavedTrack track) {
   var publishing = false;
+  var exactTrackConsent = false;
   final summary = TrackSummary.fromTrack(track);
   showDialog<void>(
     context: context,
@@ -66,6 +65,22 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
                 'La traccia GPS esatta sarà pubblica sui relay Nostr.',
                 textAlign: TextAlign.center,
               ),
+              const SizedBox(height: 4),
+              CheckboxListTile(
+                value: exactTrackConsent,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                dense: true,
+                title: const Text(
+                  'Ho capito e desidero pubblicarla.',
+                  style: TextStyle(fontSize: 13),
+                ),
+                onChanged: publishing
+                    ? null
+                    : (value) => setDialogState(
+                        () => exactTrackConsent = value ?? false,
+                      ),
+              ),
             ],
           ),
         ),
@@ -75,20 +90,24 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
             child: const Text('Non condividere'),
           ),
           FilledButton.icon(
-            onPressed: publishing
+            onPressed: publishing || !exactTrackConsent
                 ? null
                 : () async {
                     setDialogState(() => publishing = true);
                     try {
-                      await TrackShareService(
-                        keyManager: context.read<DatabaseKeyManager>(),
-                        amber: context.read<AmberSignerService>(),
-                      ).publish(track);
+                      final result = await context
+                          .read<TrackShareService>()
+                          .publish(track);
                       if (!context.mounted) return;
                       Navigator.pop(dialogContext);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Percorso pubblicato su Nostr.'),
+                        SnackBar(
+                          content: Text(
+                            result.queued
+                                ? 'Relay non disponibile: percorso in coda '
+                                      'cifrata. Riproverò entrando in Traccia.'
+                                : 'Percorso pubblicato su Nostr.',
+                          ),
                         ),
                       );
                     } catch (e) {

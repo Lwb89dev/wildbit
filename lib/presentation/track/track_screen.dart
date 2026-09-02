@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:provider/provider.dart';
@@ -9,10 +11,25 @@ import '../../domain/enums/track_source.dart';
 import '../../map_rendering/layers/hd_terrain_layer.dart';
 import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
 import '../../services/track_recorder.dart';
+import '../../services/nostr/track_share_service.dart';
 import 'track_share_dialog.dart';
 
-class TrackScreen extends StatelessWidget {
+class TrackScreen extends StatefulWidget {
   const TrackScreen({super.key});
+
+  @override
+  State<TrackScreen> createState() => _TrackScreenState();
+}
+
+class _TrackScreenState extends State<TrackScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(context.read<TrackShareService>().retryQueued());
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

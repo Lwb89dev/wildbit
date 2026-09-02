@@ -194,8 +194,20 @@ class _OfflineScreenState extends State<OfflineScreen> {
     }
   }
 
-  Future<void> _delete(int id) async {
-    await context.read<OfflineRegionRepository>().deleteArea(id);
+  Future<void> _delete(OfflineRegion area) async {
+    final removed = await context.read<OfflineDownloadManager>().delete(area);
+    await _loadCacheBytes();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            removed == 0
+                ? 'Area rimossa: nessuna tile esclusiva da eliminare'
+                : 'Area rimossa: liberati ${_formatBytes(removed)}',
+          ),
+        ),
+      );
+    }
     setState(_reload);
   }
 
@@ -321,7 +333,10 @@ class _OfflineScreenState extends State<OfflineScreen> {
                     itemCount: areas.length,
                     itemBuilder: (context, index) => _AreaTile(
                       area: areas[index],
-                      onDelete: () => _delete(areas[index].id!),
+                      onDelete:
+                          areas[index].status == OfflineAreaStatus.downloading
+                          ? null
+                          : () => _delete(areas[index]),
                       onRetry: () => _retry(areas[index]),
                     ),
                   );
@@ -395,7 +410,7 @@ class _AreaTile extends StatelessWidget {
   });
 
   final OfflineRegion area;
-  final VoidCallback onDelete;
+  final VoidCallback? onDelete;
   final VoidCallback onRetry;
 
   @override

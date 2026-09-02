@@ -58,4 +58,60 @@ void main() {
       isFalse,
     );
   });
+
+  test('sorts projected anchors back-to-front independently of geography', () {
+    final anchors = <Offset>[
+      const Offset(400, 260),
+      const Offset(-20, 80),
+      const Offset(70, 180),
+    ]..sort((a, b) => ProjectedDepthOrder.compare(firstFoot: a, secondFoot: b));
+    expect(anchors.map((point) => point.dy), [80, 180, 260]);
+  });
+
+  test(
+    'finds the stable foreground boundary without splitting equal depth',
+    () {
+      final anchors =
+          <Offset>[
+            const Offset(40, 80),
+            const Offset(20, 120),
+            const Offset(80, 120),
+            const Offset(10, 170),
+          ]..sort(
+            (a, b) => ProjectedDepthOrder.compare(firstFoot: a, secondFoot: b),
+          );
+
+      expect(
+        ProjectedDepthOrder.firstInFrontIndex(
+          anchors,
+          const Offset(0, 120),
+          (anchor) => anchor,
+        ),
+        3,
+      );
+      expect(
+        ProjectedDepthOrder.firstInFrontIndex(
+          anchors,
+          const Offset(0, 121),
+          (anchor) => anchor,
+        ),
+        3,
+      );
+    },
+  );
+
+  test(
+    'uses the bottom edge of a projected footprint as its ground anchor',
+    () {
+      expect(
+        ProjectedDepthOrder.footprintAnchor(const [
+          Offset(10, 10),
+          Offset(40, 12),
+          Offset(38, 30),
+          Offset(12, 30),
+        ]),
+        const Offset(25, 30),
+      );
+    },
+  );
 }
