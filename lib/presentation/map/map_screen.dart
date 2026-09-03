@@ -1161,27 +1161,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               onLayersTap: _openLayersSheet,
             ),
           ),
+          // Right-side instrument column, bottom to top: GPS-centring FAB
+          // (Scaffold-managed, ~16-72), altitude, label toggle, zoom +/-,
+          // compass. Each entry's `bottom` is the previous one's top plus an
+          // 8px gap — adding a new control here means computing its slot
+          // from this same stack, not guessing a value that happens to look
+          // free in one screenshot.
           Positioned(
             right: 12,
-            bottom: 208,
-            child: ValueListenableBuilder<double>(
-              valueListenable: _mapRotationDegrees,
-              builder: (context, rotationDegrees, _) => CompassFab(
-                rotationDegrees: rotationDegrees,
-                headingModeActive: _headingModeActive,
-                onTap: _toggleHeadingMode,
-              ),
-            ),
-          ),
-          _ZoomControls(
-            onZoomIn: () => _zoomBy(1),
-            onZoomOut: () => _zoomBy(-1),
-          ),
-          // Fills the compact slot _ZoomControls already leaves free between
-          // itself and the GPS-centring FAB.
-          Positioned(
-            right: 12,
-            bottom: 96,
+            bottom: 80,
             child: ValueListenableBuilder<GeoFix?>(
               valueListenable: _lastFix,
               builder: (context, fix, _) =>
@@ -1191,6 +1179,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           _LabelToggleControl(
             enabled: _showLabels,
             onTap: () => setState(() => _showLabels = !_showLabels),
+          ),
+          _ZoomControls(
+            onZoomIn: () => _zoomBy(1),
+            onZoomOut: () => _zoomBy(-1),
+          ),
+          Positioned(
+            right: 12,
+            bottom: 288,
+            child: ValueListenableBuilder<double>(
+              valueListenable: _mapRotationDegrees,
+              builder: (context, rotationDegrees, _) => CompassFab(
+                rotationDegrees: rotationDegrees,
+                headingModeActive: _headingModeActive,
+                onTap: _toggleHeadingMode,
+              ),
+            ),
           ),
         ],
       ),
@@ -1686,8 +1690,9 @@ class _ZoomControls extends StatelessWidget {
   Widget build(BuildContext context) {
     return Positioned(
       right: 12,
-      // Leave one compact control slot between zoom and GPS centring.
-      bottom: 160,
+      // Sits above the altitude badge and label toggle, below the compass —
+      // see the instrument-column comment in _MapScreenState.build.
+      bottom: 184,
       child: Column(
         children: [
           _RoundIconButton(
@@ -1720,7 +1725,9 @@ class _LabelToggleControl extends StatelessWidget {
     final label = enabled ? 'Nascondi etichette' : 'Mostra etichette';
     return Positioned(
       right: 12,
-      bottom: 100,
+      // Sits above the altitude badge, below zoom — see the instrument-
+      // column comment in _MapScreenState.build.
+      bottom: 132,
       child: Tooltip(
         message: label,
         child: Semantics(
