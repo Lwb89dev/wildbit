@@ -44,7 +44,7 @@ or code.
 | Android GPS | Forced `LocationManager`, native cache, and GNSS fixes without Google APIs, accuracy-preferred fix selection |
 | Compass | Tilt-compensated magnetometer heading mode, toggled from the map |
 | Altimeter | Live altitude readout from the current GPS fix |
-| Explore | Curated hiking routes (name, network, real length, CAI/SAC difficulty) via Waymarked Trails, merged with nearby OSM way search; works worldwide, not just Italy |
+| Explore | Curated hiking routes (name, network, real length, CAI/SAC difficulty) via Waymarked Trails, merged with nearby OSM way search; works worldwide, not just Italy. Search by radius, by city name (Nominatim), or by trail name. Tapping a curated route previews it on the main map and offers a corridor-shaped offline download (~400 m either side of the route) with an upfront size estimate |
 | Track | Recording, pause/resume (GPS fully disconnects while paused), saving, GPX import/export, and hiking statistics |
 | POIs | Collision-aware labels, detail sheets, and conservative OSM metadata |
 | Bit's voice | Optional local Kokoro/ONNX synthesis with eSpeak NG phonemisation |
@@ -222,6 +222,7 @@ label collision handling, and conservative POI metadata treatment.
 | OpenStreetMap | Map geometry and tags | Data © OpenStreetMap contributors, ODbL |
 | Overpass | Viewport data and generic trail search | Public instances are subject to timeouts, rate limits, and outages |
 | Waymarked Trails | Curated hiking route search (Explore) | Public instance, queried directly and respectfully; degrades gracefully if unreachable |
+| Nominatim | City-name search (Explore) | Single user-initiated lookup per search, well within the public instance's rate policy |
 | Nostr relays | Voluntary track publishing | GPS tracks become public only after explicit confirmation; failed publishes queue encrypted on-device for retry |
 | Hugging Face | Optional Kokoro model download | Files are checked for size and SHA-256 before use |
 

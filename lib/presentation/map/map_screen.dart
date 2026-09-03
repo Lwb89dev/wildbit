@@ -52,6 +52,7 @@ import '../../map_rendering/composition/osm_line_projector.dart';
 import '../../map_rendering/composition/projected_depth_order.dart';
 import '../../services/kokoro/wildbit_voice_service.dart';
 import '../../services/renderer_replay_file_service.dart';
+import '../../services/selected_route_controller.dart';
 import '../../services/track_recorder.dart';
 import 'altitude_badge.dart';
 import 'compass_fab.dart';
@@ -143,6 +144,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final ValueNotifier<double> _mapRotationDegrees = ValueNotifier(0);
   bool _headingModeActive = false;
   Timer? _ambientIdleTimer;
+  SelectedRouteController? _selectedRouteController;
+  Object? _lastFittedRouteTrail;
 
   @override
   void initState() {
@@ -249,6 +252,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (_selectedRouteController == null) {
+      _selectedRouteController = context.read<SelectedRouteController>();
+      _selectedRouteController!.addListener(_onSelectedRouteChanged);
+      _onSelectedRouteChanged();
+    }
     if (_dataRepository != null) return;
     _dataRepository = context.read<OsmMapDataRepository>();
     // Do not query the Alpine preview coordinate during startup. Bit's first
@@ -256,6 +264,53 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     // schedules a viewport fetch when location is unavailable. The old eager
     // request raced the GPS request, doubled Overpass traffic and could commit
     // thousands of irrelevant features just as the camera moved to the user.
+  }
+
+  // Fits the camera once per newly selected route, not on every rebuild —
+  // otherwise panning away from a long route while it downloads would keep
+  // snapping the view back to it.
+  void _onSelectedRouteChanged() {
+    final controller = _selectedRouteController;
+    if (controller == null) return;
+    final trail = controller.trail;
+    final geometry = controller.geometry;
+    if (trail == null ||
+        geometry == null ||
+        geometry.length < 2 ||
+        identical(trail, _lastFittedRouteTrail)) {
+      return;
+    }
+    _lastFittedRouteTrail = trail;
+    _fitCameraToRoute(geometry, attemptsLeft: 10);
+  }
+
+  // A route selected right as this screen is (re)created races FlutterMap's
+  // own layout: on the very first post-frame callback its viewport can still
+  // report MapCamera.kImpossibleSize, which silently turns the fit into a
+  // no-op (fitCamera returns false rather than throwing) instead of the
+  // expected zoom-to-route. Retrying on the next frame until a real size is
+  // reported fixes this without guessing a fixed delay.
+  void _fitCameraToRoute(List<LatLng> geometry, {required int attemptsLeft}) {
+    if (attemptsLeft <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      try {
+        if (_mapController.camera.nonRotatedSize == MapCamera.kImpossibleSize) {
+          _fitCameraToRoute(geometry, attemptsLeft: attemptsLeft - 1);
+          return;
+        }
+        final fitted = _mapController.fitCamera(
+          CameraFit.coordinates(
+            coordinates: geometry,
+            padding: const EdgeInsets.fromLTRB(32, 32, 32, 220),
+            maxZoom: 15,
+          ),
+        );
+        if (!fitted) _fitCameraToRoute(geometry, attemptsLeft: attemptsLeft - 1);
+      } catch (_) {
+        _fitCameraToRoute(geometry, attemptsLeft: attemptsLeft - 1);
+      }
+    });
   }
 
   @override
@@ -268,6 +323,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       // the first map frame; there is simply no camera to preserve yet.
     }
     WidgetsBinding.instance.removeObserver(this);
+    _selectedRouteController?.removeListener(_onSelectedRouteChanged);
     _fetchDebounce?.cancel();
     _interactionIdle?.cancel();
     _ambientIdleTimer?.cancel();
@@ -1148,6 +1204,28 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               // placing it on the same bottom inset as Scalebar made the two
               // overlays collide and obscured the real-world distance label.
               const Positioned(right: 12, bottom: 60, child: PixelMapLegend()),
+              // A route selected in Explore, previewed here before/while its
+              // offline corridor downloads. Reuses the recorded-track
+              // painter — same "a highlighted line over the terrain" need,
+              // just fed a route's geometry instead of a live GPS trace.
+              Consumer<SelectedRouteController>(
+                builder: (context, selectedRoute, _) {
+                  final geometry = selectedRoute.geometry;
+                  if (geometry == null) return const SizedBox.shrink();
+                  return PixelRecordedTrackLayer(
+                    points: [
+                      for (final (index, point) in geometry.indexed)
+                        GeoFix(
+                          position: point,
+                          timestamp: DateTime.fromMillisecondsSinceEpoch(
+                            index,
+                          ),
+                        ),
+                    ],
+                    color: const Color(0xFF4FC3F7),
+                  );
+                },
+              ),
             ],
           ),
           ValueListenableBuilder<GeoFix?>(
@@ -1194,6 +1272,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 headingModeActive: _headingModeActive,
                 onTap: _toggleHeadingMode,
               ),
+            ),
+          ),
+          Positioned(
+            left: 12,
+            right: 76,
+            bottom: 12,
+            child: Consumer<SelectedRouteController>(
+              builder: (context, selectedRoute, _) {
+                if (selectedRoute.trail == null) {
+                  return const SizedBox.shrink();
+                }
+                return _RouteDownloadCard(controller: selectedRoute);
+              },
             ),
           ),
         ],
@@ -1755,5 +1846,123 @@ class _LabelToggleControl extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Route preview + offline-corridor download, shown over the map once a
+/// curated route is selected from Explore.
+class _RouteDownloadCard extends StatelessWidget {
+  const _RouteDownloadCard({required this.controller});
+
+  final SelectedRouteController controller;
+
+  /// A ~2km cell's cached OSM payload varies a lot with terrain density —
+  /// this is a labelled estimate, not a measured figure, so it is shown as
+  /// a range rather than a single falsely-precise number.
+  static const _minMbPerCell = 0.2;
+  static const _maxMbPerCell = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final trail = controller.trail;
+    if (trail == null) return const SizedBox.shrink();
+    final cellCount = controller.corridorCellCount ?? 0;
+    final minMb = (cellCount * _minMbPerCell).round();
+    final maxMb = (cellCount * _maxMbPerCell).round();
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+        child: Row(
+          children: [
+            const Icon(Icons.route, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    trail.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _statusLine(cellCount, minMb, maxMb),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  if (controller.downloadState ==
+                      RouteDownloadState.downloading)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: LinearProgressIndicator(
+                        value: cellCount == 0
+                            ? null
+                            : (controller.downloadedCells +
+                                      controller.failedCells) /
+                                  cellCount,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            _trailingAction(context, cellCount),
+            IconButton(
+              tooltip: 'Chiudi',
+              onPressed: () => context.read<SelectedRouteController>().clear(),
+              icon: const Icon(Icons.close, size: 20),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _trailingAction(BuildContext context, int cellCount) {
+    switch (controller.downloadState) {
+      case RouteDownloadState.idle:
+        return TextButton(
+          onPressed: cellCount == 0 ? null : controller.startDownload,
+          child: const Text('Scarica'),
+        );
+      case RouteDownloadState.downloading:
+        return const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 8),
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        );
+      case RouteDownloadState.done:
+        return const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 4),
+          child: Icon(Icons.check_circle, color: WildBitColors.forestGreen),
+        );
+      case RouteDownloadState.failed:
+        return TextButton(
+          onPressed: controller.startDownload,
+          child: const Text('Riprova'),
+        );
+    }
+  }
+
+  String _statusLine(int cellCount, int minMb, int maxMb) {
+    switch (controller.downloadState) {
+      case RouteDownloadState.idle:
+        return cellCount == 0
+            ? 'Percorso non disponibile per il download offline.'
+            : '~$cellCount celle · stima $minMb–$maxMb MB per l\'uso offline';
+      case RouteDownloadState.downloading:
+        return 'Download in corso: ${controller.downloadedCells + controller.failedCells}/$cellCount celle';
+      case RouteDownloadState.done:
+        return 'Percorso disponibile offline ($cellCount celle)';
+      case RouteDownloadState.failed:
+        return '${controller.failedCells} celle non scaricate su $cellCount — riprova';
+    }
   }
 }

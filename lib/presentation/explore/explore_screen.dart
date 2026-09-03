@@ -3,16 +3,28 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/theme/wildbit_theme.dart';
+import '../../data/osm/nominatim_client.dart';
+import '../../data/osm/waymarked_trails_client.dart';
 import '../../data/repositories/osm_trail_repository.dart';
 import '../../domain/entities/hiking_trail.dart';
 import '../../domain/routing/route_eligibility_gate.dart';
 import '../../location/location_service.dart';
+import '../../services/selected_route_controller.dart';
 
-/// Discover named hiking paths around the user, or narrow them by name.
+/// Discover named hiking paths around the user, around a searched city, or
+/// narrow them by name.
 class ExploreScreen extends StatefulWidget {
-  const ExploreScreen({super.key, required this.locationService});
+  const ExploreScreen({
+    super.key,
+    required this.locationService,
+    required this.onOpenMap,
+  });
 
   final LocationService locationService;
+
+  /// Switches the app back to the Map tab, called after a curated route is
+  /// selected so its corridor shows up there.
+  final VoidCallback onOpenMap;
 
   @override
   State<ExploreScreen> createState() => _ExploreScreenState();
@@ -21,13 +33,29 @@ class ExploreScreen extends StatefulWidget {
 class _ExploreScreenState extends State<ExploreScreen> {
   static const _distance = Distance();
   final _searchController = TextEditingController();
+  final _radiusController = TextEditingController(text: '12');
+  final _cityController = TextEditingController();
+  final _nominatim = NominatimClient();
+  final _waymarkedClient = WaymarkedTrailsClient();
+
   List<HikingTrail> _trails = const [];
   bool _isLoading = false;
+  bool _isGeocoding = false;
   String? _error;
   String _activeQuery = '';
   LatLng? _position;
   double _radiusKm = 12;
   bool _usingCachedResults = false;
+
+  /// Set once a city search succeeds; searches then centre on this instead
+  /// of the device's GPS fix until "Vicino a me" is used again.
+  LatLng? _manualPosition;
+  String? _manualPositionLabel;
+
+  /// The relation id of the curated route currently being opened (fetching
+  /// its full geometry before handing off to the map) — shows a spinner on
+  /// just that list item and blocks double-taps.
+  String? _openingRelationId;
 
   @override
   void initState() {
@@ -38,6 +66,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
   @override
   void dispose() {
     _searchController.dispose();
+    _radiusController.dispose();
+    _cityController.dispose();
     super.dispose();
   }
 
@@ -49,27 +79,31 @@ class _ExploreScreenState extends State<ExploreScreen> {
       _usingCachedResults = false;
     });
 
-    final fix = await widget.locationService.getCurrentPosition();
-    if (!mounted) return;
-    if (fix == null) {
-      setState(() {
-        _isLoading = false;
-        _error = 'Serve la posizione per cercare sentieri vicino a te.';
-      });
-      return;
+    LatLng? position = _manualPosition;
+    if (position == null) {
+      final fix = await widget.locationService.getCurrentPosition();
+      if (!mounted) return;
+      if (fix == null) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Serve la posizione per cercare sentieri vicino a te.';
+        });
+        return;
+      }
+      position = fix.position;
     }
 
     try {
       final repository = context.read<OsmTrailRepository>();
       final trails = await repository.findNearby(
-        position: fix.position,
+        position: position,
         query: requestedQuery,
         radiusKm: _radiusKm,
         forceRefresh: forceRefresh,
       );
       if (!mounted) return;
       setState(() {
-        _position = fix.position;
+        _position = position;
         _activeQuery = requestedQuery.trim();
         _trails = trails;
         _isLoading = false;
@@ -86,7 +120,69 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   void _showNearby() {
     _searchController.clear();
+    setState(() {
+      _manualPosition = null;
+      _manualPositionLabel = null;
+      _cityController.clear();
+    });
     _loadTrails(query: '');
+  }
+
+  void _applyRadius(String value) {
+    final parsed = double.tryParse(value.replaceAll(',', '.'));
+    if (parsed == null) {
+      _radiusController.text = _radiusKm.round().toString();
+      return;
+    }
+    final clamped = parsed.clamp(1, 100).toDouble();
+    setState(() => _radiusKm = clamped);
+    _radiusController.text = clamped.round().toString();
+    _loadTrails();
+  }
+
+  Future<void> _searchCity() async {
+    final query = _cityController.text.trim();
+    if (query.isEmpty) return;
+    setState(() {
+      _isGeocoding = true;
+      _error = null;
+    });
+    final place = await _nominatim.search(query);
+    if (!mounted) return;
+    setState(() => _isGeocoding = false);
+    if (place == null) {
+      setState(() => _error = 'Città “$query” non trovata.');
+      return;
+    }
+    setState(() {
+      _manualPosition = place.position;
+      _manualPositionLabel = place.displayName.split(',').first;
+    });
+    _loadTrails(query: '');
+  }
+
+  Future<void> _openTrail(HikingTrail trail) async {
+    final route = trail.route;
+    if (route == null) return;
+    final relationId = int.tryParse(route.relationId);
+    if (relationId == null) return;
+
+    setState(() => _openingRelationId = route.relationId);
+    try {
+      final geometry = await _waymarkedClient.routeGeometry(relationId);
+      if (!mounted) return;
+      context.read<SelectedRouteController>().select(trail, geometry);
+      widget.onOpenMap();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Non riesco a caricare questo percorso ora.'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _openingRelationId = null);
+    }
   }
 
   @override
@@ -119,7 +215,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Consulta tratti OpenStreetMap entro ${_radiusKm.round()} km da te. Non sono percorsi consigliati.',
+                    _manualPositionLabel == null
+                        ? 'Consulta tratti OpenStreetMap entro ${_radiusKm.round()} km da te. Non sono percorsi consigliati.'
+                        : 'Consulta tratti OpenStreetMap entro ${_radiusKm.round()} km da $_manualPositionLabel. Non sono percorsi consigliati.',
                   ),
                   if (_usingCachedResults) ...[
                     const SizedBox(height: 8),
@@ -130,20 +228,39 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     children: [
                       const Icon(Icons.radar_outlined, size: 18),
                       const SizedBox(width: 8),
-                      Expanded(child: Text('Raggio: ${_radiusKm.round()} km')),
+                      const Text('Raggio'),
+                      const SizedBox(width: 10),
+                      SizedBox(
+                        width: 72,
+                        child: TextField(
+                          controller: _radiusController,
+                          enabled: !_isLoading,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: false,
+                          ),
+                          textAlign: TextAlign.center,
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            suffixText: 'km',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 8,
+                            ),
+                          ),
+                          onSubmitted: _applyRadius,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '(1–100 km)',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
                     ],
                   ),
-                  Slider(
-                    value: _radiusKm,
-                    min: 1,
-                    max: 100,
-                    divisions: 99,
-                    label: '${_radiusKm.round()} km',
-                    onChanged: _isLoading
-                        ? null
-                        : (value) => setState(() => _radiusKm = value),
-                    onChangeEnd: (_) => _showNearby(),
-                  ),
+                  const SizedBox(height: 10),
                   Row(
                     children: [
                       Expanded(
@@ -154,6 +271,34 @@ class _ExploreScreenState extends State<ExploreScreen> {
                         ),
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _cityController,
+                    textInputAction: TextInputAction.search,
+                    enabled: !_isGeocoding,
+                    onSubmitted: (_) => _searchCity(),
+                    decoration: InputDecoration(
+                      hintText: 'Cerca per città',
+                      prefixIcon: const Icon(Icons.location_city),
+                      suffixIcon: _isGeocoding
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            )
+                          : IconButton(
+                              tooltip: 'Cerca città',
+                              onPressed: _searchCity,
+                              icon: const Icon(Icons.search),
+                            ),
+                      border: const OutlineInputBorder(),
+                    ),
                   ),
                   const SizedBox(height: 10),
                   TextField(
@@ -170,7 +315,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                               tooltip: 'Cancella',
                               onPressed: () {
                                 _searchController.clear();
-                                _showNearby();
+                                _loadTrails(query: '');
                               },
                               icon: const Icon(Icons.clear),
                             ),
@@ -228,6 +373,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
         final eligibility = trail.eligibility;
         final blocked = eligibility.status == RouteProposalStatus.doNotOffer;
         final curated = trail.isCuratedRoute;
+        final opening =
+            curated && trail.route!.relationId == _openingRelationId;
         return Card(
           child: ListTile(
             leading: CircleAvatar(
@@ -237,13 +384,19 @@ class _ExploreScreenState extends State<ExploreScreen> {
               foregroundColor: blocked
                   ? Theme.of(context).colorScheme.onErrorContainer
                   : WildBitColors.forestGreen,
-              child: Icon(
-                blocked
-                    ? Icons.block
-                    : curated
-                    ? Icons.route
-                    : Icons.warning_amber_rounded,
-              ),
+              child: opening
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      blocked
+                          ? Icons.block
+                          : curated
+                          ? Icons.route
+                          : Icons.warning_amber_rounded,
+                    ),
             ),
             title: Text(trail.name),
             subtitle: Text(
@@ -260,6 +413,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     : 'Da verificare: ${eligibility.reasons.first}',
               ].whereType<String>().join(' · '),
             ),
+            trailing: curated ? const Icon(Icons.chevron_right) : null,
+            onTap: curated && !opening ? () => _openTrail(trail) : null,
           ),
         );
       },

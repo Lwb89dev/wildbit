@@ -32,7 +32,10 @@ class _RootShellState extends State<RootShell> {
   void initState() {
     super.initState();
     _screens = [
-      ExploreScreen(locationService: widget.locationService),
+      ExploreScreen(
+        locationService: widget.locationService,
+        onOpenMap: () => setState(() => _index = 0),
+      ),
       const TrackScreen(),
       const RoutesScreen(),
       const SettingsScreen(),

@@ -57,6 +57,14 @@ class WaymarkedTrailsClient {
   static const _requestTimeout = Duration(seconds: 8);
   static const _maxResponseBytes = 2 * 1024 * 1024;
 
+  /// A full-geometry `details` response is far larger than the summary one
+  /// (every member way's own coordinate list, not just a bounding box) —
+  /// a continental route can legitimately need several megabytes. Still
+  /// bounded, so a pathological response can't be read into memory
+  /// unbounded.
+  static const _maxGeometryResponseBytes = 20 * 1024 * 1024;
+  static const _geometryRequestTimeout = Duration(seconds: 20);
+
   /// Caps how many area matches get a full `details` lookup (for real
   /// length and position) per search — the area listing itself carries no
   /// coordinates per route, and turning one search into dozens of detail
@@ -149,7 +157,53 @@ class WaymarkedTrailsClient {
     }
   }
 
-  Future<String> _get(Uri uri) async {
+  /// The route's full geometry, in order, for corridor/offline-download use.
+  /// Only the `main` (primary) branch is used — optional alternate
+  /// `appendices` variants are not part of the corridor.
+  ///
+  /// Throws if the route can't be resolved or its geometry is too large to
+  /// handle responsibly; callers should show this as "route unavailable"
+  /// rather than silently drawing nothing.
+  Future<List<LatLng>> routeGeometry(int relationId) async {
+    final uri = Uri.parse('$_base/details/relation/$relationId');
+    final body = await _get(
+      uri,
+      timeout: _geometryRequestTimeout,
+      maxBytes: _maxGeometryResponseBytes,
+    );
+    final decoded = jsonDecode(body) as Map<String, dynamic>;
+    final route = decoded['route'] as Map?;
+    final main = route?['main'] as List? ?? const [];
+    final points = <LatLng>[];
+    for (final rawSegment in main) {
+      if (rawSegment is! Map) continue;
+      for (final rawWay in rawSegment['ways'] as List? ?? const []) {
+        if (rawWay is! Map) continue;
+        final geometry = rawWay['geometry'] as Map?;
+        final coordinates = geometry?['coordinates'] as List? ?? const [];
+        for (final rawPoint in coordinates) {
+          if (rawPoint is! List || rawPoint.length < 2) continue;
+          final x = rawPoint[0];
+          final y = rawPoint[1];
+          if (x is! num || y is! num) continue;
+          final point = _fromWebMercator(x.toDouble(), y.toDouble());
+          // Consecutive ways share their joining node; skip the exact repeat
+          // rather than drawing/measuring a zero-length segment.
+          if (points.isEmpty || points.last != point) points.add(point);
+        }
+      }
+    }
+    if (points.length < 2) {
+      throw StateError('Route $relationId has no usable geometry');
+    }
+    return points;
+  }
+
+  Future<String> _get(
+    Uri uri, {
+    Duration? timeout,
+    int? maxBytes,
+  }) async {
     final response = await _httpClient
         .get(
           uri,
@@ -158,11 +212,11 @@ class WaymarkedTrailsClient {
             'Accept': 'application/json',
           },
         )
-        .timeout(_requestTimeout);
+        .timeout(timeout ?? _requestTimeout);
     if (response.statusCode != 200) {
       throw Exception('Waymarked Trails returned ${response.statusCode}');
     }
-    if (response.bodyBytes.length > _maxResponseBytes) {
+    if (response.bodyBytes.length > (maxBytes ?? _maxResponseBytes)) {
       throw Exception(
         'Waymarked Trails response exceeded the maximum accepted size',
       );

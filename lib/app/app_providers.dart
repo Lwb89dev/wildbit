@@ -10,6 +10,7 @@ import '../services/kokoro/wildbit_voice_service.dart';
 import '../services/nostr/amber_signer_service.dart';
 import '../services/nostr/track_share_service.dart';
 import '../services/security/database_key_manager.dart';
+import '../services/selected_route_controller.dart';
 import '../services/track_recorder.dart';
 import '../storage/database.dart';
 import 'theme/theme_provider.dart';
@@ -90,6 +91,12 @@ class WildBitProviders extends StatelessWidget {
           ),
         ),
         Provider<OsmTrailRepository>(create: (_) => OsmTrailRepository()),
+        ChangeNotifierProxyProvider<OsmMapDataRepository, SelectedRouteController>(
+          create: (context) => SelectedRouteController(
+            mapDataRepository: context.read<OsmMapDataRepository>(),
+          ),
+          update: (context, mapDataRepository, controller) => controller!,
+        ),
       ],
       child: child,
     );
