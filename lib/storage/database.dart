@@ -10,13 +10,7 @@ import 'tables.dart';
 part 'database.g.dart';
 
 @DriftDatabase(
-  tables: [
-    Tracks,
-    TrackPoints,
-    CachedMapCells,
-    OfflineAreas,
-    PendingNostrPublications,
-  ],
+  tables: [Tracks, TrackPoints, CachedMapCells, PendingNostrPublications],
 )
 class WildBitDatabase extends _$WildBitDatabase {
   /// [encryptionKey] must be a 64-character hex string (32 bytes) — see
@@ -27,7 +21,7 @@ class WildBitDatabase extends _$WildBitDatabase {
   WildBitDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -35,13 +29,8 @@ class WildBitDatabase extends _$WildBitDatabase {
       if (from < 2) {
         await migrator.createTable(pendingNostrPublications);
       }
-      if (from < 3) {
-        await migrator.addColumn(offlineAreas, offlineAreas.minZoom);
-        await migrator.addColumn(offlineAreas, offlineAreas.maxZoom);
-      }
-      if (from < 4) {
-        await migrator.addColumn(offlineAreas, offlineAreas.retryCount);
-        await migrator.addColumn(offlineAreas, offlineAreas.lastError);
+      if (from < 5) {
+        await migrator.deleteTable('offline_areas');
       }
     },
   );

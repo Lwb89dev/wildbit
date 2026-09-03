@@ -113,7 +113,9 @@ class _StatsAndControls extends StatelessWidget {
       points: List.unmodifiable(recorder.points),
     );
     final id = await recorder.stopAndSave(name: track.name);
-    if (id != null && context.mounted) showTrackShareDialog(context, track);
+    if (id != null && context.mounted) {
+      showTrackShareDialog(context, track.copyWith(id: id));
+    }
   }
 
   @override

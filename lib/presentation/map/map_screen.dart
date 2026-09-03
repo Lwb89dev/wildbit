@@ -53,6 +53,7 @@ import '../../map_rendering/composition/projected_depth_order.dart';
 import '../../services/kokoro/wildbit_voice_service.dart';
 import '../../services/renderer_replay_file_service.dart';
 import '../../services/track_recorder.dart';
+import 'altitude_badge.dart';
 import 'compass_fab.dart';
 
 class MapScreen extends StatefulWidget {
@@ -86,6 +87,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   OsmMapDataRepository? _dataRepository;
   Timer? _fetchDebounce;
   Timer? _interactionIdle;
+  DateTime? _lastMapGestureAt;
   Timer? _partialCoverageRetry;
   final Set<Timer> _featureFetchTimers = <Timer>{};
   Completer<void>? _featureRequestAbort;
@@ -111,7 +113,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   String? _mapDataError;
   bool _usingLocalPreview = false;
   double _zoom = 16;
-  GeoFix? _lastFix;
+  // A location sample must update the marker and status, not rebuild the
+  // complete pixel compositor. These two small overlays listen directly.
+  final ValueNotifier<GeoFix?> _lastFix = ValueNotifier(null);
 
   bool _showTrails = true;
   bool _showRoads = true;
@@ -133,7 +137,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   final _compassService = CompassHeadingService();
   StreamSubscription<double>? _compassSub;
-  double _mapRotationDegrees = 0;
+  // Camera rotation can change for every pointer sample. Keeping it outside
+  // the page State prevents a two-finger rotate from rebuilding every pixel
+  // layer merely to turn the small compass icon.
+  final ValueNotifier<double> _mapRotationDegrees = ValueNotifier(0);
   bool _headingModeActive = false;
   Timer? _ambientIdleTimer;
 
@@ -200,11 +207,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     MapRenderingBudget.setAppActive(state == AppLifecycleState.resumed);
     if (state != AppLifecycleState.resumed) {
       _interactionIdle?.cancel();
+      _interactionIdle = null;
+      _lastMapGestureAt = null;
       _ambientIdleTimer?.cancel();
       _fetchDebounce?.cancel();
+      // A backgrounded map must not keep a public Overpass request alive
+      // through every fallback endpoint. It is pure battery/network work
+      // while no hiker can see the result; resume below schedules a fresh,
+      // viewport-relevant request if coverage is still missing.
+      _cancelActiveFeatureRequest();
       MapRenderingBudget.setMapInteracting(false);
     } else {
       _scheduleAmbientIdle();
+      _scheduleFetch();
     }
     if (!_headingModeActive) return;
     if (state == AppLifecycleState.resumed) {
@@ -217,9 +232,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didHaveMemoryPressure() {
     // Never discard the current OSM scene: it contains the hiker's immediate
-    // map evidence and must remain usable offline. Everything released here
-    // is either a screen-space projection or a decoded copy recoverable from
-    // the encrypted SQLite cache.
+    // map evidence and must remain usable when connectivity is intermittent.
+    // Everything released here is either a screen-space projection or a
+    // decoded copy recoverable from the encrypted SQLite cache.
     _lineProjectionCache.clearTransient();
     _urbanRenderCache.clearTransient();
     _poiProjectionCache.clearTransient();
@@ -265,6 +280,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     MapRenderingBudget.setMapInteracting(false);
     MapRenderingBudget.setMapVisible(false);
     _bitRenderedPosition.dispose();
+    _lastFix.dispose();
+    _mapRotationDegrees.dispose();
     _frameMonitor.stats.removeListener(_onFrameStats);
     _frameMonitor.dispose();
     _compassSub?.cancel();
@@ -285,7 +302,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final bounds = _padded(_mapController.camera.visibleBounds);
     await _fetchFeaturesIfNeeded(
       bounds,
-      priorityPosition: _lastFix?.position ?? _bitRenderedPosition.value,
+      priorityPosition: _lastFix.value?.position ?? _bitRenderedPosition.value,
     );
   }
 
@@ -627,25 +644,48 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _setMapInteracting(bool interacting) {
-    _interactionIdle?.cancel();
-    _ambientIdleTimer?.cancel();
-    final changed = MapRenderingBudget.mapInteracting != interacting;
-    MapRenderingBudget.setMapInteracting(interacting);
-    if (changed && mounted) setState(() {});
     if (interacting) {
-      _interactionIdle = Timer(const Duration(milliseconds: 180), () {
+      // FlutterMap can publish a camera sample for every pointer event. A
+      // cancel/recreate debounce timer here used to allocate dozens of timers
+      // per second while panning. Keep one low-frequency watcher instead.
+      _lastMapGestureAt = DateTime.now();
+      final changed = !MapRenderingBudget.mapInteracting;
+      if (changed) {
+        _ambientIdleTimer?.cancel();
+        MapRenderingBudget.setMapInteracting(true);
+        if (mounted) setState(() {});
+      }
+      _interactionIdle ??= Timer.periodic(const Duration(milliseconds: 120), (
+        timer,
+      ) {
+        final last = _lastMapGestureAt;
+        if (last != null &&
+            DateTime.now().difference(last) <
+                const Duration(milliseconds: 180)) {
+          return;
+        }
+        timer.cancel();
+        _interactionIdle = null;
+        _lastMapGestureAt = null;
         if (!mounted) return;
         MapRenderingBudget.setMapInteracting(false);
         setState(() {});
         _scheduleAmbientIdle();
-        // Do not query Overpass while the camera is still moving. The first
-        // fetch after the gesture is idle also gives the renderer one quiet
-        // frame to restore its full decorative budget.
+        // Do not query Overpass while the camera is still moving. The
+        // first fetch after the gesture is idle also gives the renderer one
+        // quiet frame to restore its full decorative budget.
         _scheduleFetch();
       });
-    } else {
-      _scheduleAmbientIdle();
+      return;
     }
+
+    _interactionIdle?.cancel();
+    _interactionIdle = null;
+    _lastMapGestureAt = null;
+    final changed = MapRenderingBudget.mapInteracting;
+    MapRenderingBudget.setMapInteracting(false);
+    if (changed && mounted) setState(() {});
+    _scheduleAmbientIdle();
   }
 
   void _scheduleAmbientIdle() {
@@ -660,16 +700,29 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _onPositionUpdate(GeoFix point) {
-    _lastFix = point;
+    _lastFix.value = point;
     context.read<ThemeProvider>().onPositionUpdate(
       point.position.latitude,
       point.position.longitude,
     );
     _checkPoiProximity(point);
-    if (_followUser) {
+    if (_followUser && _shouldMoveFollowCamera(point)) {
       _mapController.move(point.position, _mapController.camera.zoom);
     }
     _loadFeaturesNearGpsPosition(point.position);
+  }
+
+  bool _shouldMoveFollowCamera(GeoFix point) {
+    final displacement = _poiDistance.as(
+      LengthUnit.Meter,
+      _mapController.camera.center,
+      point.position,
+    );
+    // Tiny GNSS drift used to move the FlutterMap camera for every sample,
+    // reprojecting every pixel layer even while the hiker stood still. Keep
+    // the map centred within the receiver's useful uncertainty instead.
+    final accuracy = (point.accuracyMeters ?? 4.0).clamp(2.5, 12.0);
+    return displacement >= accuracy;
   }
 
   void _loadFeaturesNearGpsPosition(LatLng position) {
@@ -704,9 +757,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final position =
         freshFix?.position ??
         _bitLayerKey.currentState?.currentPosition ??
-        _lastFix?.position;
+        _lastFix.value?.position;
     if (freshFix != null) {
-      _lastFix = freshFix;
+      _lastFix.value = freshFix;
     }
     if (position != null) {
       _mapController.move(position, _mapController.camera.zoom);
@@ -723,7 +776,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void _zoomBy(double delta) {
     final camera = _mapController.camera;
     final newZoom = (camera.zoom + delta).clamp(3.0, 19.0);
-    setState(() => _zoom = newZoom);
+    // [initialZoom] is consumed only when FlutterMap is first attached. The
+    // controller move below owns the live camera, so rebuilding the full
+    // compositing stack here is redundant.
+    _zoom = newZoom;
     _mapController.move(camera.center, newZoom);
     // Consecutive +/- taps are one camera operation from the user's point of
     // view. Reuse the gesture debounce so they produce one OSM request for
@@ -962,8 +1018,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               backgroundColor: Colors.transparent,
               onPositionChanged: (camera, hasGesture) {
                 if (hasGesture) _setMapInteracting(true);
-                if (camera.rotation != _mapRotationDegrees) {
-                  setState(() => _mapRotationDegrees = camera.rotation);
+                if ((camera.rotation - _mapRotationDegrees.value).abs() >= .1) {
+                  _mapRotationDegrees.value = camera.rotation;
                 }
                 if (hasGesture) {
                   if (_followUser) setState(() => _followUser = false);
@@ -1020,17 +1076,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       interactive: false,
                       projectionCache: _poiProjectionCache,
                     ),
-                    if (_lastFix != null)
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: _lastFix!.position,
-                            width: 48,
-                            height: 48,
-                            child: const PixelPositionMarker(),
-                          ),
-                        ],
-                      ),
+                    ValueListenableBuilder<GeoFix?>(
+                      valueListenable: _lastFix,
+                      builder: (context, fix, child) => fix == null
+                          ? const SizedBox.expand()
+                          : MarkerLayer(
+                              markers: [
+                                Marker(
+                                  point: fix.position,
+                                  width: 48,
+                                  height: 48,
+                                  child: const PixelPositionMarker(),
+                                ),
+                              ],
+                            ),
+                    ),
                     OsmPixelTreeLayer(
                       features: viewportFeatures,
                       depthPivot: _bitRenderedPosition,
@@ -1090,26 +1150,43 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               const Positioned(right: 12, bottom: 60, child: PixelMapLegend()),
             ],
           ),
-          _TopStatusBar(
-            followUser: _followUser,
-            isLoading: _isLoadingFeatures,
-            gpsReady: _lastFix != null,
-            mapDataError: _mapDataError,
-            usingLocalPreview: _usingLocalPreview,
-            onLayersTap: _openLayersSheet,
+          ValueListenableBuilder<GeoFix?>(
+            valueListenable: _lastFix,
+            builder: (context, fix, _) => _TopStatusBar(
+              followUser: _followUser,
+              isLoading: _isLoadingFeatures,
+              gpsReady: fix != null,
+              mapDataError: _mapDataError,
+              usingLocalPreview: _usingLocalPreview,
+              onLayersTap: _openLayersSheet,
+            ),
           ),
           Positioned(
             right: 12,
             bottom: 208,
-            child: CompassFab(
-              rotationDegrees: _mapRotationDegrees,
-              headingModeActive: _headingModeActive,
-              onTap: _toggleHeadingMode,
+            child: ValueListenableBuilder<double>(
+              valueListenable: _mapRotationDegrees,
+              builder: (context, rotationDegrees, _) => CompassFab(
+                rotationDegrees: rotationDegrees,
+                headingModeActive: _headingModeActive,
+                onTap: _toggleHeadingMode,
+              ),
             ),
           ),
           _ZoomControls(
             onZoomIn: () => _zoomBy(1),
             onZoomOut: () => _zoomBy(-1),
+          ),
+          // Fills the compact slot _ZoomControls already leaves free between
+          // itself and the GPS-centring FAB.
+          Positioned(
+            right: 12,
+            bottom: 96,
+            child: ValueListenableBuilder<GeoFix?>(
+              valueListenable: _lastFix,
+              builder: (context, fix, _) =>
+                  AltitudeBadge(altitudeMeters: fix?.altitudeMeters),
+            ),
           ),
           _LabelToggleControl(
             enabled: _showLabels,
@@ -1117,9 +1194,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _centerOnUser,
-        child: Icon(_followUser ? Icons.my_location : Icons.location_searching),
+      floatingActionButton: ValueListenableBuilder<GeoFix?>(
+        valueListenable: _lastFix,
+        builder: (context, fix, _) => FloatingActionButton(
+          onPressed: _centerOnUser,
+          child: Icon(
+            _followUser && fix != null
+                ? Icons.my_location
+                : Icons.location_searching,
+          ),
+        ),
       ),
     );
   }

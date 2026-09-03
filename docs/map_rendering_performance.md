@@ -105,11 +105,11 @@ Regole architetturali:
 25. Al callback nativo di pressione memoria vengono rilasciate solo le cache
     ricostruibili: proiezioni schermo di linee, POI, vegetazione ed edifici,
     immagini nella cache Flutter e celle OSM decodificate in RAM. La scena
-    corrente, la posizione e il database offline cifrato non vengono toccati.
+    corrente, la posizione e il database locale cifrato non vengono toccati.
 26. La scheda Mappa non resta in un `IndexedStack` quando l'utente è in una
     sezione secondaria: il compositore Canvas viene smontato e libera i suoi
     target GPU. Centro e zoom vengono salvati dal shell e ripristinati al
-    rientro; dati OSM e cache offline non vengono riscaricati.
+    rientro; dati OSM già presenti nella cache locale non vengono riscaricati.
 27. Le piccole texture raster del compositore (terreno, acqua, rive, sentieri,
     ponti, POI e vegetazione) condividono un solo decode per asset tra i layer
     e tra i rientri nella scheda Mappa. La cache contiene solo immagini sorgente

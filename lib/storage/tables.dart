@@ -39,27 +39,6 @@ class CachedMapCells extends Table {
   Set<Column> get primaryKey => {cellKey};
 }
 
-/// A user-requested offline area and its download state.
-class OfflineAreas extends Table {
-  IntColumn get id => integer().autoIncrement()();
-  TextColumn get name => text()();
-  RealColumn get southWestLat => real()();
-  RealColumn get southWestLng => real()();
-  RealColumn get northEastLat => real()();
-  RealColumn get northEastLng => real()();
-  // 'queued' | 'downloading' | 'completed' | 'failed'.
-  TextColumn get status => text().withDefault(const Constant('queued'))();
-  RealColumn get progress => real().withDefault(const Constant(0))();
-  // Stored per area so a retry cannot silently turn a viewport-only download
-  // into the much larger default z12–15 package.
-  IntColumn get minZoom => integer().withDefault(const Constant(12))();
-  IntColumn get maxZoom => integer().withDefault(const Constant(15))();
-  IntColumn get retryCount => integer().withDefault(const Constant(0))();
-  TextColumn get lastError => text().nullable()();
-  DateTimeColumn get requestedAt => dateTime()();
-  DateTimeColumn get completedAt => dateTime().nullable()();
-}
-
 /// A Nostr event that the user explicitly chose to publish, but that no relay
 /// accepted while the device was offline. The containing database is encrypted
 /// at rest, so the signed event (and its exact GPS track) is never placed in

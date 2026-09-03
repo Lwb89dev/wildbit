@@ -252,6 +252,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
                 if (trail.ref != null && trail.ref != trail.name) trail.ref!,
                 if (trail.lengthKm != null)
                   '${trail.lengthKm!.toStringAsFixed(1)} km di percorso',
+                if (trail.metadata.sacScale != null)
+                  trail.metadata.sacScale!,
                 if (meters != null) _formatDistance(meters),
                 blocked
                     ? 'Non proporre: ${eligibility.reasons.first}'
@@ -269,11 +271,14 @@ class _ExploreScreenState extends State<ExploreScreen> {
     return '${(meters / 1000).toStringAsFixed(1)} km';
   }
 
+  // Accepts both OSM's own network tag values and Waymarked Trails'
+  // equivalent group codes (curated results now come from the latter).
   String? _networkLabel(String? network) => switch (network) {
-    'iwn' => 'Rete internazionale',
-    'nwn' => 'Rete nazionale',
-    'rwn' => 'Rete regionale',
-    'lwn' => 'Rete locale',
+    'iwn' || 'INT' => 'Rete internazionale',
+    'nwn' || 'NAT' => 'Rete nazionale',
+    'rwn' || 'REG' => 'Rete regionale',
+    'AL2' || 'AL3' || 'AL4' => 'Grande traversata',
+    'lwn' || 'LOC' => 'Rete locale',
     _ => 'Percorso segnalato',
   };
 }
@@ -291,7 +296,7 @@ class _LocalResultsNotice extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       child: Row(
         children: [
-          Icon(Icons.offline_bolt_outlined, size: 17),
+          Icon(Icons.bookmark_border, size: 17),
           SizedBox(width: 7),
           Expanded(
             child: Text('Risultati salvati localmente · verifica la data'),

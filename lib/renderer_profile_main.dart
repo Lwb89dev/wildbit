@@ -64,6 +64,15 @@ class RendererProfileScreen extends StatefulWidget {
 }
 
 class _RendererProfileScreenState extends State<RendererProfileScreen> {
+  // CI/ADB can request a repeatable full sweep without relying on screen
+  // orientation or accessibility hit targets.
+  static const _autorunLayerSweep = bool.fromEnvironment(
+    'WILDBIT_AUTORUN_LAYER_SWEEP',
+  );
+  static const _autorunScene = String.fromEnvironment('WILDBIT_PROFILE_SCENE');
+  static const _autorunMotion = String.fromEnvironment(
+    'WILDBIT_PROFILE_MOTION',
+  );
   final MapController _mapController = MapController();
   final ValueNotifier<LatLng?> _actorPosition = ValueNotifier<LatLng?>(
     const LatLng(46.0672, 11.1215),
@@ -97,11 +106,30 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
   @override
   void initState() {
     super.initState();
+    final requestedScene = switch (_autorunScene) {
+      'stress' => _ProfileScene.stress,
+      'osm' => _ProfileScene.osmReplay,
+      _ => null,
+    };
+    if (requestedScene != null) {
+      _scene = requestedScene;
+      _features = _scene.features;
+      _coastline = CoastlineTopologyComposer.compose(
+        _features.lines.where((line) => line.kind == MapFeatureKind.coastline),
+      );
+    }
     MapRenderingBudget.configureScene(_features);
     MapRenderingBudget.setMapVisible(true);
     _bitController.reportMovement(isMoving: false);
     _frameMonitor.stats.addListener(_onFrameStats);
     _frameMonitor.start();
+    if (_autorunLayerSweep) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future<void>.delayed(const Duration(seconds: 1), () {
+          if (mounted) unawaited(_runLayerSweep());
+        });
+      });
+    }
   }
 
   void _onFrameStats() {
@@ -149,36 +177,56 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
     _mapController.rotate(_mapController.camera.rotation + delta);
   }
 
+  _ProfileMotion get _profileMotion =>
+      _autorunMotion == 'pan' ? _ProfileMotion.pan : _ProfileMotion.mixed;
+
   Future<MapFrameStats?> _runBenchmark() {
     if (_benchmarkRunning) return Future<MapFrameStats?>.value(null);
     _benchmarkTimer?.cancel();
     _benchmarkSettle?.cancel();
-    _frameMonitor.reset();
-    setState(() => _benchmarkRunning = true);
+    // The profiling card is useful between runs but its large text repaint is
+    // not part of the shipping map. Hide it while collecting timings so p95
+    // represents the release compositor rather than the profiler measuring
+    // itself; restore it only after the result is frozen.
+    final restoreDiagnostics = _showDiagnostics;
+    setState(() {
+      _benchmarkRunning = true;
+      _showDiagnostics = false;
+    });
     MapRenderingBudget.setMapInteracting(true);
     final origin = _mapController.camera.center;
     final originZoom = _mapController.camera.zoom;
     final originRotation = _mapController.camera.rotation;
+    final motion = _profileMotion;
     final benchmarkScene =
-        '${_loadedReplayLabel ?? _scene.label} · ${_passPreset.label}';
+        '${_loadedReplayLabel ?? _scene.label} · ${_passPreset.label} · '
+        '${motion.label}';
     var step = 0;
-    // A 4.3 second bounded camera loop deliberately resembles a user
-    // inspecting nearby trail choices: two small pans, a zoom change and
-    // rotation. It is deterministic, does not fetch data and always restores
-    // the full-detail tier at the end.
+    // A bounded camera loop deliberately resembles a user
+    // inspecting nearby trail choices. The normal plan mixes pans, zoom and
+    // rotation; the explicit pan plan isolates the caches used by ordinary
+    // one-finger drags. Both are deterministic, fetch no data and restore
+    // the original camera at the end.
     final completion = Completer<MapFrameStats?>();
     _benchmarkTimer = Timer.periodic(const Duration(milliseconds: 120), (
       timer,
     ) {
-      const totalSteps = 36;
+      // The first movements warm projection caches and let the adaptive
+      // detail tier settle. Excluding this explicit warm-up keeps p95 about
+      // sustained map interaction rather than shader/asset start-up.
+      const warmupSteps = 12;
+      const totalSteps = warmupSteps + 36;
+      if (step == warmupSteps) _frameMonitor.reset();
       final angle = step * math.pi * 2 / totalSteps;
       final center = LatLng(
         origin.latitude + math.sin(angle) * .0011,
         origin.longitude + math.cos(angle * 1.4) * .00145,
       );
-      final zoom = (originZoom + math.sin(angle * 2) * .7).clamp(3.0, 19.0);
+      final zoom = motion == _ProfileMotion.pan
+          ? originZoom
+          : (originZoom + math.sin(angle * 2) * .7).clamp(3.0, 19.0);
       _mapController.move(center, zoom);
-      if (step % 4 == 0) {
+      if (motion == _ProfileMotion.mixed && step % 4 == 0) {
         _mapController.rotate(originRotation + (step / 4) * 45);
       }
       step++;
@@ -199,6 +247,7 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
         setState(() {
           _lastBenchmarkStats = stats;
           _lastBenchmarkScene = benchmarkScene;
+          _showDiagnostics = restoreDiagnostics;
         });
         // Do not leave a test pass in a shifted/rotated camera state. This
         // keeps the next layer measurement directly comparable.
@@ -476,6 +525,18 @@ enum _ProfileScene {
     _ProfileScene.osmReplay => osmReplayFeatures,
     _ProfileScene.stress => rendererStressFeatures,
   };
+}
+
+/// The production app mostly moves through pure drags. Keep that benchmark
+/// separate from the deliberately harsher zoom/rotation sweep: the two
+/// exercise different renderer caches and must not be compared as one number.
+enum _ProfileMotion {
+  mixed('pan · zoom · rotazione'),
+  pan('solo trascinamento');
+
+  const _ProfileMotion(this.label);
+
+  final String label;
 }
 
 /// Comparable groups of the production compositor.  These presets exist only

@@ -689,7 +689,7 @@ class OsmMapDataRepository implements MapDataRepository {
                 // Overpass's public instances reject requests with no identifying
                 // User-Agent (406 Not Acceptable) — this is required, not decorative.
                 'User-Agent':
-                    'WildBit/1.0 (+https://wildbit.app) offline-hiking-app',
+                    'WildBit/1.0 (+https://wildbit.app) hiking-app',
                 'Accept': 'application/json',
               })
               ..bodyFields = {'data': query};

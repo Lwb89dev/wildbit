@@ -5,13 +5,14 @@ import 'package:wildbit/data/osm/trail_query_builder.dart';
 void main() {
   const position = LatLng(46.07, 11.12);
 
-  test('nearby Explore query accepts hiking routes without network tags', () {
+  test('nearby Explore query requests only bare way segments', () {
     final query = TrailQueryBuilder.nearby(position: position, radiusKm: 12);
 
-    expect(query, contains('relation["type"="route"]["route"~'));
-    expect(query, contains(r'^(hiking|foot)$'));
+    // Curated hiking route relations come from WaymarkedTrailsClient
+    // instead — this query must not duplicate them via Overpass.
+    expect(query, isNot(contains('relation[')));
+    expect(query, contains('way["highway"~'));
     expect(query, isNot(contains(r'\$')));
-    expect(query, isNot(contains('["network"~')));
     expect(query, contains('around:12000,46.07,11.12'));
   });
 

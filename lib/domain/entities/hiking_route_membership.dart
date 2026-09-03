@@ -17,11 +17,15 @@ class HikingRouteMembership {
   final String? network;
 
   /// International/national routes win label space over regional/local ones.
+  /// Accepts both OSM's own `network` tag values and Waymarked Trails'
+  /// equivalent `group` codes (`INT`/`NAT`/`REG`/`AL2`-`AL4`/`LOC`), since a
+  /// curated route can come from either source.
   int get displayPriority => switch (network) {
-    'iwn' => 0,
-    'nwn' => 1,
-    'rwn' => 2,
-    'lwn' => 3,
-    _ => 4,
+    'iwn' || 'INT' => 0,
+    'nwn' || 'NAT' => 1,
+    'rwn' || 'REG' => 2,
+    'AL2' || 'AL3' || 'AL4' => 3,
+    'lwn' || 'LOC' => 4,
+    _ => 5,
   };
 }

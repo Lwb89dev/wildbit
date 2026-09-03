@@ -122,10 +122,11 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
   Widget build(BuildContext context) {
     _projectionCache.prepare(widget.features);
     final camera = MapCamera.of(context);
-    final pois = widget.features.pois
-        .where((poi) => poi.type != PoiType.tree)
-        .toList(growable: false);
-    final projectedPois = _projectPois(camera, pois);
+    // The same collection is shared by the two depth slices around Bit.
+    // Keep tree filtering in that source cache rather than traversing a
+    // dense, mapped forest twice on every camera frame just to discard the
+    // same tree nodes again.
+    final projectedPois = _projectPois(camera);
     Widget paintForPivot(LatLng? pivot) {
       if (pivot == null && widget.slice == ProjectedDepthSlice.inFrontOfPivot) {
         return const SizedBox.expand();
@@ -236,7 +237,7 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
     return closest;
   }
 
-  List<_ProjectedPoi> _projectPois(MapCamera camera, List<Poi> pois) {
+  List<_ProjectedPoi> _projectPois(MapCamera camera) {
     final bounds = camera.visibleBounds;
     final viewKey = Object.hash(
       identityHashCode(widget.features),
@@ -254,7 +255,7 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
       return cached;
     }
     final projected = <_ProjectedPoi>[
-      for (final poi in pois)
+      for (final poi in _projectionCache.nonTreePois)
         if (bounds.contains(poi.position))
           (poi: poi, foot: camera.latLngToScreenOffset(poi.position)),
     ];
@@ -296,12 +297,22 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
 /// Cache of the cull/project/sort phase shared by POI depth slices.
 class PoiProjectionCache {
   MapFeatureCollection? _source;
+  List<Poi> _nonTreePois = const [];
   int? projectedPoiViewKey;
   List<_ProjectedPoi>? _projectedPois;
+
+  /// Stable source subset shared by both POI depth slices. Individual tree
+  /// nodes are handled by [OsmPixelTreeLayer], so retaining them here creates
+  /// pure CPU work in dense forests.
+  List<Poi> get nonTreePois => _nonTreePois;
 
   void prepare(MapFeatureCollection source) {
     if (identical(_source, source)) return;
     _source = source;
+    _nonTreePois = List.unmodifiable([
+      for (final poi in source.pois)
+        if (poi.type != PoiType.tree) poi,
+    ]);
     projectedPoiViewKey = null;
     _projectedPois = null;
   }

@@ -23,6 +23,8 @@ abstract final class MapRenderingBudget {
   static double _frameFactor = 1;
   static int _frameAmbientTickDivisor = 1;
   static bool _ambientIdle = false;
+  static bool _actorWalking = false;
+  static bool _actorInterpolating = false;
   // Frame timings are a rolling signal and naturally fluctuate around the
   // 16.7 ms budget. Keep a small amount of hysteresis so a borderline scene
   // does not rebuild the entire map on every sample while it toggles between
@@ -149,7 +151,11 @@ abstract final class MapRenderingBudget {
     // recovery thresholds below are deliberately lower than these thresholds
     // (hysteresis), avoiding rapid up/down rebuilds around a boundary.
     if (average > target * 1.4) return math.max(current, 3);
-    if (average > target * 1.15) return math.max(current, 2);
+    // Tier one is deliberately gentle; it is not enough for a dense forest
+    // that is already missing its frame budget by roughly ten percent. Move
+    // such a scene straight to the meaningful 34% decoration reduction of
+    // tier two, before the raster queue grows into the 20+ ms range.
+    if (average > target * 1.10) return math.max(current, 2);
     if (average > target) return math.max(current, 1);
 
     return switch (current) {
@@ -166,11 +172,11 @@ abstract final class MapRenderingBudget {
     2 => .66,
     // Tier 3 is entered only after sustained p95 pressure (> 1.4× target).
     // At that point a dense imported forest can still contain hundreds of
-    // stable trees, but retaining 45% left the Pixel stress pass over the
-    // 16.7 ms budget. 35% keeps a recognisable, non-grid-like canopy while
-    // shedding enough purely decorative sprites to keep the map responsive.
+    // stable trees, but retaining 35% left a real OSM pan just over the
+    // 16.7 ms budget. 30% keeps a recognisable, non-grid-like canopy while
+    // shedding the final optional sprites needed to keep the map responsive.
     // Routes, water, Bit and priority POIs do not read this multiplier.
-    _ => .35,
+    _ => .30,
   };
 
   /// Restores the adaptive quality tier before a deterministic profile pass.
@@ -270,6 +276,27 @@ abstract final class MapRenderingBudget {
   static void setAppActive(bool value) {
     ambientClock.setAppActive(value);
     actorClock.setAppActive(value);
+  }
+
+  /// Bit needs display-like updates only while walking or easing a meaningful
+  /// GNSS displacement. The map-reading animation advances at 2 fps, so
+  /// keeping the actor clock at 20 fps while the hiker rests merely wakes the
+  /// UI isolate and drains battery without changing a pixel.
+  static void setActorWalking(bool value) {
+    if (_actorWalking != value) _actorWalking = value;
+    _applyActorTickDivisor();
+  }
+
+  /// A short interpolation after a new GPS fix temporarily takes priority
+  /// over the idle animation cadence. WildBit has one rendered actor, so a
+  /// boolean is sufficient and avoids retaining separate animation timers.
+  static void setActorInterpolating(bool value) {
+    if (_actorInterpolating != value) _actorInterpolating = value;
+    _applyActorTickDivisor();
+  }
+
+  static void _applyActorTickDivisor() {
+    actorClock.setTickDivisor(_actorWalking || _actorInterpolating ? 1 : 10);
   }
 
   static final Expando<_GeographicExtent> _areaExtents =
@@ -511,11 +538,14 @@ abstract final class MapRenderingBudget {
   }
 
   /// City footprints are orientation decoration; trail evidence is handled
-  /// by separate layers. Keep cities quiet when a slow device is already
-  /// under pressure, while leaving enough structures for local orientation.
+  /// by separate layers. During a gesture they are deliberately a very small
+  /// stable sample: a city must not steal the frame budget from the terrain,
+  /// trail and GPS marker the hiker is actively following. At rest the
+  /// complete local-orientation budget is restored.
   static int urbanPaintLimit() {
-    final normal = mapInteracting ? 48 : 120;
-    return math.max(20, (normal * decorativeQuality).round());
+    final normal = mapInteracting ? 24 : 120;
+    final floor = mapInteracting ? 8 : 20;
+    return math.max(floor, (normal * decorativeQuality).round());
   }
 
   static bool areaMayBeVisible(AreaFeature area, LatLngBounds viewport) {

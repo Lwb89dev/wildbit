@@ -1,5 +1,7 @@
 # WildBit
 
+**Version 0.1.0** — initial public release.
+
 WildBit is an experimental, privacy-first hiking application built with
 Flutter. Its centrepiece is a pixel-art geographic map generated from
 OpenStreetMap data: not a conventional raster map with a pixelation filter, but
@@ -21,7 +23,7 @@ and rocks even when the map is rotated.
 - Render a readable hiking map with a consistent pixel-art language, without
   embedding proprietary third-party artwork or code.
 - Obtain location fixes on Android without Google Play Services.
-- Store tracks and offline areas locally in an encrypted database.
+- Store tracks and visited map-feature caches locally in an encrypted database.
 - Use open services and protocols: OpenStreetMap, Overpass, and Nostr.
 - Keep geographic data, visual representation, and safety assessments
   separate.
@@ -39,17 +41,18 @@ or code.
 | Geometry | Trails, roads, bridges, buildings, shorelines, and a map scale |
 | Objects | Trees, undergrowth, flowers, rocks, shelters, guideposts, and other POIs |
 | Bit | Idle/walking animations, zoom-aware scale, and rotation-aware occlusion |
-| Android GPS | Forced `LocationManager`, native cache, and GNSS fixes without Google APIs |
-| Explore | OSM trail search by name or within a configurable radius up to 100 km |
-| Track | Recording, pausing, saving, and hiking statistics |
-| Offline | Map-based area selection and geographic feature caching; still experimental |
+| Android GPS | Forced `LocationManager`, native cache, and GNSS fixes without Google APIs, accuracy-preferred fix selection |
+| Compass | Tilt-compensated magnetometer heading mode, toggled from the map |
+| Altimeter | Live altitude readout from the current GPS fix |
+| Explore | Curated hiking routes (name, network, real length, CAI/SAC difficulty) via Waymarked Trails, merged with nearby OSM way search; works worldwide, not just Italy |
+| Track | Recording, pause/resume (GPS fully disconnects while paused), saving, GPX import/export, and hiking statistics |
 | POIs | Collision-aware labels, detail sheets, and conservative OSM metadata |
-| Bit's voice | Optional offline Kokoro/ONNX synthesis with eSpeak NG phonemisation |
-| Nostr | Optional Amber or nsec login and explicit track sharing |
+| Bit's voice | Optional local Kokoro/ONNX synthesis with eSpeak NG phonemisation |
+| Nostr | Optional Amber (recommended) or nsec login; tracks share as kind 1301 Workout Records, with an offline retry queue for relays that were unreachable |
+| Backup | Manual export of the encrypted local database; the encryption key is recoverable via Amber on a new device if a Nostr identity is linked |
 | Automatic routing | Not available as trusted navigation; proposed segments require human verification |
 
-The main sections are `Map`, `Explore`, `Track`, `Routes`, `Offline`,
-and `Settings`.
+The main sections are `Map`, `Explore`, `Track`, `Routes`, and `Settings`.
 
 ## Map renderer
 
@@ -96,10 +99,6 @@ Implemented principles:
 - hiking-route relations enrich only their exact OSM way members and never
   invent connections between nearby segments.
 
-The offline-area selection screen is an intentional exception: it uses a
-standard OSM map and the Waymarked Trails hiking overlay to make the download
-area clear. That raster is not part of the main pixel-art renderer.
-
 ## Technology
 
 - Flutter and Dart
@@ -126,7 +125,6 @@ lib/
   domain/                  UI-independent entities and rules
   location/                real and simulated GNSS sources
   map_rendering/           compositors, Canvas layers, Bit, and budgets
-  offline/                 area downloads and resumption
   presentation/            Flutter screens
   services/                voice, Nostr, recording, and security
   storage/                 Drift database
@@ -161,14 +159,11 @@ without GNSS hardware:
 flutter run -d linux
 ```
 
-### Complete offline preview
-
 This mode does not query Overpass. It immediately loads a mock valley with
 biomes, buildings, trails, trees, water, and POIs:
 
 ```bash
 flutter run -d linux \
-  --dart-define=WILDBIT_OFFLINE_PREVIEW=true \
   --dart-define=WILDBIT_MIXED_PREVIEW=true
 ```
 
@@ -225,15 +220,10 @@ label collision handling, and conservative POI metadata treatment.
 | Service | Use | Notes |
 | --- | --- | --- |
 | OpenStreetMap | Map geometry and tags | Data © OpenStreetMap contributors, ODbL |
-| Overpass | Viewport data and trail search | Public instances are subject to timeouts, rate limits, and outages |
-| tile.openstreetmap.org | Offline-area selection only | Not used as the main pixel-art map background |
-| Waymarked Trails | Hiking overlay in offline selection | External service, not included in the main graphic cache |
-| Nostr relays | Voluntary track publishing | GPS tracks become public only after explicit confirmation |
+| Overpass | Viewport data and generic trail search | Public instances are subject to timeouts, rate limits, and outages |
+| Waymarked Trails | Curated hiking route search (Explore) | Public instance, queried directly and respectfully; degrades gracefully if unreachable |
+| Nostr relays | Voluntary track publishing | GPS tracks become public only after explicit confirmation; failed publishes queue encrypted on-device for retry |
 | Hugging Face | Optional Kokoro model download | Files are checked for size and SHA-256 before use |
-
-Overpass is not suitable for bulk regional downloads. The current cell cache
-is a prototype solution; regional PBF extracts or open vector tiles are the
-intended direction for larger areas and reliable offline use.
 
 ## Privacy and safety
 
@@ -249,6 +239,12 @@ intended direction for larger areas and reliable offline use.
   and is therefore a more sensitive option.
 - Nostr publishing includes the exact GPS points of a track. The UI must obtain
   explicit confirmation before sending.
+- GPS access is tied to the active recording session: it disconnects the
+  instant a recording is paused, stopped, or discarded, and never runs while
+  the app is closed with nothing recording.
+- A manual, unencrypted-in-transit backup export is available; the database
+  file itself stays encrypted, so sharing it is safe even to an untrusted
+  destination.
 - The voice model is optional and inference runs locally after download.
 
 ## Known limitations
@@ -257,13 +253,15 @@ intended direction for larger areas and reliable offline use.
   local caching and mirrors reduce but do not eliminate this problem.
 - Global coastlines and complex islands need further validation against large,
   real-world datasets.
-- Offline selection works, but the pipeline is not yet equivalent to a complete
-  regional map package.
 - Opening hours, access, drinkability, and difficulty are OSM observations, not
   guarantees of current real-world conditions.
 - Battery life, memory use, and frame time still need measurement across a
   wider range of Android devices.
 - Kokoro requires a relatively large initial download.
+- Recorded elevation gain sums raw GPS altitude deltas with no noise
+  filtering; on real hardware this tends to overstate total ascent.
+- `GeoBounds` (cache-coverage checks) does not yet handle the antimeridian
+  correctly; this has no practical effect for the current Italy/Alps focus.
 
 ## Technical documentation
 

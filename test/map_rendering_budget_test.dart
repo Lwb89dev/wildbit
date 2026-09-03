@@ -12,6 +12,8 @@ void main() {
     MapRenderingBudget.setMapInteracting(false);
     MapRenderingBudget.setMapVisible(true);
     MapRenderingBudget.resetFramePressure();
+    MapRenderingBudget.setActorWalking(false);
+    MapRenderingBudget.setActorInterpolating(false);
     MapRenderingBudget.configureScene(
       const MapFeatureCollection(areas: [], lines: [], pois: []),
     );
@@ -154,7 +156,7 @@ void main() {
       isFalse,
     );
     expect(MapRenderingBudget.framePressureLevel, 3);
-    expect(MapRenderingBudget.decorativeQuality, closeTo(.35, .001));
+    expect(MapRenderingBudget.decorativeQuality, closeTo(.30, .001));
 
     // A genuinely healthy sample can return to full detail immediately.
     expect(
@@ -179,7 +181,7 @@ void main() {
     MapRenderingBudget.setMapInteracting(false);
 
     expect(MapRenderingBudget.framePressureLevel, 3);
-    expect(MapRenderingBudget.decorativeQuality, closeTo(.35, .001));
+    expect(MapRenderingBudget.decorativeQuality, closeTo(.30, .001));
   });
 
   test('uses p95 pressure even when the average stages look healthy', () {
@@ -190,7 +192,36 @@ void main() {
     );
 
     expect(MapRenderingBudget.framePressureLevel, 3);
-    expect(MapRenderingBudget.decorativeQuality, closeTo(.35, .001));
+    expect(MapRenderingBudget.decorativeQuality, closeTo(.30, .001));
+  });
+
+  test(
+    'escalates dense raster pressure to the meaningful second tier early',
+    () {
+      MapRenderingBudget.configureFramePressure(
+        averageBuildMicros: 7000,
+        averageRasterMicros: 18500,
+        p95FrameMicros: 18500,
+      );
+
+      expect(MapRenderingBudget.framePressureLevel, 2);
+      expect(MapRenderingBudget.decorativeQuality, closeTo(.66, .001));
+    },
+  );
+
+  test('keeps city orientation cheap while a map gesture is active', () {
+    MapRenderingBudget.setMapInteracting(false);
+    expect(MapRenderingBudget.urbanPaintLimit(), 120);
+
+    MapRenderingBudget.setMapInteracting(true);
+    expect(MapRenderingBudget.urbanPaintLimit(), 24);
+
+    MapRenderingBudget.configureFramePressure(
+      averageBuildMicros: 7000,
+      averageRasterMicros: 25000,
+      p95FrameMicros: 25000,
+    );
+    expect(MapRenderingBudget.urbanPaintLimit(), 8);
   });
 
   test('changes the ambient clock divisor under frame pressure', () {
@@ -225,6 +256,25 @@ void main() {
     expect(MapRenderingBudget.ambientIdle, isFalse);
     expect(MapRenderingBudget.ambientClock.tickDivisor, 3);
   });
+
+  test(
+    'slows Bit clock at rest but preserves smooth walking and GPS easing',
+    () {
+      MapRenderingBudget.setActorWalking(false);
+      MapRenderingBudget.setActorInterpolating(false);
+      expect(MapRenderingBudget.actorClock.tickDivisor, 10);
+
+      MapRenderingBudget.setActorWalking(true);
+      expect(MapRenderingBudget.actorClock.tickDivisor, 1);
+
+      MapRenderingBudget.setActorWalking(false);
+      MapRenderingBudget.setActorInterpolating(true);
+      expect(MapRenderingBudget.actorClock.tickDivisor, 1);
+
+      MapRenderingBudget.setActorInterpolating(false);
+      expect(MapRenderingBudget.actorClock.tickDivisor, 10);
+    },
+  );
 
   test('degrades shore modules and ambient detail before map evidence', () {
     final normalShore = MapRenderingBudget.shoreDetailCount(18);

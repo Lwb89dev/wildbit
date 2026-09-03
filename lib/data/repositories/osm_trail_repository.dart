@@ -14,19 +14,25 @@ import '../../domain/routing/route_eligibility_gate.dart';
 import '../osm/trail_cache_codec.dart';
 import '../osm/overpass_endpoints.dart';
 import '../osm/trail_query_builder.dart';
+import '../osm/waymarked_trails_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Searches named walking paths in OpenStreetMap through public Overpass
-/// instances. Results stay deliberately local to the current position: it is
-/// useful to hikers and avoids an unbounded, expensive global text query.
+/// Searches walking paths and curated hiking routes near the user. Results
+/// stay deliberately local to the current position: it is useful to hikers
+/// and avoids an unbounded, expensive global text query.
 ///
-/// Shares [OverpassEndpoints] with [OsmMapDataRepository] rather than
-/// keeping its own endpoint list and retry state — a search here must back
-/// off from an endpoint the map fetcher already found struggling, not retry
-/// it independently.
+/// Two independent sources are merged: bare OSM way segments via public
+/// Overpass instances (shares [OverpassEndpoints] with
+/// [OsmMapDataRepository] rather than keeping its own endpoint list and
+/// retry state — a search here must back off from an endpoint the map
+/// fetcher already found struggling, not retry it independently), and
+/// curated hiking route relations via [WaymarkedTrailsClient], which
+/// resolves them with a real length and position instead of raw,
+/// sometimes-missing Overpass tags.
 class OsmTrailRepository {
-  OsmTrailRepository({http.Client? httpClient})
-    : _httpClient = httpClient ?? http.Client();
+  OsmTrailRepository({http.Client? httpClient, WaymarkedTrailsClient? waymarkedClient})
+    : _httpClient = httpClient ?? http.Client(),
+      _waymarkedClient = waymarkedClient ?? WaymarkedTrailsClient(httpClient: httpClient);
 
   static const _distance = Distance();
   static const _maxResponseBytes = 10 * 1024 * 1024;
@@ -38,6 +44,7 @@ class OsmTrailRepository {
   static const _endpointResponseTimeout = Duration(seconds: 8);
 
   final http.Client _httpClient;
+  final WaymarkedTrailsClient _waymarkedClient;
   final _endpoints = OverpassEndpoints.instance;
   final _cache = <String, _TrailCacheEntry>{};
   Future<void>? _persistentLoad;
@@ -63,6 +70,76 @@ class OsmTrailRepository {
       lastResultWasStale = true;
       return cached.trails;
     }
+    // Started together and awaited independently: Overpass and Waymarked
+    // Trails are unrelated services, so one being slow or unreachable must
+    // never block or void a result the other already has. Awaiting the way
+    // fetch to completion before even starting the Waymarked Trails request
+    // (or vice versa) would turn a single flaky endpoint into a total
+    // search failure even when the other source answered fine.
+    final wayFuture = _fetchWayTrails(
+      position: position,
+      radiusKm: radiusKm,
+      normalizedQuery: normalizedQuery,
+    );
+    // The error handler is attached here, at creation time, not after
+    // `wayFuture` is awaited below — a Future that fails with nothing yet
+    // listening is reported by Dart as unhandled even if a try/catch around
+    // a later `await` of it would otherwise have caught it. Converting the
+    // failure into an empty list immediately closes that window.
+    final curatedFuture = _waymarkedClient
+        .nearby(position: position, radiusKm: radiusKm)
+        .then<List<WaymarkedRouteDetails>>(
+          (value) => value,
+          onError: (_) => const <WaymarkedRouteDetails>[],
+        );
+
+    List<HikingTrail> wayTrails = const [];
+    Object? wayError;
+    try {
+      wayTrails = await wayFuture;
+    } catch (error) {
+      wayError = error;
+    }
+
+    final curated = await curatedFuture;
+
+    if (wayError != null && curated.isEmpty) {
+      if (cached != null &&
+          DateTime.now().difference(cached.fetchedAt) <= _staleGrace) {
+        lastResultWasStale = true;
+        return cached.trails;
+      }
+      throw wayError;
+    }
+
+    final curatedTrails = [
+      for (final route in curated)
+        if (normalizedQuery.isEmpty || _matchesQuery(route, normalizedQuery))
+          _toHikingTrail(route),
+    ];
+
+    final trails = [...wayTrails, ...curatedTrails];
+    trails.sort((a, b) {
+      final aDistance = _distance.as(LengthUnit.Meter, position, a.position);
+      final bDistance = _distance.as(LengthUnit.Meter, position, b.position);
+      final byRank = _rank(a, aDistance).compareTo(_rank(b, bDistance));
+      if (byRank != 0) return byRank;
+      final byDistance = aDistance.compareTo(bDistance);
+      return byDistance != 0 ? byDistance : a.id.compareTo(b.id);
+    });
+
+    _cache[cacheKey] = _TrailCacheEntry(fetchedAt: DateTime.now(), trails: trails);
+    unawaited(_persistCache());
+    return trails;
+  }
+
+  /// Runs the Overpass endpoint-retry loop for bare way segments. Throws the
+  /// last error once every endpoint has been tried or is cooling down.
+  Future<List<HikingTrail>> _fetchWayTrails({
+    required LatLng position,
+    required double radiusKm,
+    required String normalizedQuery,
+  }) async {
     final overpassQuery = TrailQueryBuilder.nearby(
       position: position,
       radiusKm: radiusKm,
@@ -99,10 +176,10 @@ class OsmTrailRepository {
             );
           }
         }
-        // JSON decoding, eligibility classification and distance sorting can
-        // be expensive at a 100 km radius. Keep the entire composition off
-        // Flutter's UI isolate, just like the main map parser.
-        final trails = await compute(
+        // JSON decoding and eligibility classification can be expensive at a
+        // 100 km radius. Keep the composition off Flutter's UI isolate, just
+        // like the main map parser.
+        return await compute(
           _parseTrailPayload,
           _TrailParseInput(
             bytes.takeBytes(),
@@ -110,12 +187,6 @@ class OsmTrailRepository {
             longitude: position.longitude,
           ),
         );
-        _cache[cacheKey] = _TrailCacheEntry(
-          fetchedAt: DateTime.now(),
-          trails: trails,
-        );
-        unawaited(_persistCache());
-        return trails;
       } catch (error) {
         lastError = error;
         _endpoints.markFailed(
@@ -124,13 +195,29 @@ class OsmTrailRepository {
         );
       }
     }
-    if (cached != null &&
-        DateTime.now().difference(cached.fetchedAt) <= _staleGrace) {
-      lastResultWasStale = true;
-      return cached.trails;
-    }
     throw lastError ?? StateError('No Overpass endpoint was available');
   }
+
+  bool _matchesQuery(WaymarkedRouteDetails route, String query) {
+    final needle = query.toLowerCase();
+    return route.name.toLowerCase().contains(needle) ||
+        (route.ref?.toLowerCase().contains(needle) ?? false);
+  }
+
+  HikingTrail _toHikingTrail(WaymarkedRouteDetails route) => HikingTrail(
+    id: 'wmt-relation-${route.relationId}',
+    name: route.name,
+    ref: route.ref,
+    position: route.center,
+    metadata: RouteMetadata(sacScale: route.difficulty),
+    route: HikingRouteMembership(
+      relationId: route.relationId.toString(),
+      ref: route.ref,
+      name: route.name,
+      network: route.group,
+    ),
+    lengthKm: route.lengthKm,
+  );
 
   // Hashed rather than kept as plain "lat:lon:..." text: this key is also
   // used verbatim as the persisted SharedPreferences key in
@@ -197,6 +284,8 @@ class OsmTrailRepository {
     }
   }
 
+  // Curated hiking route relations come from WaymarkedTrailsClient instead
+  // (see findNearby) — this only ever parses bare way segments now.
   static List<HikingTrail> _parse(Map<String, dynamic> json, LatLng origin) {
     final trails = <HikingTrail>[];
     final seen = <String>{};
@@ -210,30 +299,6 @@ class OsmTrailRepository {
       final lat = center['lat'] as num?;
       final lon = center['lon'] as num?;
       if (lat == null || lon == null) continue;
-
-      if (element['type'] == 'relation') {
-        final id = 'osm-relation-${element['id']}';
-        if (!seen.add(id)) continue;
-        final metadata = RouteMetadata.fromOsmTags(tags);
-        trails.add(
-          HikingTrail(
-            id: id,
-            name: name,
-            ref: tags['ref'],
-            position: LatLng(lat.toDouble(), lon.toDouble()),
-            metadata: metadata,
-            eligibility: RouteEligibilityGate.evaluate(metadata),
-            route: HikingRouteMembership(
-              relationId: element['id'].toString(),
-              ref: tags['ref'],
-              name: tags['name'],
-              network: tags['network'],
-            ),
-            lengthKm: _lengthKm(tags['distance']),
-          ),
-        );
-        continue;
-      }
 
       final id = 'osm-way-${element['id']}';
       if (!seen.add(id)) continue;

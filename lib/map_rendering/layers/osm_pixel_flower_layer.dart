@@ -83,17 +83,17 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer> {
     );
     final cached = _projectedFlowers;
     if (cached != null && _projectedViewKey == viewKey) return cached;
-    final budgeted = MapRenderingBudget.stableDecorativeSubset(
-      _candidates,
-      count: MapRenderingBudget.decorativeLodCount(
-        camera.zoom,
-        overview: 32,
-        close: _candidates.length,
-      ),
-      rank: (flower) =>
-          flower.position.latitude.hashCode ^
-          flower.position.longitude.hashCode,
+    // The OSM-dependent rank is immutable for this candidate set.  Ranking
+    // it at compose time avoids an otherwise repeated list copy and sort on
+    // every camera update; LOD can safely use a stable prefix instead.
+    final count = MapRenderingBudget.decorativeLodCount(
+      camera.zoom,
+      overview: 32,
+      close: _candidates.length,
     );
+    final budgeted = count >= _candidates.length
+        ? _candidates
+        : _candidates.sublist(0, count);
     // Reuse each camera projection for visibility, depth and paint. Calling
     // `latLngToScreenOffset` from the sort comparator projected the same
     // flower O(n log n) times on every camera update.
@@ -134,7 +134,25 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer> {
         _sample(area, math.min(perArea, _candidateLimit - result.length)),
       );
     }
-    return List.unmodifiable(result);
+    return _rankCandidates(result);
+  }
+
+  List<_FlowerPoint> _rankCandidates(List<_FlowerPoint> source) {
+    final ranked =
+        [
+          for (final entry in source.indexed)
+            (
+              index: entry.$1,
+              flower: entry.$2,
+              rank:
+                  entry.$2.position.latitude.hashCode ^
+                  entry.$2.position.longitude.hashCode,
+            ),
+        ]..sort((first, second) {
+          final rank = first.rank.compareTo(second.rank);
+          return rank != 0 ? rank : first.index.compareTo(second.index);
+        });
+    return List.unmodifiable([for (final entry in ranked) entry.flower]);
   }
 
   List<_FlowerPoint> _sample(AreaFeature area, int remaining) {

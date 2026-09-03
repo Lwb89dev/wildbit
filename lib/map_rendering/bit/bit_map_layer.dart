@@ -42,6 +42,7 @@ class BitMapLayerState extends State<BitMapLayer> {
   static const _interpolationWindow = Duration(milliseconds: 900);
   static const _depthPublishInterval = Duration(milliseconds: 80);
   static const _movingSpeedThreshold = 0.8; // m/s, rejects GPS jitter
+  static const _minimumJitterFilterMeters = 1.0;
 
   StreamSubscription<GeoFix>? _subscription;
   bool _interpolationListening = false;
@@ -97,6 +98,20 @@ class BitMapLayerState extends State<BitMapLayer> {
     );
 
     final isFirstFix = _rendered == null;
+    // A stationary GNSS receiver can wander by a few metres every second.
+    // Do not spend 900 ms of 20 fps interpolation on movement still inside
+    // half the reported accuracy radius: it burns battery, makes Bit drift
+    // through trees and can falsely make a resting hiker appear active.
+    final accuracyThreshold = ((point.accuracyMeters ?? 2) * .5).clamp(
+      _minimumJitterFilterMeters,
+      4.0,
+    );
+    final isMeaningfulDisplacement = movedMeters > accuracyThreshold;
+    if (!isFirstFix && !isMoving && !isMeaningfulDisplacement) {
+      _stopInterpolation();
+      widget.onPositionUpdate?.call(point);
+      return;
+    }
     _previous = _rendered ?? point.position;
     _target = point.position;
     _targetSetAt = DateTime.now();
@@ -118,12 +133,14 @@ class BitMapLayerState extends State<BitMapLayer> {
   void _startInterpolation() {
     if (_interpolationListening) return;
     _interpolationListening = true;
+    MapRenderingBudget.setActorInterpolating(true);
     MapRenderingBudget.actorClock.addListener(_onTick);
   }
 
   void _stopInterpolation() {
     if (!_interpolationListening) return;
     _interpolationListening = false;
+    MapRenderingBudget.setActorInterpolating(false);
     MapRenderingBudget.actorClock.removeListener(_onTick);
   }
 

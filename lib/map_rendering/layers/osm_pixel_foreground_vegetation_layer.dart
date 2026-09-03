@@ -219,16 +219,18 @@ class _OsmPixelForegroundVegetationLayerState
     );
     final cached = _cache._projectedCandidates;
     if (cached != null && _cache._projectedViewKey == viewKey) return cached;
-    final budgeted = MapRenderingBudget.stableDecorativeSubset(
-      _cache._candidates,
-      count: MapRenderingBudget.decorativeLodCount(
-        camera.zoom,
-        overview: 56,
-        close: _cache._candidates.length,
-      ),
-      rank: (point) =>
-          point.position.latitude.hashCode ^ point.position.longitude.hashCode,
+    // Candidate generation is deterministic and happens only when the OSM
+    // viewport changes.  Keep that same deterministic rank in the cache so
+    // camera motion can take a prefix instead of allocating and sorting the
+    // entire shrub list for every pan/pinch frame.
+    final count = MapRenderingBudget.decorativeLodCount(
+      camera.zoom,
+      overview: 56,
+      close: _cache._candidates.length,
     );
+    final budgeted = count >= _cache._candidates.length
+        ? _cache._candidates
+        : _cache._candidates.sublist(0, count);
     final projected =
         [
           for (final point in budgeted)
@@ -290,7 +292,25 @@ class _OsmPixelForegroundVegetationLayerState
         _sampleNearTrees(_candidateLimit - result.length, poiObstacleIndex),
       );
     }
-    return List.unmodifiable(result);
+    return _rankCandidates(result);
+  }
+
+  List<_VegetationPoint> _rankCandidates(List<_VegetationPoint> source) {
+    final ranked =
+        [
+          for (final entry in source.indexed)
+            (
+              index: entry.$1,
+              point: entry.$2,
+              rank:
+                  entry.$2.position.latitude.hashCode ^
+                  entry.$2.position.longitude.hashCode,
+            ),
+        ]..sort((first, second) {
+          final rank = first.rank.compareTo(second.rank);
+          return rank != 0 ? rank : first.index.compareTo(second.index);
+        });
+    return List.unmodifiable([for (final entry in ranked) entry.point]);
   }
 
   List<_VegetationPoint> _sample(

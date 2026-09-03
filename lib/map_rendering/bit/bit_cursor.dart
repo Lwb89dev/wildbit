@@ -27,13 +27,29 @@ class _BitCursorState extends State<BitCursor> {
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_syncClockBudget);
+    _syncClockBudget();
     MapRenderingBudget.actorClock.addListener(_onTick);
   }
 
-  void _onTick() => widget.controller.tick(_tickInterval);
+  void _syncClockBudget() => MapRenderingBudget.setActorWalking(
+    widget.controller.state == BitMotionState.walking,
+  );
+
+  void _onTick() {
+    // The global clock is deliberately stepped down to 2 fps while Bit is
+    // standing or reading the map. Feed the controller that real cadence,
+    // otherwise its 2 fps animation would accidentally become 0.2 fps.
+    final interval = widget.controller.state == BitMotionState.walking
+        ? _tickInterval
+        : const Duration(milliseconds: 500);
+    widget.controller.tick(interval);
+  }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_syncClockBudget);
+    MapRenderingBudget.setActorWalking(false);
     MapRenderingBudget.actorClock.removeListener(_onTick);
     super.dispose();
   }

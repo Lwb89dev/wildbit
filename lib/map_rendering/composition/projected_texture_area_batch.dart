@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' show LatLng;
 
 import '../../domain/entities/area_feature.dart';
 import '../assets/map_visual_asset_warmup.dart';
@@ -52,14 +53,17 @@ class ProjectedTextureAreaBatch extends StatefulWidget {
 }
 
 class _ProjectedTextureAreaBatchState extends State<ProjectedTextureAreaBatch> {
+  // Translating Path objects has a fixed allocation cost. It only wins once
+  // an OSM land-cover batch is sufficiently complex; small local parks and
+  // the lightweight profile fixture are faster to project directly.
+  static const _translationReuseMinimumVertices = 160;
   final Map<String, ui.Image> _images = {};
   // Replace this map atomically as assets arrive. Its stable identity between
   // image loads lets CustomPaint reject unrelated parent rebuilds (GPS, Bit or
   // UI state changes) instead of repainting all terrain polygons.
   Map<String, ui.Shader> _shaders = const {};
   final Set<String> _loading = {};
-  _ProjectionKey? _projectionKey;
-  List<_ProjectedTextureArea>? _projectedAreas;
+  _TextureProjectionCache? _projectionCache;
 
   @override
   void didChangeDependencies() {
@@ -127,14 +131,70 @@ class _ProjectedTextureAreaBatchState extends State<ProjectedTextureAreaBatch> {
   );
 
   List<_ProjectedTextureArea> _projectAreasForCurrentView() {
-    final key = _ProjectionKey.from(widget.camera, widget.areas);
-    final cached = _projectedAreas;
-    if (cached != null && key == _projectionKey) return cached;
+    final signature = _areaSignature(widget.areas);
+    final anchor = _anchorFor(widget.areas);
+    final vertexCount = _vertexCount(widget.areas);
+    final cached = _projectionCache;
+    if (cached != null && cached.areaSignature == signature) {
+      if (cached.matches(widget.camera, anchor)) return cached.areas;
+      // A pan at fixed zoom and rotation is a plain screen-space
+      // translation in FlutterMap's projected plane. Reusing the already
+      // clipped paths avoids rebuilding hundreds of polygon vertices while
+      // preserving the exact textured material (so forest/rock areas do not
+      // flash into a flat fallback while the finger is down).
+      if (anchor != null &&
+          vertexCount >= _translationReuseMinimumVertices &&
+          cached.canTranslateTo(widget.camera)) {
+        final nextAnchor = widget.camera.latLngToScreenOffset(anchor);
+        final delta = nextAnchor - cached.anchorScreen;
+        if (delta != Offset.zero) {
+          _projectionCache = cached.shifted(
+            delta: delta,
+            anchorScreen: nextAnchor,
+            camera: widget.camera,
+          );
+        }
+        return _projectionCache!.areas;
+      }
+    }
     final projected = _projectAreas(widget.camera);
-    _projectionKey = key;
-    _projectedAreas = List.unmodifiable(projected);
-    return _projectedAreas!;
+    _projectionCache = _TextureProjectionCache(
+      areaSignature: signature,
+      zoom: widget.camera.zoom,
+      rotation: widget.camera.rotation,
+      anchorScreen: anchor == null
+          ? Offset.zero
+          : widget.camera.latLngToScreenOffset(anchor),
+      areas: List.unmodifiable(projected),
+    );
+    return _projectionCache!.areas;
   }
+
+  int _areaSignature(List<ProjectedTextureAreaSpec> areas) => Object.hashAll([
+    for (final spec in areas)
+      Object.hash(
+        identityHashCode(spec.area),
+        spec.asset,
+        spec.fallbackColor,
+        spec.borderColor,
+        spec.borderWidth,
+      ),
+  ]);
+
+  LatLng? _anchorFor(List<ProjectedTextureAreaSpec> areas) {
+    for (final spec in areas) {
+      if (spec.area.ring.isNotEmpty) return spec.area.ring.first;
+    }
+    return null;
+  }
+
+  int _vertexCount(List<ProjectedTextureAreaSpec> areas) => areas.fold(
+    0,
+    (count, spec) =>
+        count +
+        spec.area.ring.length +
+        spec.area.holes.fold<int>(0, (sum, hole) => sum + hole.length),
+  );
 
   List<_ProjectedTextureArea> _projectAreas(MapCamera camera) {
     final projected = <_ProjectedTextureArea>[];
@@ -171,86 +231,44 @@ class _ProjectedTextureAreaBatchState extends State<ProjectedTextureAreaBatch> {
   }
 }
 
-/// Exact camera/feature identity key for the screen-space polygon cache.
-///
-/// This deliberately does not quantise the camera: an actual pan, pinch or
-/// rotation must reproject immediately. Area identities survive the filtered
-/// temporary lists built by biome/geology layers, so an unrelated rebuild can
-/// reuse the existing paths safely.
-class _ProjectionKey {
-  const _ProjectionKey({
-    required this.latitude,
-    required this.longitude,
+/// Cached projected area paths. Pure pans retain their scale and rotation, so
+/// the whole batch can be shifted from a single stable geographic anchor.
+/// Zooms, rotations and changes to the visible area set still reproject from
+/// source geometry immediately.
+class _TextureProjectionCache {
+  const _TextureProjectionCache({
+    required this.areaSignature,
     required this.zoom,
     required this.rotation,
-    required this.south,
-    required this.west,
-    required this.north,
-    required this.east,
-    required this.areaSignature,
+    required this.anchorScreen,
+    required this.areas,
   });
 
-  factory _ProjectionKey.from(
-    MapCamera camera,
-    List<ProjectedTextureAreaSpec> areas,
-  ) {
-    final bounds = camera.visibleBounds;
-    return _ProjectionKey(
-      latitude: camera.center.latitude,
-      longitude: camera.center.longitude,
-      zoom: camera.zoom,
-      rotation: camera.rotation,
-      south: bounds.south,
-      west: bounds.west,
-      north: bounds.north,
-      east: bounds.east,
-      areaSignature: Object.hashAll([
-        for (final spec in areas)
-          Object.hash(
-            identityHashCode(spec.area),
-            spec.asset,
-            spec.fallbackColor,
-            spec.borderColor,
-            spec.borderWidth,
-          ),
-      ]),
-    );
-  }
-
-  final double latitude;
-  final double longitude;
+  final int areaSignature;
   final double zoom;
   final double rotation;
-  final double south;
-  final double west;
-  final double north;
-  final double east;
-  final int areaSignature;
+  final Offset anchorScreen;
+  final List<_ProjectedTextureArea> areas;
 
-  @override
-  bool operator ==(Object other) =>
-      other is _ProjectionKey &&
-      latitude == other.latitude &&
-      longitude == other.longitude &&
-      zoom == other.zoom &&
-      rotation == other.rotation &&
-      south == other.south &&
-      west == other.west &&
-      north == other.north &&
-      east == other.east &&
-      areaSignature == other.areaSignature;
+  bool matches(MapCamera camera, LatLng? anchor) =>
+      anchor != null &&
+      zoom == camera.zoom &&
+      rotation == camera.rotation &&
+      anchorScreen == camera.latLngToScreenOffset(anchor);
 
-  @override
-  int get hashCode => Object.hash(
-    latitude,
-    longitude,
-    zoom,
-    rotation,
-    south,
-    west,
-    north,
-    east,
-    areaSignature,
+  bool canTranslateTo(MapCamera camera) =>
+      zoom == camera.zoom && rotation == camera.rotation;
+
+  _TextureProjectionCache shifted({
+    required Offset delta,
+    required Offset anchorScreen,
+    required MapCamera camera,
+  }) => _TextureProjectionCache(
+    areaSignature: areaSignature,
+    zoom: camera.zoom,
+    rotation: camera.rotation,
+    anchorScreen: anchorScreen,
+    areas: List.unmodifiable([for (final area in areas) area.shifted(delta)]),
   );
 }
 
@@ -334,4 +352,13 @@ class _ProjectedTextureArea {
   final Color fallbackColor;
   final Color? borderColor;
   final double borderWidth;
+
+  _ProjectedTextureArea shifted(Offset delta) => _ProjectedTextureArea(
+    path: path.shift(delta),
+    bounds: bounds.shift(delta),
+    asset: asset,
+    fallbackColor: fallbackColor,
+    borderColor: borderColor,
+    borderWidth: borderWidth,
+  );
 }

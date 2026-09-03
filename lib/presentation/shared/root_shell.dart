@@ -7,12 +7,11 @@ import '../../location/location_service.dart';
 import '../../map_rendering/assets/map_visual_asset_warmup.dart';
 import '../explore/explore_screen.dart';
 import '../map/map_screen.dart';
-import '../offline/offline_screen.dart';
 import '../routes/routes_screen.dart';
 import '../settings/settings_screen.dart';
 import '../track/track_screen.dart';
 
-/// Bottom-nav shell hosting the 6 main screens from the product brief.
+/// Bottom-nav shell hosting the five main product screens.
 class RootShell extends StatefulWidget {
   const RootShell({super.key, required this.locationService});
 
@@ -36,7 +35,6 @@ class _RootShellState extends State<RootShell> {
       ExploreScreen(locationService: widget.locationService),
       const TrackScreen(),
       const RoutesScreen(),
-      OfflineScreen(locationService: widget.locationService),
       const SettingsScreen(),
     ];
     // Decode the compact, repeatedly used pixel artwork while the first map
@@ -55,7 +53,8 @@ class _RootShellState extends State<RootShell> {
         children: [
           // The Canvas compositor owns several GPU render targets. Unlike the
           // lighter product pages it is intentionally unmounted outside the
-          // map tab; its camera is restored and OSM cells remain offline.
+          // map tab; its camera is restored and already loaded OSM cells are
+          // retained by the in-memory/data cache when appropriate.
           if (_index == 0)
             MapScreen(
               locationService: widget.locationService,
@@ -68,12 +67,9 @@ class _RootShellState extends State<RootShell> {
             )
           else
             const SizedBox.expand(),
-          for (var page = 1; page < 6; page++)
+          for (var page = 1; page < 5; page++)
             _mountedPages.contains(page)
-                ? TickerMode(
-                    enabled: page == _index,
-                    child: _screens[page - 1],
-                  )
+                ? TickerMode(enabled: page == _index, child: _screens[page - 1])
                 : const SizedBox.expand(),
         ],
       ),
@@ -93,10 +89,6 @@ class _RootShellState extends State<RootShell> {
             label: 'Traccia',
           ),
           NavigationDestination(icon: Icon(Icons.route), label: 'Percorsi'),
-          NavigationDestination(
-            icon: Icon(Icons.download_for_offline),
-            label: 'Offline',
-          ),
           NavigationDestination(
             icon: Icon(Icons.settings),
             label: 'Impostazioni',

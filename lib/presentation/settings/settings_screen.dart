@@ -12,6 +12,7 @@ import '../../services/kokoro/kokoro_model_manager.dart';
 import '../../services/kokoro/kokoro_voices.dart';
 import '../../services/kokoro/wildbit_voice_service.dart';
 import '../../services/nostr/amber_signer_service.dart';
+import '../../services/nostr/nostr_profile_service.dart';
 import '../../services/security/backup_service.dart';
 import '../../services/security/database_key_manager.dart';
 
@@ -34,6 +35,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _previewing = false;
 
   NostrIdentity? _nostrIdentity;
+  NostrProfile? _nostrProfile;
+  bool _loadingNostrProfile = false;
   bool _linkingNostr = false;
   bool _exportingBackup = false;
 
@@ -91,7 +94,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadLinkedIdentity() async {
     final identity = await context.read<DatabaseKeyManager>().linkedIdentity;
-    if (mounted) setState(() => _nostrIdentity = identity);
+    if (!mounted) return;
+    setState(() => _nostrIdentity = identity);
+    if (identity != null) _loadNostrProfile(identity);
+  }
+
+  Future<void> _loadNostrProfile(NostrIdentity identity) async {
+    if (mounted) setState(() => _loadingNostrProfile = true);
+    final profile = await NostrProfileService.instance.fetch(
+      identity.pubkeyHex,
+    );
+    if (!mounted || _nostrIdentity?.pubkeyHex != identity.pubkeyHex) return;
+    setState(() {
+      _nostrProfile = profile;
+      _loadingNostrProfile = false;
+    });
   }
 
   Future<void> _loginWithAmber() async {
@@ -116,7 +133,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
         return;
       }
-      if (mounted) setState(() => _nostrIdentity = identity);
+      if (mounted) {
+        setState(() {
+          _nostrIdentity = identity;
+          _nostrProfile = null;
+        });
+        _loadNostrProfile(identity);
+      }
     } finally {
       if (mounted) setState(() => _linkingNostr = false);
     }
@@ -124,7 +147,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _unlinkNostr() async {
     await context.read<DatabaseKeyManager>().unlinkNostrIdentity();
-    if (mounted) setState(() => _nostrIdentity = null);
+    if (mounted) {
+      setState(() {
+        _nostrIdentity = null;
+        _nostrProfile = null;
+      });
+    }
   }
 
   Future<void> _exportBackup() async {
@@ -193,6 +221,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _SectionHeader('Sicurezza e backup', c),
           _NostrIdentityCard(
             identity: _nostrIdentity,
+            profile: _nostrProfile,
+            profileLoading: _loadingNostrProfile,
             linking: _linkingNostr,
             onLogin: _loginWithAmber,
             onLogout: _unlinkNostr,
@@ -302,7 +332,7 @@ class _KokoroCard extends StatelessWidget {
               const SizedBox(width: 8),
               const Expanded(
                 child: Text(
-                  'Modello vocale offline (Kokoro)',
+                  'Modello vocale (Kokoro)',
                   style: TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
@@ -310,7 +340,7 @@ class _KokoroCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(switch (status) {
-            _KokoroStatus.ready => 'Pronto — Bit può parlare offline',
+            _KokoroStatus.ready => 'Pronto — Bit può parlare',
             _KokoroStatus.downloading => 'Download in corso…',
             _ => 'Non scaricato (~87 MB, richiesto una sola volta)',
           }, style: TextStyle(color: c.textSecondary, fontSize: 12)),
@@ -328,23 +358,23 @@ class _KokoroCard extends StatelessWidget {
           ],
           if (status == _KokoroStatus.ready) ...[
             const SizedBox(height: 12),
-            Row(
+            const Text('Voce'),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
               children: [
-                const Text('Voce'),
-                const SizedBox(width: 12),
                 ChoiceChip(
                   label: const Text('Femminile'),
                   selected: voice.gender == 'f',
                   onSelected: (_) => onGenderChanged('f'),
                 ),
-                const SizedBox(width: 6),
                 if (kokoroHasGenderChoice('it'))
                   ChoiceChip(
                     label: const Text('Maschile'),
                     selected: voice.gender == 'm',
                     onSelected: (_) => onGenderChanged('m'),
                   ),
-                const SizedBox(width: 6),
                 ChoiceChip(
                   label: const Text('Bit · kawaii'),
                   selected: voice.gender == 'bit',
@@ -354,7 +384,7 @@ class _KokoroCard extends StatelessWidget {
             ),
             Row(
               children: [
-                const SizedBox(width: 40, child: Text('Velocità')),
+                const SizedBox(width: 72, child: Text('Velocità')),
                 Expanded(
                   child: Slider(
                     value: voice.speed,
@@ -369,7 +399,7 @@ class _KokoroCard extends StatelessWidget {
             ),
             Row(
               children: [
-                const SizedBox(width: 40, child: Text('Volume')),
+                const SizedBox(width: 72, child: Text('Volume')),
                 Expanded(
                   child: Slider(
                     value: voice.volume,
@@ -433,6 +463,8 @@ class _SwitchTile extends StatelessWidget {
 class _NostrIdentityCard extends StatelessWidget {
   const _NostrIdentityCard({
     required this.identity,
+    required this.profile,
+    required this.profileLoading,
     required this.linking,
     required this.onLogin,
     required this.onLogout,
@@ -440,6 +472,8 @@ class _NostrIdentityCard extends StatelessWidget {
   });
 
   final NostrIdentity? identity;
+  final NostrProfile? profile;
+  final bool profileLoading;
   final bool linking;
   final VoidCallback onLogin;
   final VoidCallback onLogout;
@@ -471,12 +505,43 @@ class _NostrIdentityCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          Text(
-            identity == null
-                ? 'Il database è già cifrato localmente. Collega la tua identità Nostr con Amber per rendere la chiave recuperabile dal tuo nsec (utile per i backup).'
-                : 'Collegato come ${identity.npub.substring(0, 12)}…',
-            style: TextStyle(color: c.textSecondary, fontSize: 12),
-          ),
+          if (identity == null)
+            Text(
+              'Il database è già cifrato localmente. Collega la tua identità Nostr con Amber per rendere la chiave recuperabile dal tuo nsec (utile per i backup).',
+              style: TextStyle(color: c.textSecondary, fontSize: 12),
+            )
+          else ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                _NostrAvatar(profile: profile, color: c.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        profile?.preferredName ??
+                            (profileLoading
+                                ? 'Caricamento profilo…'
+                                : 'Profilo Nostr'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Collegato come ${identity.npub.substring(0, 12)}…',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: c.textSecondary, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 10),
           if (identity == null)
             FilledButton.icon(
@@ -492,6 +557,34 @@ class _NostrIdentityCard extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+class _NostrAvatar extends StatelessWidget {
+  const _NostrAvatar({required this.profile, required this.color});
+
+  final NostrProfile? profile;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = profile?.pictureUri;
+    return CircleAvatar(
+      radius: 24,
+      backgroundColor: color.withValues(alpha: 0.14),
+      child: uri == null
+          ? Icon(Icons.person_outline, color: color)
+          : ClipOval(
+              child: Image.network(
+                uri.toString(),
+                width: 48,
+                height: 48,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) =>
+                    Icon(Icons.person_outline, color: color),
+              ),
+            ),
     );
   }
 }
@@ -633,7 +726,7 @@ class _InfoTile extends StatelessWidget {
           const Text('WildBit', style: TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Text(
-            'Real world, pixel world. Escursionismo offline-first con cartografia OpenStreetMap.',
+            'Real world, pixel world. Escursionismo con cartografia OpenStreetMap.',
             style: TextStyle(color: c.textSecondary, fontSize: 12),
           ),
           const SizedBox(height: 8),

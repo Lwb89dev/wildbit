@@ -228,10 +228,7 @@ class _WelcomePage extends _OnboardingPage {
         Icons.hiking_rounded,
         'Registra cammini, dislivello e punti del tuo percorso.',
       ),
-      (
-        Icons.download_for_offline_rounded,
-        'Porta con te le aree utili anche senza rete.',
-      ),
+      (Icons.explore_outlined, 'Trova sentieri e punti utili nella tua zona.'),
     ];
     return _OnboardingPage(
       child: Column(
@@ -259,7 +256,7 @@ class _WelcomePage extends _OnboardingPage {
           ),
           const SizedBox(height: 8),
           Text(
-            'Una mappa pensata per camminare: semplice, offline quando serve e senza tracciamento pubblicitario.',
+            'Una mappa pensata per camminare: semplice e senza tracciamento pubblicitario.',
             style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
@@ -485,7 +482,7 @@ class _ReadyPage extends _OnboardingPage {
           ),
           const SizedBox(height: 8),
           Text(
-            'Sulla mappa trovi Bit, i punti d’interesse e i sentieri. Dalla sezione Traccia puoi salvare ogni cammino; Offline prepara le zone prima di partire.',
+            'Sulla mappa trovi Bit, i punti d’interesse e i sentieri. Dalla sezione Traccia puoi salvare ogni cammino.',
             style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
           const Spacer(),

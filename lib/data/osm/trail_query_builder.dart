@@ -5,6 +5,11 @@ import 'package:latlong2/latlong.dart';
 /// This deliberately returns trail *candidates*, never a route proposal. The
 /// complete OSM way/relation geometry is still required before navigation can
 /// offer anything to a hiker.
+///
+/// Only bare way segments are queried here — curated hiking *route relations*
+/// come from [WaymarkedTrailsClient] instead, which resolves them with real
+/// length and a proper position rather than raw, sometimes-missing Overpass
+/// tags.
 abstract final class TrailQueryBuilder {
   static String nearby({
     required LatLng position,
@@ -20,27 +25,16 @@ abstract final class TrailQueryBuilder {
         : _escapeOverpassRegex(normalized);
     const wayBase =
         'way["highway"~"^(path|footway|track|steps|bridleway|via_ferrata)\$"]';
-    const routeBase = 'relation["type"="route"]["route"~"^(hiking|foot)\$"]';
     final wayClauses = matcher == null
         ? ['$wayBase$around;']
         : [
             '$wayBase["name"~"$matcher",i]$around;',
             '$wayBase["ref"~"$matcher",i]$around;',
           ];
-    // `network` is optional in OSM. Requiring it excluded many CAI and local
-    // hiking relations even though they are explicitly typed as hiking routes.
-    final routeClauses = matcher == null
-        ? ['$routeBase$around;']
-        : [
-            '$routeBase["name"~"$matcher",i]$around;',
-            '$routeBase["ref"~"$matcher",i]$around;',
-          ];
     return '''
 [out:json][timeout:12];
 (${wayClauses.join()});
 out tags center 150;
-(${routeClauses.join()});
-out tags center 60;
 ''';
   }
 

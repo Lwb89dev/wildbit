@@ -8,10 +8,10 @@ su dispositivi reali pesano più delle singole righe di codice.
 ## Stato sintetico
 
 - Renderer pixel-art/HD-2D: **100% code-complete**.
-- App alpha completa (renderer, GPS, offline, tracce, Nostr): **circa 66%
+- App alpha completa (renderer, GPS, tracce, Nostr): **circa 66%
   completato**, quindi **34% ancora da chiudere**.
 - Release pubblicabile e affidabile in campo: **non ancora stimabile come
-  completata** finché non termina il blocco di test Android/Overpass/offline.
+  completata** finché non termina il blocco di test Android/Overpass.
 
 ### Harness di profilazione locale
 
@@ -76,7 +76,7 @@ footprint restano un contesto leggero e non competono con boschi e sentieri.
 | 7 | Traccia registrata, statistiche, preview e condivisione Nostr | 92% | Test relay reali e QA privacy su dispositivo |
 | 8 | GPS degoogled, onboarding e permessi | 90% | Test su più versioni Android e acquisizione GNSS a freddo |
 | 9 | Esplora, ricerca sentieri e raggio vicino a me | 82% | Test UI con dati reali e ranking su dataset regionali |
-| 10 | Offline: selezione area, overlay sentieri e download | 94% | QA Android e pacchetti regionali estesi |
+| 10 | Pacchetti offline regionali | Rinviato | Funzione rimossa dall’alpha: richiederà una sorgente dati espressamente autorizzata |
 | 11 | Performance, cache, batteria e test su device medi | 94% | Profiling release e stress prima sugli smartphone, poi tablet |
 | 12 | Packaging, icone, splash, voce e release GPLv3 | 82% | Keystore reale e checklist store |
 
@@ -88,7 +88,7 @@ footprint restano un contesto leggero e non competono con boschi e sentieri.
 4. Chiudere edifici, rifugi e POI con footprint e profondità coerenti.
 5. Fare un passaggio integrato Bit + traccia + rotazione + camera.
 6. Rendere affidabili cache Overpass, Explore e modalità degradata.
-7. Completare offline regionale e misurare il profilo release Android.
+7. Misurare il profilo release Android.
 8. Solo alla fine rifinire packaging, voce e distribuzione.
 
 Gli ultimi macroblocchi completati sono il raccordo della direzione dei fiumi ai
@@ -102,18 +102,10 @@ nativo LocationManager. Il pacchetto Android usa inoltre il fork vendorizzato
 senza Play Services di Roadstr: nessun `FusedLocationClient` o
 `play-services-location` entra più nel grafo runtime o nell'APK. Nel blocco 9
 sono ora persistenti cache, ranking e
-fallback offline dei sentieri. Il punto 10 è ora implementato a livello di
-alpha: la selezione e il download regionale offline restano da verificare su
-device e con pacchetti estesi. Nel primo sottoblocco del punto 10
-sono ora presenti selezione slippy-tile limitata per zoom, cache atomica dei
-tile OSM e Waymarked Trails, ripresa dei file già presenti, provider locale con
-fallback online, progressione unica feature+tile, stima dello spazio e
-centramento GPS della schermata Offline. È ora presente anche un pacchetto
-locale da 1 km centrato sul GPS e il controllo dello spazio libero Android via
-StatFs. Restano QA su device, pacchetti regionali estesi e quote/cleanup del
-disco. Il download della viewport usa inoltre il livello di zoom effettivo
-selezionato dall’utente, mentre i pacchetti locali mantengono il range
-predefinito. Nel blocco 11 il renderer ora sospende animazioni e dettagli
+fallback dei sentieri. Il punto 10 è stato rimosso dall’alpha: non vengono
+più scaricati né prefetched tile raster pubblici. Un futuro pacchetto regionale
+dovrà basarsi su estratti PBF/PMTiles o infrastruttura WildBit con condizioni
+di distribuzione esplicitamente compatibili. Nel blocco 11 il renderer ora sospende animazioni e dettagli
 secondari durante pan, pinch e rotazione senza cambiare la popolazione degli
 sprite; un monitor opzionale in debug raccoglie una finestra mobile dei tempi
 build/raster e segnala i frame oltre il budget da 16,7 ms.
@@ -288,7 +280,7 @@ formato OSM/Overpass, elaborata dal parser di produzione prima del Canvas. La
 fixture comprende un multipolygon d'acqua spezzato con isola interna, bosco,
 prato, roccia, torrente, sentieri con relazione escursionistica, ponte, rifugio,
 cartello, fonte e alberi mappati. Il test verifica parsing, topologia e
-round-trip della cache offline senza richiedere GPS, rete o un server Overpass.
+round-trip della cache locale delle feature senza richiedere GPS, rete o un server Overpass.
 Nel pannello `renderer_profile_main.dart` il pulsante della scena ora alterna
 standard, replay OSM e stress, così i controlli di pan, zoom e rotazione usano
 le stesse geometrie locali e ripetibili.

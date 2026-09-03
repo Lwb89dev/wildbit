@@ -1,14 +1,11 @@
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 
-import '../data/repositories/drift_offline_region_repository.dart';
 import '../data/repositories/drift_track_repository.dart';
 import '../data/repositories/osm_map_data_repository.dart';
 import '../data/repositories/osm_trail_repository.dart';
-import '../domain/repositories/offline_region_repository.dart';
 import '../domain/repositories/track_repository.dart';
 import '../location/location_service.dart';
-import '../offline/offline_download_manager.dart';
 import '../services/kokoro/wildbit_voice_service.dart';
 import '../services/nostr/amber_signer_service.dart';
 import '../services/nostr/track_share_service.dart';
@@ -85,9 +82,6 @@ class WildBitProviders extends StatelessWidget {
           ),
           update: (context, repository, controller) => controller!,
         ),
-        ProxyProvider<WildBitDatabase, OfflineRegionRepository>(
-          update: (context, db, previous) => DriftOfflineRegionRepository(db),
-        ),
         ProxyProvider<WildBitDatabase, OsmMapDataRepository>(
           update: (context, db, previous) => OsmMapDataRepository(
             database: db,
@@ -96,17 +90,6 @@ class WildBitProviders extends StatelessWidget {
           ),
         ),
         Provider<OsmTrailRepository>(create: (_) => OsmTrailRepository()),
-        ProxyProvider2<
-          OfflineRegionRepository,
-          OsmMapDataRepository,
-          OfflineDownloadManager
-        >(
-          update: (context, areaRepository, mapDataRepository, previous) =>
-              OfflineDownloadManager(
-                areaRepository: areaRepository,
-                mapDataRepository: mapDataRepository,
-              ),
-        ),
       ],
       child: child,
     );

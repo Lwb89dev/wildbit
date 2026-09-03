@@ -75,6 +75,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   List<_GeneratedRock> _generatedRocks = const [];
   List<_ForegroundPaintItem>? _projectedItems;
   int? _projectedViewKey;
+  _TreeProjectionCache? _projectionCache;
   late int _featureSignature;
   Future<void>? _loading;
 
@@ -93,6 +94,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
     _featureSignature = signature;
     _projectedItems = null;
     _projectedViewKey = null;
+    _projectionCache = null;
     _rebuildCandidates();
     _ensureImages();
   }
@@ -376,6 +378,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   }
 
   List<_ForegroundPaintItem> _projectItemsForCamera(MapCamera camera) {
+    final quality = MapRenderingBudget.decorativeQuality;
     final bounds = camera.visibleBounds;
     final viewKey = Object.hash(
       camera.center.latitude,
@@ -387,14 +390,51 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
       bounds.north,
       bounds.east,
       _featureSignature,
-      MapRenderingBudget.decorativeQuality,
+      quality,
     );
     if (_projectedItems != null && _projectedViewKey == viewKey) {
       return _projectedItems!;
     }
+    final cached = _projectionCache;
+    // Tree and rock anchors are selected before projection and are not
+    // viewport-culled. A plain pan therefore preserves their complete order
+    // and only changes every screen coordinate by the same delta. Reusing
+    // that transform avoids hundreds of geographic projections and an
+    // O(n log n) depth sort per pointer tick on a dense forest.
+    if (cached != null && cached.canTranslateTo(camera, quality)) {
+      final anchorScreen = camera.latLngToScreenOffset(cached.anchor);
+      final delta = anchorScreen - cached.anchorScreen;
+      final List<_ForegroundPaintItem> translated = delta == Offset.zero
+          ? cached.items
+          : List<_ForegroundPaintItem>.unmodifiable([
+              for (final item in cached.items) item.shifted(delta),
+            ]);
+      _projectionCache = cached.shifted(
+        camera: camera,
+        quality: quality,
+        anchorScreen: anchorScreen,
+        items: translated,
+      );
+      _projectedItems = translated;
+      _projectedViewKey = viewKey;
+      return translated;
+    }
     final projected = _projectItems(camera);
     _projectedViewKey = viewKey;
     _projectedItems = List.unmodifiable(projected);
+    if (projected.isEmpty) {
+      _projectionCache = null;
+    } else {
+      final anchor = projected.first.position;
+      _projectionCache = _TreeProjectionCache(
+        zoom: camera.zoom,
+        rotation: camera.rotation,
+        quality: quality,
+        anchor: anchor,
+        anchorScreen: camera.latLngToScreenOffset(anchor),
+        items: _projectedItems!,
+      );
+    }
     return _projectedItems!;
   }
 
@@ -980,4 +1020,52 @@ class _ForegroundPaintItem {
   final int seed;
   final double scaleMultiplier;
   final Offset foot;
+
+  _ForegroundPaintItem shifted(Offset delta) => _ForegroundPaintItem._(
+    kind,
+    position,
+    seed,
+    scaleMultiplier,
+    foot + delta,
+  );
+}
+
+/// Camera-space cache for a complete depth-sorted forest candidate set.
+/// Translation is safe only when scale and bearing are unchanged; zoom and
+/// rotation immediately fall back to the exact geographic projection.
+class _TreeProjectionCache {
+  const _TreeProjectionCache({
+    required this.zoom,
+    required this.rotation,
+    required this.quality,
+    required this.anchor,
+    required this.anchorScreen,
+    required this.items,
+  });
+
+  final double zoom;
+  final double rotation;
+  final double quality;
+  final LatLng anchor;
+  final Offset anchorScreen;
+  final List<_ForegroundPaintItem> items;
+
+  bool canTranslateTo(MapCamera camera, double nextQuality) =>
+      zoom == camera.zoom &&
+      rotation == camera.rotation &&
+      quality == nextQuality;
+
+  _TreeProjectionCache shifted({
+    required MapCamera camera,
+    required double quality,
+    required Offset anchorScreen,
+    required List<_ForegroundPaintItem> items,
+  }) => _TreeProjectionCache(
+    zoom: camera.zoom,
+    rotation: camera.rotation,
+    quality: quality,
+    anchor: anchor,
+    anchorScreen: anchorScreen,
+    items: items,
+  );
 }
