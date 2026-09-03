@@ -219,24 +219,35 @@ val verifyBundledNativeAssets by tasks.registering {
 // Plugins contribute their .so files after `preBuild`, so verify the actual
 // release APK too. This prevents a compliant bundled eSpeak from masking an
 // incompatible third-party native dependency.
+//
+// A universal build produces a single app-release.apk; `--split-per-abi`
+// instead produces one app-<abi>-release.apk per ABI and no universal one at
+// all. Scanning the whole output directory (rather than a hardcoded
+// filename) verifies whichever APK(s) this invocation actually produced.
 val verifyRelease16kNativeLibraries by tasks.registering {
     dependsOn("packageRelease")
-    val releaseApk = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
-    inputs.file(releaseApk)
+    val releaseApkDir = layout.buildDirectory.dir("outputs/apk/release")
+    inputs.dir(releaseApkDir)
     doLast {
-        val apk = releaseApk.get().asFile
-        check(apk.isFile) { "Missing release APK for 16 kB validation: $apk" }
-        ZipFile(apk).use { zip ->
-            val nativeEntries = zip.entries().toList().filter { entry ->
-                !entry.isDirectory && entry.name.startsWith("lib/") &&
-                    entry.name.endsWith(".so")
-            }
-            check(nativeEntries.isNotEmpty()) {
-                "Release APK contains no native libraries to validate: $apk"
-            }
-            for (entry in nativeEntries) {
-                zip.getInputStream(entry).use { stream ->
-                    verifyElfLoadAlignment(stream.readBytes(), "${apk.name}!/${entry.name}")
+        val apks = releaseApkDir.get().asFile.listFiles { file -> file.extension == "apk" }
+            ?.toList()
+            ?: emptyList()
+        check(apks.isNotEmpty()) {
+            "No release APK found for 16 kB validation in $releaseApkDir"
+        }
+        for (apk in apks) {
+            ZipFile(apk).use { zip ->
+                val nativeEntries = zip.entries().toList().filter { entry ->
+                    !entry.isDirectory && entry.name.startsWith("lib/") &&
+                        entry.name.endsWith(".so")
+                }
+                check(nativeEntries.isNotEmpty()) {
+                    "Release APK contains no native libraries to validate: $apk"
+                }
+                for (entry in nativeEntries) {
+                    zip.getInputStream(entry).use { stream ->
+                        verifyElfLoadAlignment(stream.readBytes(), "${apk.name}!/${entry.name}")
+                    }
                 }
             }
         }
