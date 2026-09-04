@@ -10,6 +10,7 @@ import '../../domain/entities/hiking_trail.dart';
 import '../../domain/routing/route_eligibility_gate.dart';
 import '../../location/location_service.dart';
 import '../../services/selected_route_controller.dart';
+import '../../app/localization/app_localizations.dart';
 
 /// Discover named hiking paths around the user, around a searched city, or
 /// narrow them by name.
@@ -86,7 +87,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
       if (fix == null) {
         setState(() {
           _isLoading = false;
-          _error = 'Serve la posizione per cercare sentieri vicino a te.';
+          _error = context.l10n.locationSearchRequired;
         });
         return;
       }
@@ -113,7 +114,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
       if (!mounted) return;
       setState(() {
         _isLoading = false;
-        _error = 'Non riesco a scaricare i sentieri ora. Riprova tra poco.';
+        _error = context.l10n.downloadTrailsError;
       });
     }
   }
@@ -151,7 +152,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
     if (!mounted) return;
     setState(() => _isGeocoding = false);
     if (place == null) {
-      setState(() => _error = 'Città “$query” non trovata.');
+      setState(() => _error = context.l10n.cityNotFound(query));
       return;
     }
     setState(() {
@@ -175,11 +176,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
       widget.onOpenMap();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Non riesco a caricare questo percorso ora.'),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(context.l10n.routeLoadError)));
     } finally {
       if (mounted) setState(() => _openingRelationId = null);
     }
@@ -190,10 +189,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
     final position = _position;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Esplora sentieri'),
+        title: Text(context.l10n.text('explore.title')),
         actions: [
           IconButton(
-            tooltip: 'Aggiorna',
+            tooltip: context.l10n.text('explore.refresh'),
             onPressed: _isLoading
                 ? null
                 : () => _loadTrails(forceRefresh: true),
@@ -210,14 +209,15 @@ class _ExploreScreenState extends State<ExploreScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Sentieri escursionistici',
+                    context.l10n.text('explore.hikingTitle'),
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _manualPositionLabel == null
-                        ? 'Consulta tratti OpenStreetMap entro ${_radiusKm.round()} km da te. Non sono percorsi consigliati.'
-                        : 'Consulta tratti OpenStreetMap entro ${_radiusKm.round()} km da $_manualPositionLabel. Non sono percorsi consigliati.',
+                    context.l10n.exploreDescription(
+                      _radiusKm.round(),
+                      _manualPositionLabel,
+                    ),
                   ),
                   if (_usingCachedResults) ...[
                     const SizedBox(height: 8),
@@ -228,7 +228,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     children: [
                       const Icon(Icons.radar_outlined, size: 18),
                       const SizedBox(width: 8),
-                      const Text('Raggio'),
+                      Text(context.l10n.text('explore.radius')),
                       const SizedBox(width: 10),
                       SizedBox(
                         width: 72,
@@ -254,7 +254,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          '(1–100 km)',
+                          context.l10n.text('explore.radiusHint'),
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ),
@@ -267,7 +267,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                         child: FilledButton.icon(
                           onPressed: _isLoading ? null : _showNearby,
                           icon: const Icon(Icons.near_me),
-                          label: const Text('Vicino a me'),
+                          label: Text(context.l10n.text('explore.nearMe')),
                         ),
                       ),
                     ],
@@ -279,7 +279,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     enabled: !_isGeocoding,
                     onSubmitted: (_) => _searchCity(),
                     decoration: InputDecoration(
-                      hintText: 'Cerca per città',
+                      hintText: context.l10n.text('explore.city'),
                       prefixIcon: const Icon(Icons.location_city),
                       suffixIcon: _isGeocoding
                           ? const Padding(
@@ -293,7 +293,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                               ),
                             )
                           : IconButton(
-                              tooltip: 'Cerca città',
+                              tooltip: context.l10n.text('common.search'),
                               onPressed: _searchCity,
                               icon: const Icon(Icons.search),
                             ),
@@ -307,12 +307,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
                     onChanged: (_) => setState(() {}),
                     onSubmitted: (value) => _loadTrails(query: value),
                     decoration: InputDecoration(
-                      hintText: 'Cerca un sentiero per nome',
+                      hintText: context.l10n.text('explore.trail'),
                       prefixIcon: const Icon(Icons.search),
                       suffixIcon: _searchController.text.isEmpty
                           ? null
                           : IconButton(
-                              tooltip: 'Cancella',
+                              tooltip: context.l10n.text('common.clear'),
                               onPressed: () {
                                 _searchController.clear();
                                 _loadTrails(query: '');
@@ -324,7 +324,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Dati © OpenStreetMap contributors · ODbL',
+                    context.l10n.text('explore.osmCredit'),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -346,18 +346,20 @@ class _ExploreScreenState extends State<ExploreScreen> {
       return _MessageState(
         icon: Icons.location_off_outlined,
         message: _error!,
-        actionLabel: 'Riprova',
+        actionLabel: context.l10n.text('explore.retry'),
         onAction: _loadTrails,
       );
     }
     if (_trails.isEmpty) {
       final message = _activeQuery.isEmpty
-          ? 'Nessun tratto OSM da verificare trovato nella zona.'
-          : 'Nessun tratto OSM chiamato “$_activeQuery” nella tua zona.';
+          ? context.l10n.text('explore.noResults')
+          : context.l10n
+                .text('explore.noNamedResults')
+                .replaceAll('{query}', _activeQuery);
       return _MessageState(
         icon: Icons.hiking_outlined,
         message: message,
-        actionLabel: 'Mostra vicini',
+        actionLabel: context.l10n.text('explore.showNearby'),
         onAction: _showNearby,
       );
     }
@@ -401,16 +403,17 @@ class _ExploreScreenState extends State<ExploreScreen> {
             title: Text(trail.name),
             subtitle: Text(
               [
-                if (curated) _networkLabel(trail.route!.network),
+                if (curated) _networkLabel(trail.route!.network, context.l10n),
                 if (trail.ref != null && trail.ref != trail.name) trail.ref!,
                 if (trail.lengthKm != null)
-                  '${trail.lengthKm!.toStringAsFixed(1)} km di percorso',
-                if (trail.metadata.sacScale != null)
-                  trail.metadata.sacScale!,
+                  context.l10n.trailLength(
+                    context.l10n.decimal(trail.lengthKm!),
+                  ),
+                if (trail.metadata.sacScale != null) trail.metadata.sacScale!,
                 if (meters != null) _formatDistance(meters),
                 blocked
-                    ? 'Non proporre: ${eligibility.reasons.first}'
-                    : 'Da verificare: ${eligibility.reasons.first}',
+                    ? '${context.l10n.text('explore.doNotSuggest')}: ${eligibility.reasons.first}'
+                    : '${context.l10n.text('explore.verify')}: ${eligibility.reasons.first}',
               ].whereType<String>().join(' · '),
             ),
             trailing: curated ? const Icon(Icons.chevron_right) : null,
@@ -423,19 +426,29 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   String _formatDistance(double meters) {
     if (meters < 1000) return '${meters.round()} m';
-    return '${(meters / 1000).toStringAsFixed(1)} km';
+    return '${context.l10n.decimal(meters / 1000)} km';
   }
 
   // Accepts both OSM's own network tag values and Waymarked Trails'
   // equivalent group codes (curated results now come from the latter).
-  String? _networkLabel(String? network) => switch (network) {
-    'iwn' || 'INT' => 'Rete internazionale',
-    'nwn' || 'NAT' => 'Rete nazionale',
-    'rwn' || 'REG' => 'Rete regionale',
-    'AL2' || 'AL3' || 'AL4' => 'Grande traversata',
-    'lwn' || 'LOC' => 'Rete locale',
-    _ => 'Percorso segnalato',
-  };
+  String? _networkLabel(String? network, WildBitLocalizations l10n) =>
+      switch (network) {
+        'iwn' || 'INT' =>
+          l10n.languageCode == 'it'
+              ? 'Rete internazionale'
+              : 'International network',
+        'nwn' || 'NAT' =>
+          l10n.languageCode == 'it' ? 'Rete nazionale' : 'National network',
+        'rwn' || 'REG' =>
+          l10n.languageCode == 'it' ? 'Rete regionale' : 'Regional network',
+        'AL2' || 'AL3' || 'AL4' =>
+          l10n.languageCode == 'it'
+              ? 'Grande traversata'
+              : 'Long-distance route',
+        'lwn' ||
+        'LOC' => l10n.languageCode == 'it' ? 'Rete locale' : 'Local network',
+        _ => l10n.languageCode == 'it' ? 'Percorso segnalato' : 'Marked route',
+      };
 }
 
 class _LocalResultsNotice extends StatelessWidget {
@@ -447,15 +460,13 @@ class _LocalResultsNotice extends StatelessWidget {
       color: Theme.of(context).colorScheme.secondaryContainer,
       borderRadius: BorderRadius.circular(10),
     ),
-    child: const Padding(
-      padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       child: Row(
         children: [
           Icon(Icons.bookmark_border, size: 17),
           SizedBox(width: 7),
-          Expanded(
-            child: Text('Risultati salvati localmente · verifica la data'),
-          ),
+          Expanded(child: Text(context.l10n.text('explore.saved'))),
         ],
       ),
     ),

@@ -8,6 +8,7 @@ import '../../location/location_service.dart';
 import '../../domain/entities/nostr_identity.dart';
 import '../../services/nostr/amber_signer_service.dart';
 import '../../services/security/database_key_manager.dart';
+import '../../app/localization/app_localizations.dart';
 
 /// First-launch guide for the on-device hiking experience. It explicitly
 /// explains why location is useful before WildBit ever asks Android for it.
@@ -82,7 +83,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('nsec non valido.')));
+      ).showSnackBar(SnackBar(content: Text(context.l10n.invalidNsec)));
     }
   }
 
@@ -219,16 +220,10 @@ class _WelcomePage extends _OnboardingPage {
   @override
   Widget build(BuildContext context) {
     final colors = WildBitColorsExt.of(context);
-    final features = const [
-      (
-        Icons.terrain_rounded,
-        'Mappe di sentieri illustrate e leggibili anche all’aperto.',
-      ),
-      (
-        Icons.hiking_rounded,
-        'Registra cammini, dislivello e punti del tuo percorso.',
-      ),
-      (Icons.explore_outlined, 'Trova sentieri e punti utili nella tua zona.'),
+    final features = [
+      (Icons.terrain_rounded, context.l10n.text('onboarding.featureMaps')),
+      (Icons.hiking_rounded, context.l10n.text('onboarding.featureTracks')),
+      (Icons.explore_outlined, context.l10n.text('onboarding.featureExplore')),
     ];
     return _OnboardingPage(
       child: Column(
@@ -251,12 +246,12 @@ class _WelcomePage extends _OnboardingPage {
           ),
           const SizedBox(height: 8),
           Text(
-            'La tua guida per il sentiero',
+            context.l10n.text('onboarding.welcomeTitle'),
             style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 8),
           Text(
-            'Una mappa pensata per camminare: semplice e senza tracciamento pubblicitario.',
+            context.l10n.text('onboarding.welcomeBody'),
             style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
@@ -270,7 +265,7 @@ class _WelcomePage extends _OnboardingPage {
               },
             ),
           ),
-          primaryButton(context, 'Inizia il viaggio', onNext),
+          primaryButton(context, context.l10n.text('onboarding.start'), onNext),
         ],
       ),
     );
@@ -303,12 +298,12 @@ class _NostrPage extends _OnboardingPage {
           iconCard(context, Icons.key_rounded),
           const SizedBox(height: 22),
           Text(
-            'Identità Nostr',
+            context.l10n.text('onboarding.nostrTitle'),
             style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 8),
           Text(
-            'Facoltativa: serve per condividere i tuoi percorsi. Amber è il metodo consigliato; puoi anche collegare un nsec, conservato solo nel keystore sicuro.',
+            context.l10n.text('onboarding.nostrBody'),
             style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
@@ -318,7 +313,7 @@ class _NostrPage extends _OnboardingPage {
                 Icons.verified_user,
                 color: WildBitColors.forestGreen,
               ),
-              title: const Text('Nostr collegato'),
+              title: Text(context.l10n.text('onboarding.connected')),
               subtitle: Text(
                 identity!.npub,
                 maxLines: 1,
@@ -328,7 +323,9 @@ class _NostrPage extends _OnboardingPage {
           else ...[
             primaryButton(
               context,
-              waiting ? 'Attendi Amber…' : 'Accedi con Amber',
+              waiting
+                  ? context.l10n.text('onboarding.waitingAmber')
+                  : context.l10n.text('onboarding.loginAmber'),
               waiting
                   ? () {}
                   : () {
@@ -339,16 +336,22 @@ class _NostrPage extends _OnboardingPage {
             OutlinedButton.icon(
               onPressed: () => _askNsec(context),
               icon: const Icon(Icons.vpn_key_outlined),
-              label: const Text('Inserisci nsec'),
+              label: Text(context.l10n.text('onboarding.enterNsec')),
             ),
           ],
           const Spacer(),
           Text(
-            'Puoi saltare e collegare Nostr in seguito dalle impostazioni.',
+            context.l10n.text('onboarding.later'),
             style: TextStyle(color: colors.textSecondary),
           ),
           const SizedBox(height: 12),
-          primaryButton(context, connected ? 'Continua' : 'Salta', onNext),
+          primaryButton(
+            context,
+            connected
+                ? context.l10n.text('common.continue')
+                : context.l10n.text('onboarding.skip'),
+            onNext,
+          ),
         ],
       ),
     );
@@ -359,29 +362,28 @@ class _NostrPage extends _OnboardingPage {
     showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Inserisci nsec'),
+        title: Text(context.l10n.text('onboarding.enterNsec')),
         content: TextField(
           controller: controller,
           obscureText: true,
           autocorrect: false,
           enableSuggestions: false,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: 'nsec1…',
-            helperText:
-                'Viene conservato solo nel keystore sicuro del dispositivo.',
+            helperText: context.l10n.text('onboarding.nsecHelper'),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Annulla'),
+            child: Text(context.l10n.text('common.cancel')),
           ),
           FilledButton(
             onPressed: () {
               Navigator.pop(dialogContext);
               onNsec(controller.text.trim());
             },
-            child: const Text('Collega'),
+            child: Text(context.l10n.text('common.continue')),
           ),
         ],
       ),
@@ -416,12 +418,12 @@ class _LocationPage extends _OnboardingPage {
           iconCard(context, Icons.location_on_rounded),
           const SizedBox(height: 22),
           Text(
-            'La tua posizione, sul tuo dispositivo',
+            context.l10n.text('onboarding.locationTitle'),
             style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 8),
           Text(
-            'Serve per posizionare Bit sulla mappa, registrare una traccia e scaricare l’area attorno a te. WildBit non vende né usa la tua posizione per pubblicità.',
+            context.l10n.text('onboarding.locationBody'),
             style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
           const SizedBox(height: 24),
@@ -440,7 +442,7 @@ class _LocationPage extends _OnboardingPage {
               child: FilledButton.icon(
                 onPressed: onRequest,
                 icon: const Icon(Icons.my_location_rounded),
-                label: const Text('Consenti la posizione'),
+                label: Text(context.l10n.text('onboarding.allowLocation')),
               ),
             ),
           if (denied) ...[
@@ -448,13 +450,17 @@ class _LocationPage extends _OnboardingPage {
             TextButton.icon(
               onPressed: onSettings,
               icon: const Icon(Icons.settings_outlined),
-              label: const Text('Apri impostazioni app'),
+              label: Text(context.l10n.text('onboarding.openSettings')),
             ),
           ],
           const SizedBox(height: 8),
           TextButton(
             onPressed: onNext,
-            child: Text(granted ? 'Continua' : 'Continua senza posizione'),
+            child: Text(
+              granted
+                  ? context.l10n.text('common.continue')
+                  : context.l10n.text('onboarding.continueWithoutLocation'),
+            ),
           ),
         ],
       ),
@@ -477,12 +483,12 @@ class _ReadyPage extends _OnboardingPage {
           iconCard(context, Icons.explore_rounded),
           const SizedBox(height: 22),
           Text(
-            'Pronto per uscire',
+            context.l10n.text('onboarding.readyTitle'),
             style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 8),
           Text(
-            'Sulla mappa trovi Bit, i punti d’interesse e i sentieri. Dalla sezione Traccia puoi salvare ogni cammino.',
+            context.l10n.text('onboarding.readyBody'),
             style: TextStyle(color: colors.textSecondary, height: 1.5),
           ),
           const Spacer(),
@@ -498,7 +504,7 @@ class _ReadyPage extends _OnboardingPage {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    'Le tracce restano nel tuo archivio locale finché non scegli di esportarle.',
+                    context.l10n.text('onboarding.localTracks'),
                     style: TextStyle(color: colors.textPrimary, height: 1.4),
                   ),
                 ),
@@ -506,7 +512,11 @@ class _ReadyPage extends _OnboardingPage {
             ),
           ),
           const SizedBox(height: 22),
-          primaryButton(context, 'Apri WildBit', onStart),
+          primaryButton(
+            context,
+            context.l10n.text('onboarding.openWildBit'),
+            onStart,
+          ),
         ],
       ),
     );
@@ -559,10 +569,10 @@ class _PermissionCard extends StatelessWidget {
         ? Colors.green.shade700
         : (denied ? Colors.orange.shade800 : colors.accent);
     final label = granted
-        ? 'Posizione consentita'
+        ? context.l10n.text('location.allowed')
         : denied
-        ? 'Posizione non consentita'
-        : 'Consenso richiesto';
+        ? context.l10n.text('location.denied')
+        : context.l10n.text('location.required');
     final icon = granted
         ? Icons.check_circle_rounded
         : Icons.location_searching_rounded;

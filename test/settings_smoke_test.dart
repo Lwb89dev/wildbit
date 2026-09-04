@@ -11,7 +11,10 @@ void main() {
   testWidgets('Settings screen opens without exceptions', (
     WidgetTester tester,
   ) async {
-    SharedPreferences.setMockInitialValues({'wildbit.onboarding.v1': true});
+    SharedPreferences.setMockInitialValues({
+      'wildbit.onboarding.v1': true,
+      'wildbit.locale': 'it',
+    });
     final locationService = SimulatedLocationService(
       path: const [LatLng(46.07, 11.12), LatLng(46.071, 11.121)],
     );

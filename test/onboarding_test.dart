@@ -11,7 +11,7 @@ void main() {
   testWidgets(
     'onboarding explicitly requests location before entering WildBit',
     (tester) async {
-      SharedPreferences.setMockInitialValues({});
+      SharedPreferences.setMockInitialValues({'wildbit.locale': 'it'});
       final locationService = SimulatedLocationService(
         path: const [LatLng(46.07, 11.12), LatLng(46.071, 11.121)],
       );

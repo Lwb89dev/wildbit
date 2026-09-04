@@ -7,6 +7,7 @@ import '../data/repositories/osm_trail_repository.dart';
 import '../domain/repositories/track_repository.dart';
 import '../location/location_service.dart';
 import '../services/kokoro/wildbit_voice_service.dart';
+import '../services/kokoro/kokoro_voices.dart';
 import '../services/nostr/amber_signer_service.dart';
 import '../services/nostr/track_share_service.dart';
 import '../services/security/database_key_manager.dart';
@@ -14,6 +15,7 @@ import '../services/selected_route_controller.dart';
 import '../services/track_recorder.dart';
 import '../storage/database.dart';
 import 'theme/theme_provider.dart';
+import 'localization/app_localizations.dart';
 
 /// Wires up the app-wide dependency graph (database, repositories,
 /// download manager, track recorder) via `provider`. Shared between
@@ -47,11 +49,21 @@ class WildBitProviders extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        ChangeNotifierProvider<WildBitLocaleProvider>(
+          create: (_) => WildBitLocaleProvider()..init(),
+        ),
         ChangeNotifierProvider<ThemeProvider>(
           create: (_) => ThemeProvider()..init(),
         ),
         ChangeNotifierProvider<WildBitVoiceService>(
-          create: (_) => WildBitVoiceService()..checkAndInit('it'),
+          create: (_) {
+            final systemCode =
+                WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+            final language = kokoroSupportedLanguages.contains(systemCode)
+                ? systemCode
+                : 'en';
+            return WildBitVoiceService()..checkAndInit(language);
+          },
         ),
         Provider<DatabaseKeyManager>(create: (_) => DatabaseKeyManager()),
         Provider<AmberSignerService>(create: (_) => AmberSignerService()),
@@ -91,7 +103,10 @@ class WildBitProviders extends StatelessWidget {
           ),
         ),
         Provider<OsmTrailRepository>(create: (_) => OsmTrailRepository()),
-        ChangeNotifierProxyProvider<OsmMapDataRepository, SelectedRouteController>(
+        ChangeNotifierProxyProvider<
+          OsmMapDataRepository,
+          SelectedRouteController
+        >(
           create: (context) => SelectedRouteController(
             mapDataRepository: context.read<OsmMapDataRepository>(),
           ),

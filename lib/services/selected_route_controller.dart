@@ -20,10 +20,9 @@ enum RouteDownloadState { idle, downloading, done, failed }
 /// implementation so a download loop can be tested without real network
 /// access.
 class SelectedRouteController extends ChangeNotifier {
-  SelectedRouteController({required MapDataRepository mapDataRepository})
-    : _mapDataRepository = mapDataRepository;
+  SelectedRouteController({required this.mapDataRepository});
 
-  final MapDataRepository _mapDataRepository;
+  final MapDataRepository mapDataRepository;
 
   HikingTrail? _trail;
   List<LatLng>? _geometry;
@@ -78,7 +77,7 @@ class SelectedRouteController extends ChangeNotifier {
 
     for (final cell in cells) {
       try {
-        await _mapDataRepository.loadFeatures(cell);
+        await mapDataRepository.loadFeatures(cell);
         _downloadedCells++;
       } catch (_) {
         _failedCells++;

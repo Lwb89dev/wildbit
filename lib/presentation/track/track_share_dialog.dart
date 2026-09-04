@@ -8,6 +8,7 @@ import '../../domain/entities/track_summary.dart';
 import '../../map_rendering/layers/hd_terrain_layer.dart';
 import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
 import '../../services/nostr/track_share_service.dart';
+import '../../app/localization/app_localizations.dart';
 
 /// Nostr sharing dialog shared by the just-recorded track flow
 /// ([TrackScreen]) and the saved/archived track flow ([TrackDetailScreen]),
@@ -20,7 +21,7 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
     context: context,
     builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
-        title: const Text('Condividi su Nostr'),
+        title: Text(context.l10n.text('share.title')),
         content: SizedBox(
           width: 360,
           child: Column(
@@ -56,13 +57,18 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
               ),
               const SizedBox(height: 12),
               Text(
-                '${(summary.distanceMeters / 1000).toStringAsFixed(2)} km · '
-                '${_formatDuration(Duration(seconds: summary.durationSeconds))} · '
-                'passo ${summary.formattedPace}',
+                context.l10n.shareSummary(
+                  context.l10n.decimal(
+                    summary.distanceMeters / 1000,
+                    digits: 2,
+                  ),
+                  _formatDuration(Duration(seconds: summary.durationSeconds)),
+                  summary.formattedPace,
+                ),
               ),
               const SizedBox(height: 8),
-              const Text(
-                'La traccia GPS esatta sarà pubblica sui relay Nostr.',
+              Text(
+                context.l10n.text('share.exactWarning'),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 4),
@@ -71,8 +77,8 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
                 contentPadding: EdgeInsets.zero,
                 controlAffinity: ListTileControlAffinity.leading,
                 dense: true,
-                title: const Text(
-                  'Ho capito e desidero pubblicarla.',
+                title: Text(
+                  context.l10n.text('share.consent'),
                   style: TextStyle(fontSize: 13),
                 ),
                 onChanged: publishing
@@ -87,7 +93,7 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
         actions: [
           TextButton(
             onPressed: publishing ? null : () => Navigator.pop(dialogContext),
-            child: const Text('Non condividere'),
+            child: Text(context.l10n.text('share.dontShare')),
           ),
           FilledButton.icon(
             onPressed: publishing || !exactTrackConsent
@@ -104,9 +110,8 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
                         SnackBar(
                           content: Text(
                             result.queued
-                                ? 'Relay non disponibile: percorso in coda '
-                                      'cifrata. Riproverò entrando in Traccia.'
-                                : 'Percorso pubblicato su Nostr.',
+                                ? context.l10n.text('share.queued')
+                                : context.l10n.text('share.published'),
                           ),
                         ),
                       );
@@ -125,7 +130,11 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.public),
-            label: Text(publishing ? 'Pubblicazione…' : 'Pubblica'),
+            label: Text(
+              publishing
+                  ? context.l10n.text('share.publishing')
+                  : context.l10n.text('share.publish'),
+            ),
           ),
         ],
       ),

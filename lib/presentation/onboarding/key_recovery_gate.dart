@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../../services/nostr/amber_signer_service.dart';
 import '../../services/security/database_key_manager.dart';
+import '../../app/localization/app_localizations.dart';
 
 /// Shown, before the encrypted database is ever opened, only when
 /// [DatabaseKeyManager.hasRecoverableIdentity] says this install has Nostr
@@ -28,6 +30,14 @@ class _KeyRecoveryGateState extends State<KeyRecoveryGate> {
   bool _recovering = false;
   String? _error;
 
+  WildBitLocalizations get _l10n {
+    final platformLocale = WidgetsBinding.instance.platformDispatcher.locale;
+    final locale = WildBitLocalizationsDelegate().isSupported(platformLocale)
+        ? Locale(platformLocale.languageCode)
+        : const Locale('en');
+    return WildBitLocalizations(locale);
+  }
+
   Future<void> _recover() async {
     setState(() {
       _recovering = true;
@@ -35,12 +45,12 @@ class _KeyRecoveryGateState extends State<KeyRecoveryGate> {
     });
     try {
       if (!await _signer.isInstalled()) {
-        setState(() => _error = 'Amber non è installato su questo dispositivo.');
+        setState(() => _error = _l10n.amberNotInstalled);
         return;
       }
       final key = await widget.keyManager.recoverKeyFromAmber(_signer);
       if (key == null) {
-        setState(() => _error = 'Recupero annullato o non riuscito.');
+        setState(() => _error = _l10n.amberCancelled);
         return;
       }
       widget.onKeyResolved(key);
@@ -55,7 +65,13 @@ class _KeyRecoveryGateState extends State<KeyRecoveryGate> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = _l10n;
     return MaterialApp(
+      supportedLocales: WildBitLocalizations.supportedLocales,
+      localizationsDelegates: const [
+        WildBitLocalizationsDelegate(),
+        ...GlobalMaterialLocalizations.delegates,
+      ],
       home: Scaffold(
         body: SafeArea(
           child: Padding(
@@ -67,16 +83,11 @@ class _KeyRecoveryGateState extends State<KeyRecoveryGate> {
                 const Icon(Icons.lock_reset_rounded, size: 48),
                 const SizedBox(height: 20),
                 Text(
-                  'Ripristina il tuo database',
+                  l10n.text('onboarding.restoreDatabase'),
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 10),
-                const Text(
-                  'Questa installazione ha un\'identità Nostr collegata ma non '
-                  'ha ancora la chiave del database su questo dispositivo. '
-                  'Recuperala con Amber prima di continuare, altrimenti un '
-                  'eventuale backup ripristinato non si aprirà.',
-                ),
+                Text(l10n.text('onboarding.restoreBody')),
                 if (_error != null) ...[
                   const SizedBox(height: 14),
                   Text(_error!, style: const TextStyle(color: Colors.red)),
@@ -93,13 +104,17 @@ class _KeyRecoveryGateState extends State<KeyRecoveryGate> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.key),
-                    label: Text(_recovering ? 'Recupero in corso…' : 'Recupera con Amber'),
+                    label: Text(
+                      _recovering
+                          ? l10n.text('common.recovering')
+                          : l10n.text('common.recoverAmber'),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 10),
                 TextButton(
                   onPressed: _recovering ? null : _startFresh,
-                  child: const Text('Inizia comunque con un database vuoto'),
+                  child: Text(l10n.text('onboarding.startFresh')),
                 ),
               ],
             ),

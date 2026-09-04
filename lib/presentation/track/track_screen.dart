@@ -8,6 +8,7 @@ import '../../data/test_data/test_region.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/saved_track.dart';
 import '../../domain/enums/track_source.dart';
+import '../../app/localization/app_localizations.dart';
 import '../../map_rendering/layers/hd_terrain_layer.dart';
 import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
 import '../../services/track_recorder.dart';
@@ -34,7 +35,7 @@ class _TrackScreenState extends State<TrackScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Traccia')),
+      appBar: AppBar(title: Text(context.l10n.text('track.title'))),
       body: Consumer<TrackRecorderController>(
         builder: (context, recorder, _) => Column(
           children: [
@@ -83,28 +84,30 @@ class _StatsAndControls extends StatelessWidget {
 
   Future<void> _stopAndSave(BuildContext context) async {
     final nameController = TextEditingController(
-      text: 'Traccia del ${DateTime.now().day}/${DateTime.now().month}',
+      text: context.l10n.trackDefaultName(DateTime.now()),
     );
     final name = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Salva traccia'),
+        title: Text(context.l10n.text('track.saveTitle')),
         content: TextField(controller: nameController, autofocus: true),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Annulla'),
+            child: Text(context.l10n.text('common.cancel')),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, nameController.text),
-            child: const Text('Salva'),
+            child: Text(context.l10n.text('common.save')),
           ),
         ],
       ),
     );
     if (name == null || !context.mounted) return;
     final track = SavedTrack(
-      name: name.trim().isEmpty ? 'Traccia WildBit' : name.trim(),
+      name: name.trim().isEmpty
+          ? context.l10n.text('track.savedName')
+          : name.trim(),
       createdAt: DateTime.now(),
       distanceMeters: recorder.distanceMeters,
       durationSeconds: recorder.elapsed.inSeconds,
@@ -120,9 +123,13 @@ class _StatsAndControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final distanceKm = (recorder.distanceMeters / 1000).toStringAsFixed(2);
-    final speedKmh = (recorder.currentSpeedMetersPerSecond * 3.6)
-        .toStringAsFixed(1);
+    final distanceKm = context.l10n.decimal(
+      recorder.distanceMeters / 1000,
+      digits: 2,
+    );
+    final speedKmh = context.l10n.decimal(
+      recorder.currentSpeedMetersPerSecond * 3.6,
+    );
 
     return SafeArea(
       top: false,
@@ -133,15 +140,22 @@ class _StatsAndControls extends StatelessWidget {
           children: [
             Row(
               children: [
-                _StatTile(label: 'Distanza', value: '$distanceKm km'),
                 _StatTile(
-                  label: 'Tempo',
+                  label: context.l10n.text('track.distance'),
+                  value: '$distanceKm km',
+                ),
+                _StatTile(
+                  label: context.l10n.text('track.time'),
                   value: _formatDuration(recorder.elapsed),
                 ),
-                _StatTile(label: 'Velocità', value: '$speedKmh km/h'),
                 _StatTile(
-                  label: 'Dislivello+',
-                  value: '${recorder.elevationGainMeters.toStringAsFixed(0)} m',
+                  label: context.l10n.text('track.speed'),
+                  value: '$speedKmh km/h',
+                ),
+                _StatTile(
+                  label: context.l10n.text('track.elevation'),
+                  value:
+                      '${context.l10n.decimal(recorder.elevationGainMeters, digits: 0)} m',
                 ),
               ],
             ),
@@ -166,7 +180,7 @@ class _Controls extends StatelessWidget {
       RecorderState.idle => FilledButton.icon(
         onPressed: recorder.start,
         icon: const Icon(Icons.fiber_manual_record),
-        label: const Text('Inizia registrazione'),
+        label: Text(context.l10n.text('track.start')),
       ),
       RecorderState.recording => Row(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -174,13 +188,13 @@ class _Controls extends StatelessWidget {
           OutlinedButton.icon(
             onPressed: recorder.pause,
             icon: const Icon(Icons.pause),
-            label: const Text('Pausa'),
+            label: Text(context.l10n.text('track.pause')),
           ),
           const SizedBox(width: 12),
           FilledButton.icon(
             onPressed: onStop,
             icon: const Icon(Icons.stop),
-            label: const Text('Stop'),
+            label: Text(context.l10n.text('track.stop')),
           ),
         ],
       ),
@@ -190,13 +204,13 @@ class _Controls extends StatelessWidget {
           OutlinedButton.icon(
             onPressed: recorder.resume,
             icon: const Icon(Icons.play_arrow),
-            label: const Text('Riprendi'),
+            label: Text(context.l10n.text('track.resume')),
           ),
           const SizedBox(width: 12),
           FilledButton.icon(
             onPressed: onStop,
             icon: const Icon(Icons.stop),
-            label: const Text('Stop'),
+            label: Text(context.l10n.text('track.stop')),
           ),
         ],
       ),

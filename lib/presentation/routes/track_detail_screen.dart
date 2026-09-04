@@ -10,6 +10,7 @@ import '../../domain/repositories/track_repository.dart';
 import '../../gpx/gpx_file_service.dart';
 import '../../map_rendering/layers/hd_terrain_layer.dart';
 import '../track/track_share_dialog.dart';
+import '../../app/localization/app_localizations.dart';
 
 class TrackDetailScreen extends StatefulWidget {
   const TrackDetailScreen({super.key, required this.trackId});
@@ -22,8 +23,9 @@ class TrackDetailScreen extends StatefulWidget {
 
 class _TrackDetailScreenState extends State<TrackDetailScreen> {
   final _gpxFileService = GpxFileService();
-  late final Future<SavedTrack?> _trackFuture =
-      context.read<TrackRepository>().getTrack(widget.trackId);
+  late final Future<SavedTrack?> _trackFuture = context
+      .read<TrackRepository>()
+      .getTrack(widget.trackId);
 
   @override
   Widget build(BuildContext context) {
@@ -37,12 +39,12 @@ class _TrackDetailScreenState extends State<TrackDetailScreen> {
             actions: [
               if (track != null) ...[
                 IconButton(
-                  tooltip: 'Condividi su Nostr',
+                  tooltip: context.l10n.text('share.title'),
                   icon: const Icon(Icons.public),
                   onPressed: () => showTrackShareDialog(context, track),
                 ),
                 IconButton(
-                  tooltip: 'Esporta GPX',
+                  tooltip: context.l10n.text('routes.export'),
                   icon: const Icon(Icons.share),
                   onPressed: () => _gpxFileService.exportAndShare(track),
                 ),
@@ -53,13 +55,18 @@ class _TrackDetailScreenState extends State<TrackDetailScreen> {
               ? const Center(child: CircularProgressIndicator())
               : FlutterMap(
                   options: MapOptions(
-                    initialCenter:
-                        track.points.isNotEmpty ? track.points.first.position : testRegionCenter,
+                    initialCenter: track.points.isNotEmpty
+                        ? track.points.first.position
+                        : testRegionCenter,
                     initialZoom: 14,
                   ),
                   children: [
                     const HdTerrainLayer(
-                      features: MapFeatureCollection(areas: [], lines: [], pois: []),
+                      features: MapFeatureCollection(
+                        areas: [],
+                        lines: [],
+                        pois: [],
+                      ),
                     ),
                     PolylineLayer(
                       polylines: [

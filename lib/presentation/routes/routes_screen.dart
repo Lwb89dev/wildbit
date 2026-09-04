@@ -6,6 +6,7 @@ import '../../domain/enums/track_source.dart';
 import '../../domain/repositories/track_repository.dart';
 import '../../gpx/gpx_file_service.dart';
 import 'track_detail_screen.dart';
+import '../../app/localization/app_localizations.dart';
 
 class RoutesScreen extends StatefulWidget {
   const RoutesScreen({super.key});
@@ -37,7 +38,9 @@ class _RoutesScreenState extends State<RoutesScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Impossibile importare il file GPX: $e')),
+        SnackBar(
+          content: Text('${context.l10n.text('routes.importError')}: $e'),
+        ),
       );
     }
   }
@@ -51,16 +54,22 @@ class _RoutesScreenState extends State<RoutesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Percorsi'),
+        title: Text(context.l10n.text('routes.title')),
         actions: [
-          IconButton(onPressed: _importGpx, icon: const Icon(Icons.file_upload), tooltip: 'Importa GPX'),
+          IconButton(
+            onPressed: _importGpx,
+            icon: const Icon(Icons.file_upload),
+            tooltip: context.l10n.text('routes.import'),
+          ),
         ],
       ),
       body: FutureBuilder<List<SavedTrack>>(
         future: _tracksFuture,
         builder: (context, snapshot) {
           final tracks = snapshot.data;
-          if (tracks == null) return const Center(child: CircularProgressIndicator());
+          if (tracks == null) {
+            return const Center(child: CircularProgressIndicator());
+          }
           if (tracks.isEmpty) return const _EmptyState();
 
           return ListView.builder(
@@ -87,10 +96,14 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.route, size: 48, color: Theme.of(context).colorScheme.primary),
+            Icon(
+              Icons.route,
+              size: 48,
+              color: Theme.of(context).colorScheme.primary,
+            ),
             const SizedBox(height: 12),
-            const Text(
-              'Nessun percorso ancora.\nRegistra una traccia o importa un file GPX.',
+            Text(
+              context.l10n.text('routes.empty'),
               textAlign: TextAlign.center,
             ),
           ],
@@ -108,18 +121,27 @@ class _TrackTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final km = (track.distanceMeters / 1000).toStringAsFixed(2);
+    final km = context.l10n.decimal(track.distanceMeters / 1000, digits: 2);
     final isImported = track.source == TrackSource.imported;
 
     return ListTile(
-      leading: Icon(isImported ? Icons.file_present : Icons.fiber_manual_record),
+      leading: Icon(
+        isImported ? Icons.file_present : Icons.fiber_manual_record,
+      ),
       title: Text(track.name),
-      subtitle: Text('$km km · ${(track.durationSeconds / 60).round()} min'),
+      subtitle: Text(
+        '$km km · ${(track.durationSeconds / 60).round()} ${context.l10n.text('routes.minutes')}',
+      ),
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (context) => TrackDetailScreen(trackId: track.id!)),
+        MaterialPageRoute(
+          builder: (context) => TrackDetailScreen(trackId: track.id!),
+        ),
       ),
-      trailing: IconButton(icon: const Icon(Icons.delete_outline), onPressed: onDelete),
+      trailing: IconButton(
+        icon: const Icon(Icons.delete_outline),
+        onPressed: onDelete,
+      ),
     );
   }
 }

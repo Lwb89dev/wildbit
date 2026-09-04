@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../location/location_service.dart';
+import '../../app/localization/app_localizations.dart';
 import '../../map_rendering/assets/map_visual_asset_warmup.dart';
 import '../explore/explore_screen.dart';
 import '../map/map_screen.dart';
@@ -84,17 +85,26 @@ class _RootShellState extends State<RootShell> {
             _mountedPages.add(value);
           });
         },
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.map), label: 'Mappa'),
-          NavigationDestination(icon: Icon(Icons.explore), label: 'Esplora'),
+        destinations: [
           NavigationDestination(
-            icon: Icon(Icons.fiber_manual_record),
-            label: 'Traccia',
+            icon: const Icon(Icons.map),
+            label: context.l10n.text('nav.map'),
           ),
-          NavigationDestination(icon: Icon(Icons.route), label: 'Percorsi'),
           NavigationDestination(
-            icon: Icon(Icons.settings),
-            label: 'Impostazioni',
+            icon: const Icon(Icons.explore),
+            label: context.l10n.text('nav.explore'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.fiber_manual_record),
+            label: context.l10n.text('nav.track'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.route),
+            label: context.l10n.text('nav.routes'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.settings),
+            label: context.l10n.text('nav.settings'),
           ),
         ],
       ),

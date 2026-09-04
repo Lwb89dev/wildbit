@@ -15,6 +15,7 @@ import '../../services/nostr/amber_signer_service.dart';
 import '../../services/nostr/nostr_profile_service.dart';
 import '../../services/security/backup_service.dart';
 import '../../services/security/database_key_manager.dart';
+import '../../app/localization/app_localizations.dart';
 
 enum _KokoroStatus { unknown, notDownloaded, downloading, ready }
 
@@ -26,8 +27,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  static const _voiceLanguage = 'it';
-
   _KokoroStatus _kokoroStatus = _KokoroStatus.unknown;
   double _downloadProgress = 0;
   StreamSubscription<double>? _progressSub;
@@ -76,7 +75,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _reinitVoice() {
-    context.read<WildBitVoiceService>().init(_voiceLanguage);
+    // "Follow system" (locale == null) must fall back to the device's own
+    // locale, not a hardcoded language — otherwise a user who never touched
+    // this screen's language picker could have Bit's voice silently
+    // reinitialize in Italian the moment this runs (e.g. right after the
+    // Kokoro model finishes downloading).
+    final code =
+        context.read<WildBitLocaleProvider>().locale?.languageCode ??
+        WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+    final supported = kokoroSupportedLanguages.contains(code) ? code : 'en';
+    context.read<WildBitVoiceService>().init(supported);
+  }
+
+  void _setLocale(Locale? locale) {
+    context.read<WildBitLocaleProvider>().setLocale(locale);
+    _reinitVoice();
   }
 
   void _downloadKokoroModel() {
@@ -88,7 +101,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final voice = context.read<WildBitVoiceService>();
     if (!voice.isReady || _previewing) return;
     setState(() => _previewing = true);
-    await voice.speak('Ciao! Sono Bit, la tua guida escursionistica.');
+    await voice.speak(context.l10n.voicePreviewText);
     if (mounted) setState(() => _previewing = false);
   }
 
@@ -115,7 +128,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final signer = context.read<AmberSignerService>();
     final keyManager = context.read<DatabaseKeyManager>();
     if (!await signer.isInstalled()) {
-      if (mounted) _showSnack('Amber non è installato su questo dispositivo.');
+      if (mounted) _showSnack(context.l10n.amberNotInstalled);
       return;
     }
 
@@ -123,13 +136,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final identity = await signer.login();
       if (identity == null) {
-        if (mounted) _showSnack('Accesso con Amber annullato o non riuscito.');
+        if (mounted) _showSnack(context.l10n.amberCancelled);
         return;
       }
       final linked = await keyManager.linkNostrIdentity(identity, signer);
       if (!linked) {
         if (mounted) {
-          _showSnack('Amber non ha potuto cifrare la chiave del database.');
+          _showSnack(context.l10n.amberEncryptionFailed);
         }
         return;
       }
@@ -160,7 +173,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await BackupService().exportAndShare();
     } catch (e) {
-      if (mounted) _showSnack('Esportazione non riuscita: $e');
+      if (mounted) _showSnack(context.l10n.exportFailed(e));
     } finally {
       if (mounted) setState(() => _exportingBackup = false);
     }
@@ -182,26 +195,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
+    final localeProvider = context.watch<WildBitLocaleProvider>();
     final voice = context.watch<WildBitVoiceService>();
     final c = WildBitColorsExt.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Impostazioni')),
+      appBar: AppBar(title: Text(context.l10n.text('settings.title'))),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _SectionHeader('Aspetto', c),
+          _SectionHeader(context.l10n.text('settings.appearance'), c),
           _ThemeSelector(themeProvider: themeProvider, c: c),
+          _LanguageSelector(
+            provider: localeProvider,
+            onChanged: _setLocale,
+            c: c,
+          ),
           _SwitchTile(
-            title: 'Tema scuro automatico',
-            subtitle:
-                'Passa al tema scuro tra tramonto e alba, in base alla posizione',
+            title: context.l10n.text('settings.autoDark'),
+            subtitle: context.l10n.text('settings.autoDarkBody'),
             value: themeProvider.autoDarkEnabled,
             onChanged: themeProvider.setAutoDarkEnabled,
             c: c,
           ),
           const SizedBox(height: 24),
-          _SectionHeader('Voce di Bit', c),
+          _SectionHeader(context.l10n.text('settings.voice'), c),
           _KokoroCard(
             status: _kokoroStatus,
             progress: _downloadProgress,
@@ -218,7 +236,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             c: c,
           ),
           const SizedBox(height: 24),
-          _SectionHeader('Sicurezza e backup', c),
+          _SectionHeader(context.l10n.text('settings.security'), c),
           _NostrIdentityCard(
             identity: _nostrIdentity,
             profile: _nostrProfile,
@@ -236,10 +254,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             c: c,
           ),
           const SizedBox(height: 24),
-          _SectionHeader('Sostieni WildBit', c),
+          _SectionHeader(context.l10n.text('settings.support'), c),
           const _DonationTile(),
           const SizedBox(height: 24),
-          _SectionHeader('Informazioni', c),
+          _SectionHeader(context.l10n.text('settings.info'), c),
           _InfoTile(c: c),
         ],
       ),
@@ -265,18 +283,18 @@ class _ThemeSelector extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Expanded(child: Text('Tema')),
+          Expanded(child: Text(context.l10n.text('settings.theme'))),
           SegmentedButton<AppThemeId>(
-            segments: const [
+            segments: [
               ButtonSegment(
                 value: AppThemeId.light,
-                label: Text('Chiaro'),
-                icon: Icon(Icons.light_mode),
+                label: Text(context.l10n.text('settings.light')),
+                icon: const Icon(Icons.light_mode),
               ),
               ButtonSegment(
                 value: AppThemeId.dark,
-                label: Text('Scuro'),
-                icon: Icon(Icons.dark_mode),
+                label: Text(context.l10n.text('settings.dark')),
+                icon: const Icon(Icons.dark_mode),
               ),
             ],
             selected: {themeProvider.current},
@@ -284,6 +302,85 @@ class _ThemeSelector extends StatelessWidget {
                 themeProvider.setTheme(selection.first),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _LanguageSelector extends StatelessWidget {
+  const _LanguageSelector({
+    required this.provider,
+    required this.onChanged,
+    required this.c,
+  });
+
+  final WildBitLocaleProvider provider;
+  final ValueChanged<Locale?> onChanged;
+  final WildBitColorsExt c;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = provider.locale?.languageCode;
+    final selectedName = selected == null
+        ? context.l10n.text('settings.system')
+        : (wildBitLanguageNames[selected] ?? selected);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: c.surface2,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.border, width: 0.5),
+      ),
+      child: Material(
+        color: c.surface2,
+        borderRadius: BorderRadius.circular(14),
+        child: ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.language, color: c.accent),
+          title: Text(context.l10n.text('settings.language')),
+          subtitle: Text(selectedName),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => showModalBottomSheet<void>(
+            context: context,
+            showDragHandle: true,
+            builder: (sheetContext) => SafeArea(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  ListTile(
+                    leading: Icon(
+                      selected == null
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                    ),
+                    title: Text(context.l10n.text('settings.system')),
+                    onTap: () {
+                      onChanged(null);
+                      Navigator.pop(sheetContext);
+                    },
+                  ),
+                  for (final locale in wildBitLocales)
+                    ListTile(
+                      leading: Icon(
+                        selected == locale.languageCode
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_unchecked,
+                      ),
+                      title: Text(
+                        wildBitLanguageNames[locale.languageCode] ??
+                            locale.languageCode,
+                      ),
+                      onTap: () {
+                        onChanged(locale);
+                        Navigator.pop(sheetContext);
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -316,6 +413,12 @@ class _KokoroCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final localeCode =
+        context.watch<WildBitLocaleProvider>().locale?.languageCode ??
+        WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+    final voiceUnavailableInLanguage = !kokoroSupportedLanguages.contains(
+      localeCode,
+    );
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -330,9 +433,9 @@ class _KokoroCard extends StatelessWidget {
             children: [
               Icon(Icons.record_voice_over, color: c.accent, size: 20),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Modello vocale (Kokoro)',
+                  context.l10n.text('settings.voiceModel'),
                   style: TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
@@ -340,10 +443,28 @@ class _KokoroCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(switch (status) {
-            _KokoroStatus.ready => 'Pronto — Bit può parlare',
-            _KokoroStatus.downloading => 'Download in corso…',
-            _ => 'Non scaricato (~87 MB, richiesto una sola volta)',
+            _KokoroStatus.ready => context.l10n.text('settings.voiceReady'),
+            _KokoroStatus.downloading => context.l10n.text(
+              'settings.voiceDownloading',
+            ),
+            _ => context.l10n.text('settings.voiceMissing'),
           }, style: TextStyle(color: c.textSecondary, fontSize: 12)),
+          if (voiceUnavailableInLanguage) ...[
+            const SizedBox(height: 6),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 14, color: c.textSecondary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    context.l10n.voiceUnavailableInLanguage,
+                    style: TextStyle(color: c.textSecondary, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (status == _KokoroStatus.downloading) ...[
             const SizedBox(height: 10),
             LinearProgressIndicator(value: progress),
@@ -353,30 +474,30 @@ class _KokoroCard extends StatelessWidget {
             FilledButton.icon(
               onPressed: onDownload,
               icon: const Icon(Icons.download),
-              label: const Text('Scarica il modello vocale'),
+              label: Text(context.l10n.text('settings.downloadVoice')),
             ),
           ],
           if (status == _KokoroStatus.ready) ...[
             const SizedBox(height: 12),
-            const Text('Voce'),
+            Text(context.l10n.text('settings.voiceChoice')),
             const SizedBox(height: 8),
             Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
                 ChoiceChip(
-                  label: const Text('Femminile'),
+                  label: Text(context.l10n.text('settings.female')),
                   selected: voice.gender == 'f',
                   onSelected: (_) => onGenderChanged('f'),
                 ),
-                if (kokoroHasGenderChoice('it'))
+                if (kokoroHasGenderChoice(voice.language))
                   ChoiceChip(
-                    label: const Text('Maschile'),
+                    label: Text(context.l10n.text('settings.male')),
                     selected: voice.gender == 'm',
                     onSelected: (_) => onGenderChanged('m'),
                   ),
                 ChoiceChip(
-                  label: const Text('Bit · kawaii'),
+                  label: Text(context.l10n.text('settings.bitVoice')),
                   selected: voice.gender == 'bit',
                   onSelected: (_) => onGenderChanged('bit'),
                 ),
@@ -384,14 +505,17 @@ class _KokoroCard extends StatelessWidget {
             ),
             Row(
               children: [
-                const SizedBox(width: 72, child: Text('Velocità')),
+                SizedBox(
+                  width: 72,
+                  child: Text(context.l10n.text('settings.speed')),
+                ),
                 Expanded(
                   child: Slider(
                     value: voice.speed,
                     min: 0.7,
                     max: 1.5,
                     divisions: 8,
-                    label: '${voice.speed.toStringAsFixed(2)}×',
+                    label: '${context.l10n.decimal(voice.speed, digits: 2)}×',
                     onChanged: onSpeedChanged,
                   ),
                 ),
@@ -399,7 +523,10 @@ class _KokoroCard extends StatelessWidget {
             ),
             Row(
               children: [
-                const SizedBox(width: 72, child: Text('Volume')),
+                SizedBox(
+                  width: 72,
+                  child: Text(context.l10n.text('settings.volume')),
+                ),
                 Expanded(
                   child: Slider(
                     value: voice.volume,
@@ -412,7 +539,11 @@ class _KokoroCard extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: previewing ? null : onPreview,
               icon: Icon(previewing ? Icons.hourglass_top : Icons.play_arrow),
-              label: Text(previewing ? 'In riproduzione…' : 'Prova la voce'),
+              label: Text(
+                previewing
+                    ? context.l10n.text('settings.playing')
+                    : context.l10n.text('settings.tryVoice'),
+              ),
             ),
           ],
         ],
@@ -496,9 +627,9 @@ class _NostrIdentityCard extends StatelessWidget {
             children: [
               Icon(Icons.key, color: c.accent, size: 20),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Identità Nostr',
+                  context.l10n.text('settings.nostr'),
                   style: TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
@@ -507,7 +638,7 @@ class _NostrIdentityCard extends StatelessWidget {
           const SizedBox(height: 6),
           if (identity == null)
             Text(
-              'Il database è già cifrato localmente. Collega la tua identità Nostr con Amber per rendere la chiave recuperabile dal tuo nsec (utile per i backup).',
+              context.l10n.nostrSecurityBody,
               style: TextStyle(color: c.textSecondary, fontSize: 12),
             )
           else ...[
@@ -523,15 +654,15 @@ class _NostrIdentityCard extends StatelessWidget {
                       Text(
                         profile?.preferredName ??
                             (profileLoading
-                                ? 'Caricamento profilo…'
-                                : 'Profilo Nostr'),
+                                ? context.l10n.text('settings.profileLoading')
+                                : context.l10n.text('settings.profile')),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Collegato come ${identity.npub.substring(0, 12)}…',
+                        context.l10n.connectedAs(identity.npub),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(color: c.textSecondary, fontSize: 12),
@@ -547,13 +678,17 @@ class _NostrIdentityCard extends StatelessWidget {
             FilledButton.icon(
               onPressed: linking ? null : onLogin,
               icon: Icon(linking ? Icons.hourglass_top : Icons.login),
-              label: Text(linking ? 'In attesa di Amber…' : 'Accedi con Amber'),
+              label: Text(
+                linking
+                    ? context.l10n.text('common.waitingAmber')
+                    : context.l10n.text('onboarding.loginAmber'),
+              ),
             )
           else
             OutlinedButton.icon(
               onPressed: onLogout,
               icon: const Icon(Icons.logout),
-              label: const Text('Scollega identità'),
+              label: Text(context.l10n.text('settings.unlink')),
             ),
         ],
       ),
@@ -618,9 +753,9 @@ class _BackupTile extends StatelessWidget {
             children: [
               Icon(Icons.backup, color: c.accent, size: 20),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Backup',
+                  context.l10n.text('settings.backup'),
                   style: TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
@@ -628,16 +763,18 @@ class _BackupTile extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            hasIdentity
-                ? 'Il file esportato è cifrato: recuperabile su un altro dispositivo tramite Amber e la tua identità Nostr.'
-                : 'Il file esportato è cifrato con una chiave locale a questo dispositivo — senza un\'identità Nostr collegata non è recuperabile altrove.',
+            context.l10n.backupBody(hasIdentity),
             style: TextStyle(color: c.textSecondary, fontSize: 12),
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
             onPressed: exporting ? null : onExport,
             icon: Icon(exporting ? Icons.hourglass_top : Icons.ios_share),
-            label: Text(exporting ? 'Esportazione…' : 'Esporta backup'),
+            label: Text(
+              exporting
+                  ? context.l10n.text('settings.exporting')
+                  : context.l10n.text('settings.exportBackup'),
+            ),
           ),
         ],
       ),
@@ -664,7 +801,7 @@ class _DonationTile extends StatelessWidget {
         await Clipboard.setData(const ClipboardData(text: _lnAddress));
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Indirizzo copiato: $_lnAddress')),
+            SnackBar(content: Text(context.l10n.copiedAddress(_lnAddress))),
           );
         }
       },
@@ -686,8 +823,8 @@ class _DonationTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Sostieni lo sviluppo di WildBit',
+                  Text(
+                    context.l10n.text('settings.donation'),
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 2),
@@ -726,12 +863,12 @@ class _InfoTile extends StatelessWidget {
           const Text('WildBit', style: TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Text(
-            'Real world, pixel world. Escursionismo con cartografia OpenStreetMap.',
+            context.l10n.aboutTagline,
             style: TextStyle(color: c.textSecondary, fontSize: 12),
           ),
           const SizedBox(height: 8),
           Text(
-            'Dati mappa © OpenStreetMap contributors · Voce: Kokoro-82M (onnx-community) · eSpeak NG',
+            context.l10n.aboutCredits,
             style: TextStyle(color: c.textSecondary, fontSize: 11),
           ),
         ],

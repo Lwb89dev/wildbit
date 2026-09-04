@@ -53,6 +53,7 @@ import '../../map_rendering/composition/projected_depth_order.dart';
 import '../../services/kokoro/wildbit_voice_service.dart';
 import '../../services/renderer_replay_file_service.dart';
 import '../../services/selected_route_controller.dart';
+import '../../app/localization/app_localizations.dart';
 import '../../services/track_recorder.dart';
 import 'altitude_badge.dart';
 import 'compass_fab.dart';
@@ -306,7 +307,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             maxZoom: 15,
           ),
         );
-        if (!fitted) _fitCameraToRoute(geometry, attemptsLeft: attemptsLeft - 1);
+        if (!fitted) {
+          _fitCameraToRoute(geometry, attemptsLeft: attemptsLeft - 1);
+        }
       } catch (_) {
         _fitCameraToRoute(geometry, attemptsLeft: attemptsLeft - 1);
       }
@@ -459,9 +462,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           );
           _usingLocalPreview = true;
-          _mapDataError = 'Anteprima locale · OSM in ritardo';
+          _mapDataError = context.l10n.text('map.localPreviewDelayed');
         } else {
-          _mapDataError = 'Dati mappa in attesa del server OSM';
+          _mapDataError = context.l10n.text('map.osmPending');
         }
       });
       _updatePartialCoverageRetry(bounds);
@@ -478,8 +481,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           );
           _mapDataError = kDebugMode
-              ? 'Anteprima locale · OSM non disponibile'
-              : 'Dati mappa non disponibili';
+              ? context.l10n.text('map.localPreviewUnavailable')
+              : context.l10n.text('map.dataUnavailable');
         });
         _updatePartialCoverageRetry(bounds);
       }
@@ -577,10 +580,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _usingLocalPreview = useLocalPreview;
       _mapDataError = hasNoFeatures && repository.lastLoadError != null
           ? (useLocalPreview
-                ? 'Anteprima locale · OSM non disponibile'
-                : 'Dati mappa non disponibili')
+                ? context.l10n.text('map.localPreviewUnavailable')
+                : context.l10n.text('map.dataUnavailable'))
           : hasPartialCoverage
-          ? 'Copertura mappa parziale · nuovo tentativo in corso'
+          ? context.l10n.text('map.partialRetry')
           : null;
     });
     _updatePartialCoverageRetry(bounds);
@@ -609,7 +612,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ..addAll(_retainedMapCells.values.map((entry) => entry.cell));
       _usingLocalPreview = false;
       _mapDataError = hasPartialCoverage
-          ? 'Copertura mappa parziale · caricamento in corso'
+          ? context.l10n.text('map.partialLoading')
           : null;
     });
   }
@@ -823,9 +826,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Attiva la posizione per centrare la mappa.'),
-      ),
+      SnackBar(content: Text(context.l10n.text('map.locationRequired'))),
     );
   }
 
@@ -854,18 +855,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           center: camera.center,
           zoom: camera.zoom,
           rotation: camera.rotation,
-          label: 'Snapshot locale renderer',
+          label: context.l10n.text('map.rendererSnapshot'),
           features: features,
         ),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Replay renderer salvato in ${file.path}')),
+        SnackBar(
+          content: Text(
+            context.l10n.param('map.rendererSaved', {'path': file.path}),
+          ),
+        ),
       );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Esportazione replay non riuscita: $error')),
+        SnackBar(
+          content: Text(
+            context.l10n.param('map.rendererExportFailed', {'error': '$error'}),
+          ),
+        ),
       );
     }
   }
@@ -884,26 +893,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Livelli mappa',
+                    context.l10n.text('map.layersTitle'),
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   CheckboxListTile(
                     value: _showTrails,
-                    title: const Text('Sentieri'),
+                    title: Text(context.l10n.text('map.trails')),
                     onChanged: (v) => setSheetState(
                       () => setState(() => _showTrails = v ?? true),
                     ),
                   ),
                   CheckboxListTile(
                     value: _showRoads,
-                    title: const Text('Strade'),
+                    title: Text(context.l10n.text('map.roads')),
                     onChanged: (v) => setSheetState(
                       () => setState(() => _showRoads = v ?? true),
                     ),
                   ),
                   CheckboxListTile(
                     value: _showPois,
-                    title: const Text('Punti di interesse'),
+                    title: Text(context.l10n.text('map.points')),
                     onChanged: (v) => setSheetState(
                       () => setState(() => _showPois = v ?? true),
                     ),
@@ -923,8 +932,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       Expanded(
                         child: Text(
                           topology.excludedWayCount == 0
-                              ? '${topology.verifiedWayCount} vie con topologia OSM disponibile'
-                              : '${topology.excludedWayCount} vie senza topologia verificabile',
+                              ? context.l10n
+                                    .text('map.topologyVerified')
+                                    .replaceAll(
+                                      '{count}',
+                                      '${topology.verifiedWayCount}',
+                                    )
+                              : context.l10n
+                                    .text('map.topologyExcluded')
+                                    .replaceAll(
+                                      '{count}',
+                                      '${topology.excludedWayCount}',
+                                    ),
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
                       ),
@@ -932,7 +951,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'La topologia verifica solo i nodi OSM: non equivale a un percorso sicuro o consigliato.',
+                    context.l10n.text('map.topologyDisclaimer'),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   if (kDebugMode || kProfileMode) ...[
@@ -973,7 +992,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     OutlinedButton.icon(
                       onPressed: _exportRendererReplay,
                       icon: const Icon(Icons.save_alt_outlined),
-                      label: const Text('Salva replay locale renderer'),
+                      label: Text(context.l10n.text('map.saveReplay')),
                     ),
                     if (_dataRepository?.lastLoadError != null)
                       Text(
@@ -1217,9 +1236,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       for (final (index, point) in geometry.indexed)
                         GeoFix(
                           position: point,
-                          timestamp: DateTime.fromMillisecondsSinceEpoch(
-                            index,
-                          ),
+                          timestamp: DateTime.fromMillisecondsSinceEpoch(index),
                         ),
                     ],
                     color: const Color(0xFF4FC3F7),
@@ -1424,7 +1441,9 @@ class _PoiDetailsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = poi.name.trim().isEmpty ? _typeLabel(poi.type) : poi.name;
+    final title = poi.name.trim().isEmpty
+        ? _typeLabel(poi.type, context)
+        : poi.name;
     return SafeArea(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
@@ -1458,7 +1477,7 @@ class _PoiDetailsSheet extends StatelessWidget {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        _typeLabel(poi.type),
+                        _typeLabel(poi.type, context),
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: WildBitColors.forestGreen,
                           fontWeight: FontWeight.w700,
@@ -1472,16 +1491,16 @@ class _PoiDetailsSheet extends StatelessWidget {
             const SizedBox(height: 18),
             _PoiFactRow(
               icon: Icons.place_outlined,
-              label: 'Coordinate',
+              label: context.l10n.text('map.coordinates'),
               value:
                   '${poi.position.latitude.toStringAsFixed(5)}, '
                   '${poi.position.longitude.toStringAsFixed(5)}',
             ),
-            ..._metadataFacts(poi),
+            ..._metadataFacts(poi, context),
             const SizedBox(height: 10),
-            const _PoiFactRow(
+            _PoiFactRow(
               icon: Icons.public,
-              label: 'Fonte',
+              label: context.l10n.text('map.source'),
               value: 'OpenStreetMap',
             ),
             const SizedBox(height: 18),
@@ -1494,18 +1513,12 @@ class _PoiDetailsSheet extends StatelessWidget {
                   color: WildBitColors.brown.withValues(alpha: .25),
                 ),
               ),
-              child: const Row(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(Icons.warning_amber_rounded, color: WildBitColors.brown),
                   SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Dato cartografico informativo: la presenza sulla mappa '
-                      'non certifica apertura, accessibilità, percorribilità o '
-                      'sicurezza sul posto.',
-                    ),
-                  ),
+                  Expanded(child: Text(context.l10n.text('map.poiWarning'))),
                 ],
               ),
             ),
@@ -1515,7 +1528,7 @@ class _PoiDetailsSheet extends StatelessWidget {
               child: FilledButton.icon(
                 onPressed: onCenter,
                 icon: const Icon(Icons.center_focus_strong),
-                label: const Text('Centra sulla mappa'),
+                label: Text(context.l10n.text('map.center')),
               ),
             ),
           ],
@@ -1524,17 +1537,27 @@ class _PoiDetailsSheet extends StatelessWidget {
     );
   }
 
-  static String _typeLabel(PoiType type) => switch (type) {
-    PoiType.shelter => 'Rifugio o bivacco',
-    PoiType.campsite => 'Area di sosta',
-    PoiType.viewpoint => 'Punto panoramico',
-    PoiType.guidepost => 'Cartello escursionistico',
-    PoiType.parking => 'Parcheggio',
-    PoiType.waterSource => 'Fonte d’acqua',
-    PoiType.summit => 'Cima',
-    PoiType.tree => 'Albero censito',
-    PoiType.ford => 'Guado',
-  };
+  static String _typeLabel(PoiType type, BuildContext context) =>
+      switch (type) {
+        PoiType.shelter =>
+          context.l10n.languageCode == 'it' ? 'Rifugio o bivacco' : 'Shelter',
+        PoiType.campsite =>
+          context.l10n.languageCode == 'it' ? 'Area di sosta' : 'Campsite',
+        PoiType.viewpoint =>
+          context.l10n.languageCode == 'it' ? 'Punto panoramico' : 'Viewpoint',
+        PoiType.guidepost =>
+          context.l10n.languageCode == 'it'
+              ? 'Cartello escursionistico'
+              : 'Trail signpost',
+        PoiType.parking =>
+          context.l10n.languageCode == 'it' ? 'Parcheggio' : 'Parking',
+        PoiType.waterSource =>
+          context.l10n.languageCode == 'it' ? 'Fonte d’acqua' : 'Water source',
+        PoiType.summit => context.l10n.languageCode == 'it' ? 'Cima' : 'Summit',
+        PoiType.tree =>
+          context.l10n.languageCode == 'it' ? 'Albero censito' : 'Mapped tree',
+        PoiType.ford => context.l10n.languageCode == 'it' ? 'Guado' : 'Ford',
+      };
 
   static IconData _typeIcon(PoiType type) => switch (type) {
     PoiType.shelter => Icons.cabin_outlined,
@@ -1548,7 +1571,7 @@ class _PoiDetailsSheet extends StatelessWidget {
     PoiType.ford => Icons.waterfall_chart_outlined,
   };
 
-  static List<Widget> _metadataFacts(Poi poi) {
+  static List<Widget> _metadataFacts(Poi poi, BuildContext context) {
     final metadata = poi.metadata;
     final facts = <Widget>[];
     void add(IconData icon, String label, String value) {
@@ -1562,44 +1585,94 @@ class _PoiDetailsSheet extends StatelessWidget {
       final formatted = elevation == elevation.roundToDouble()
           ? elevation.toStringAsFixed(0)
           : elevation.toStringAsFixed(1);
-      add(Icons.height, 'Quota OSM', '$formatted m');
+      add(
+        Icons.height,
+        context.l10n.languageCode == 'it' ? 'Quota OSM' : 'OSM elevation',
+        '$formatted m',
+      );
     }
     final access = metadata.access;
     if (access != null) {
-      add(Icons.directions_walk, 'Accesso OSM', _accessLabel(access));
+      add(
+        Icons.directions_walk,
+        context.l10n.languageCode == 'it' ? 'Accesso OSM' : 'OSM access',
+        _accessLabel(access, context),
+      );
     }
     if (poi.type == PoiType.waterSource || metadata.drinkingWater != null) {
       add(
         Icons.water_drop_outlined,
-        'Potabilità',
+        context.l10n.languageCode == 'it' ? 'Potabilità' : 'Drinking water',
         switch (metadata.drinkingWater) {
-          true => 'Indicata come potabile su OSM',
-          false => 'Indicata come non potabile su OSM',
-          null => 'Non indicata su OSM',
+          true =>
+            context.l10n.languageCode == 'it'
+                ? 'Indicata come potabile su OSM'
+                : 'Marked as drinkable on OSM',
+          false =>
+            context.l10n.languageCode == 'it'
+                ? 'Indicata come non potabile su OSM'
+                : 'Marked as non-drinkable on OSM',
+          null =>
+            context.l10n.languageCode == 'it'
+                ? 'Non indicata su OSM'
+                : 'Not indicated on OSM',
         },
       );
     }
     final operatorName = metadata.operatorName;
     if (operatorName != null) {
-      add(Icons.badge_outlined, 'Gestore OSM', operatorName);
+      add(
+        Icons.badge_outlined,
+        context.l10n.languageCode == 'it' ? 'Gestore OSM' : 'OSM operator',
+        operatorName,
+      );
     }
     final openingHours = metadata.openingHours;
     if (openingHours != null) {
-      add(Icons.schedule, 'Orari OSM', openingHours);
+      add(
+        Icons.schedule,
+        context.l10n.languageCode == 'it' ? 'Orari OSM' : 'OSM opening hours',
+        openingHours,
+      );
     }
     return facts;
   }
 
-  static String _accessLabel(String value) => switch (value) {
-    'yes' => 'Consentito (tag: yes)',
-    'permissive' => 'Consentito dal proprietario (tag: permissive)',
-    'private' => 'Privato (tag: private)',
-    'no' => 'Vietato (tag: no)',
-    'customers' => 'Riservato ai clienti (tag: customers)',
-    'destination' => 'Solo destinazione (tag: destination)',
-    'permit' => 'Con permesso (tag: permit)',
-    _ => 'Tag OSM: $value',
-  };
+  static String _accessLabel(String value, BuildContext context) =>
+      switch (value) {
+        'yes' =>
+          context.l10n.languageCode == 'it'
+              ? 'Consentito (tag: yes)'
+              : 'Allowed (tag: yes)',
+        'permissive' =>
+          context.l10n.languageCode == 'it'
+              ? 'Consentito dal proprietario (tag: permissive)'
+              : 'Permitted by owner (tag: permissive)',
+        'private' =>
+          context.l10n.languageCode == 'it'
+              ? 'Privato (tag: private)'
+              : 'Private (tag: private)',
+        'no' =>
+          context.l10n.languageCode == 'it'
+              ? 'Vietato (tag: no)'
+              : 'Not allowed (tag: no)',
+        'customers' =>
+          context.l10n.languageCode == 'it'
+              ? 'Riservato ai clienti (tag: customers)'
+              : 'Customers only (tag: customers)',
+        'destination' =>
+          context.l10n.languageCode == 'it'
+              ? 'Solo destinazione (tag: destination)'
+              : 'Destination only (tag: destination)',
+        'permit' =>
+          context.l10n.languageCode == 'it'
+              ? 'Con permesso (tag: permit)'
+              : 'With permit (tag: permit)',
+        _ =>
+          context.l10n.languageCode == 'it'
+              ? 'Tag OSM: $value'
+              : 'OSM tag: $value',
+      };
 }
 
 class _PoiFactRow extends StatelessWidget {
@@ -1666,8 +1739,10 @@ class _TopStatusBar extends StatelessWidget {
                 label:
                     mapDataError ??
                     (gpsReady
-                        ? (isLoading ? 'Aggiornamento...' : 'Dati pronti')
-                        : 'Ricerca GPS in corso'),
+                        ? (isLoading
+                              ? context.l10n.text('map.statusUpdating')
+                              : context.l10n.text('map.statusReady'))
+                        : context.l10n.text('map.statusSearchingGps')),
                 color: usingLocalPreview
                     ? WildBitColors.brown
                     : mapDataError != null
@@ -1678,7 +1753,9 @@ class _TopStatusBar extends StatelessWidget {
             const Spacer(),
             _Pill(
               icon: followUser ? Icons.gps_fixed : Icons.gps_not_fixed,
-              label: followUser ? 'Seguendo' : 'Libera',
+              label: followUser
+                  ? context.l10n.text('map.following')
+                  : context.l10n.text('map.free'),
               color: followUser
                   ? WildBitColors.forestGreen
                   : WildBitColors.brown,
@@ -1813,7 +1890,9 @@ class _LabelToggleControl extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label = enabled ? 'Nascondi etichette' : 'Mostra etichette';
+    final label = enabled
+        ? context.l10n.text('map.labelHide')
+        : context.l10n.text('map.labelShow');
     return Positioned(
       right: 12,
       // Sits above the altitude badge, below zoom — see the instrument-
@@ -1891,7 +1970,7 @@ class _RouteDownloadCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    _statusLine(cellCount, minMb, maxMb),
+                    _statusLine(context, cellCount, minMb, maxMb),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   if (controller.downloadState ==
@@ -1912,7 +1991,7 @@ class _RouteDownloadCard extends StatelessWidget {
             const SizedBox(width: 4),
             _trailingAction(context, cellCount),
             IconButton(
-              tooltip: 'Chiudi',
+              tooltip: context.l10n.text('map.close'),
               onPressed: () => context.read<SelectedRouteController>().clear(),
               icon: const Icon(Icons.close, size: 20),
             ),
@@ -1927,7 +2006,7 @@ class _RouteDownloadCard extends StatelessWidget {
       case RouteDownloadState.idle:
         return TextButton(
           onPressed: cellCount == 0 ? null : controller.startDownload,
-          child: const Text('Scarica'),
+          child: Text(context.l10n.text('map.download')),
         );
       case RouteDownloadState.downloading:
         return const Padding(
@@ -1946,23 +2025,40 @@ class _RouteDownloadCard extends StatelessWidget {
       case RouteDownloadState.failed:
         return TextButton(
           onPressed: controller.startDownload,
-          child: const Text('Riprova'),
+          child: Text(context.l10n.text('common.retry')),
         );
     }
   }
 
-  String _statusLine(int cellCount, int minMb, int maxMb) {
+  String _statusLine(
+    BuildContext context,
+    int cellCount,
+    int minMb,
+    int maxMb,
+  ) {
     switch (controller.downloadState) {
       case RouteDownloadState.idle:
         return cellCount == 0
-            ? 'Percorso non disponibile per il download offline.'
-            : '~$cellCount celle · stima $minMb–$maxMb MB per l\'uso offline';
+            ? context.l10n.text('map.routeOfflineUnavailable')
+            : context.l10n.param('map.routeOfflineEstimate', {
+                'count': '$cellCount',
+                'min': '$minMb',
+                'max': '$maxMb',
+              });
       case RouteDownloadState.downloading:
-        return 'Download in corso: ${controller.downloadedCells + controller.failedCells}/$cellCount celle';
+        return context.l10n.param('map.routeDownloadProgress', {
+          'done': '${controller.downloadedCells + controller.failedCells}',
+          'count': '$cellCount',
+        });
       case RouteDownloadState.done:
-        return 'Percorso disponibile offline ($cellCount celle)';
+        return context.l10n.param('map.routeOfflineReady', {
+          'count': '$cellCount',
+        });
       case RouteDownloadState.failed:
-        return '${controller.failedCells} celle non scaricate su $cellCount — riprova';
+        return context.l10n.param('map.routeDownloadFailed', {
+          'failed': '${controller.failedCells}',
+          'count': '$cellCount',
+        });
     }
   }
 }

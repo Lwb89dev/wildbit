@@ -1,6 +1,6 @@
 # WildBit
 
-**Version 0.1.0** — initial public release.
+**Version 0.1.2** — multilingual UI, safer startup recovery, and release polish.
 
 WildBit is an experimental, privacy-first hiking application built with
 Flutter. Its centrepiece is a pixel-art geographic map generated from
