@@ -13,6 +13,7 @@ import '../services/nostr/track_share_service.dart';
 import '../services/security/database_key_manager.dart';
 import '../services/selected_route_controller.dart';
 import '../services/track_recorder.dart';
+import '../services/weather/weather_service.dart';
 import '../storage/database.dart';
 import 'theme/theme_provider.dart';
 import 'localization/app_localizations.dart';
@@ -65,6 +66,7 @@ class WildBitProviders extends StatelessWidget {
             return WildBitVoiceService()..checkAndInit(language);
           },
         ),
+        ChangeNotifierProvider<WeatherService>(create: (_) => WeatherService()),
         Provider<DatabaseKeyManager>(create: (_) => DatabaseKeyManager()),
         Provider<AmberSignerService>(create: (_) => AmberSignerService()),
         Provider<WildBitDatabase>(

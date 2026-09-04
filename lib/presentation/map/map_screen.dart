@@ -43,6 +43,7 @@ import '../../map_rendering/layers/pixel_terrain_base_layer.dart';
 import '../../map_rendering/layers/pixel_map_legend.dart';
 import '../../map_rendering/layers/pixel_position_marker.dart';
 import '../../map_rendering/layers/pixel_recorded_track_layer.dart';
+import '../../map_rendering/layers/weather_overlay.dart';
 import '../../map_rendering/performance/map_rendering_budget.dart';
 import '../../map_rendering/performance/map_frame_performance_monitor.dart';
 import '../../map_rendering/performance/map_scene_metrics.dart';
@@ -53,6 +54,7 @@ import '../../map_rendering/composition/projected_depth_order.dart';
 import '../../services/kokoro/wildbit_voice_service.dart';
 import '../../services/renderer_replay_file_service.dart';
 import '../../services/selected_route_controller.dart';
+import '../../services/weather/weather_service.dart';
 import '../../app/localization/app_localizations.dart';
 import '../../services/track_recorder.dart';
 import 'altitude_badge.dart';
@@ -224,6 +226,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     } else {
       _scheduleAmbientIdle();
       _scheduleFetch();
+      final position = _lastFix.value?.position;
+      if (position != null) {
+        unawaited(context.read<WeatherService>().refresh(position));
+      }
     }
     if (!_headingModeActive) return;
     if (state == AppLifecycleState.resumed) {
@@ -760,6 +766,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _onPositionUpdate(GeoFix point) {
     _lastFix.value = point;
+    unawaited(context.read<WeatherService>().refresh(point.position));
     context.read<ThemeProvider>().onPositionUpdate(
       point.position.latitude,
       point.position.longitude,
@@ -819,6 +826,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _lastFix.value?.position;
     if (freshFix != null) {
       _lastFix.value = freshFix;
+      unawaited(context.read<WeatherService>().refresh(freshFix.position));
     }
     if (position != null) {
       _mapController.move(position, _mapController.camera.zoom);
@@ -1076,6 +1084,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     final visibleFeatures = _visibleFeatures;
     final recorder = context.read<TrackRecorderController>();
+    final weather = context.read<WeatherService>();
     return Scaffold(
       body: Stack(
         children: [
@@ -1114,6 +1123,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 builder: (context, viewportFeatures) => Stack(
                   fit: StackFit.expand,
                   children: [
+                    WeatherShadowLayer(
+                      features: viewportFeatures,
+                      weather: weather,
+                    ),
                     OsmPixelCoastlineLayer(topology: _coastlineTopology),
                     OsmPixelWaterLayer(features: viewportFeatures),
                     OsmPixelWaterwayLayer(features: viewportFeatures),
@@ -1245,6 +1258,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               ),
             ],
           ),
+          Positioned.fill(child: WeatherOverlay(weather: weather)),
           ValueListenableBuilder<GeoFix?>(
             valueListenable: _lastFix,
             builder: (context, fix, _) => _TopStatusBar(
