@@ -75,26 +75,40 @@ final wildBitLocales =
 class WildBitLocaleProvider extends ChangeNotifier {
   static const preferenceKey = 'wildbit.locale';
   Locale? _locale;
+  bool _disposed = false;
+  int _preferenceGeneration = 0;
 
   Locale? get locale => _locale;
   bool get followsSystem => _locale == null;
 
   Future<void> init() async {
+    final generation = _preferenceGeneration;
     final prefs = await SharedPreferences.getInstance();
+    if (_disposed || generation != _preferenceGeneration) return;
     final value = prefs.getString(preferenceKey);
     if (value != null && value.isNotEmpty) _locale = Locale(value);
     notifyListeners();
   }
 
   Future<void> setLocale(Locale? locale) async {
+    if (_disposed) return;
+    final generation = ++_preferenceGeneration;
     _locale = locale;
+    notifyListeners();
     final prefs = await SharedPreferences.getInstance();
+    if (_disposed || generation != _preferenceGeneration) return;
     if (locale == null) {
       await prefs.remove(preferenceKey);
     } else {
       await prefs.setString(preferenceKey, locale.languageCode);
     }
-    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _preferenceGeneration++;
+    super.dispose();
   }
 }
 

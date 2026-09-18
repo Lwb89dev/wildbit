@@ -33,16 +33,18 @@ class _TrackDetailScreenState extends State<TrackDetailScreen> {
       future: _trackFuture,
       builder: (context, snapshot) {
         final track = snapshot.data;
+        final loading = snapshot.connectionState != ConnectionState.done;
         return Scaffold(
           appBar: AppBar(
             title: Text(track?.name ?? '...'),
             actions: [
               if (track != null) ...[
-                IconButton(
-                  tooltip: context.l10n.text('share.title'),
-                  icon: const Icon(Icons.public),
-                  onPressed: () => showTrackShareDialog(context, track),
-                ),
+                if (track.points.isNotEmpty)
+                  IconButton(
+                    tooltip: context.l10n.text('share.title'),
+                    icon: const Icon(Icons.public),
+                    onPressed: () => showTrackShareDialog(context, track),
+                  ),
                 IconButton(
                   tooltip: context.l10n.text('routes.export'),
                   icon: const Icon(Icons.share),
@@ -51,8 +53,12 @@ class _TrackDetailScreenState extends State<TrackDetailScreen> {
               ],
             ],
           ),
-          body: track == null
+          body: loading
               ? const Center(child: CircularProgressIndicator())
+              : snapshot.hasError
+              ? Center(child: Text(context.l10n.text('map.dataUnavailable')))
+              : track == null
+              ? Center(child: Text(context.l10n.text('routes.empty')))
               : FlutterMap(
                   options: MapOptions(
                     initialCenter: track.points.isNotEmpty

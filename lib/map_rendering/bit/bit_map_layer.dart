@@ -75,7 +75,7 @@ class BitMapLayerState extends State<BitMapLayer> {
         },
       );
       final point = await widget.locationService.getCurrentPosition();
-      if (point != null) _onFix(point);
+      if (mounted && point != null) _onFix(point);
     } catch (error, stack) {
       // Location is optional: the map remains usable without a fix and the
       // status pill can continue to say “Ricerca GPS in corso”.
@@ -84,6 +84,7 @@ class BitMapLayerState extends State<BitMapLayer> {
   }
 
   void _onFix(GeoFix point) {
+    if (!mounted) return;
     final movedMeters = _rendered == null
         ? 0.0
         : _distance.as(LengthUnit.Meter, _rendered!, point.position);

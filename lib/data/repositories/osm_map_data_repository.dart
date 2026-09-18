@@ -34,7 +34,8 @@ class OsmMapDataRepository implements MapDataRepository {
     http.Client? httpClient,
     this.offlinePreview = false,
     this.mixedPreview = false,
-  }) : _httpClient = httpClient ?? http.Client();
+  }) : _httpClient = httpClient ?? http.Client(),
+       _ownsHttpClient = httpClient == null;
 
   final bool offlinePreview;
   final bool mixedPreview;
@@ -70,12 +71,14 @@ class OsmMapDataRepository implements MapDataRepository {
 
   final WildBitDatabase _database;
   final http.Client _httpClient;
+  final bool _ownsHttpClient;
   final Map<String, Future<_CellLoadResult>> _activeCellLoads = {};
   final Map<String, _MemoryCell> _memoryCells = {};
   final Set<String> _optionalContextKeys = {};
   final Map<String, _OptionalContextRequest> _pendingOptionalContexts = {};
   Future<void> _optionalContextQueue = Future<void>.value();
   final _endpoints = OverpassEndpoints.instance;
+  bool _closed = false;
 
   /// Read by the presentation layer after [loadFeatures]. Cached data remains
   /// usable offline; this is only set when a cell without cache cannot reach
@@ -93,6 +96,15 @@ class OsmMapDataRepository implements MapDataRepository {
   @visibleForTesting
   int get transientMemoryCellCount => _memoryCells.length;
 
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    _pendingOptionalContexts.clear();
+    _optionalContextKeys.clear();
+    _memoryCells.clear();
+    if (_ownsHttpClient) _httpClient.close();
+  }
+
   @override
   Future<MapFeatureCollection> loadFeatures(
     GeoBounds bounds, {
@@ -102,16 +114,16 @@ class OsmMapDataRepository implements MapDataRepository {
     bool Function()? shouldContinue,
     LatLng? priorityPosition,
     Future<void>? abortTrigger,
+    Set<String> excludedCellKeys = const {},
   }) async {
+    if (_closed) throw StateError('OsmMapDataRepository is closed');
     // mixedPreview is a variant of offlinePreview, not an independent mode —
     // requesting it implies offlinePreview even if the caller didn't also
     // set that flag.
     if (offlinePreview || mixedPreview) {
       lastLoadError = null;
       final features = mixedPreview ? mixedPreviewFeatures : testRegionFeatures;
-      for (final cell in MapCellGrid.cellsCovering(bounds)) {
-        onCellLoaded?.call(cell, features);
-      }
+      onCellLoaded?.call(bounds, features);
       return features;
     }
     return _loadFeaturesInternal(
@@ -122,6 +134,7 @@ class OsmMapDataRepository implements MapDataRepository {
       shouldContinue: shouldContinue,
       priorityPosition: priorityPosition,
       abortTrigger: abortTrigger,
+      excludedCellKeys: excludedCellKeys,
     );
   }
 
@@ -133,15 +146,21 @@ class OsmMapDataRepository implements MapDataRepository {
     bool Function()? shouldContinue,
     LatLng? priorityPosition,
     Future<void>? abortTrigger,
+    required Set<String> excludedCellKeys,
   }) async {
     lastLoadError = null;
+    final priority = priorityPosition ?? _boundsCenter(bounds);
+    final selectionLimit = (_maxCellsPerRequest + excludedCellKeys.length)
+        .clamp(_maxCellsPerRequest, _maxCellsPerRequest + _maxMemoryCells);
     final cells =
-        (priorityPosition == null
-                ? MapCellGrid.cellsCoveringNearestFirst(bounds)
-                : MapCellGrid.cellsCoveringPrioritized(
-                    bounds,
-                    priority: priorityPosition,
-                  ))
+        MapCellGrid.cellsCoveringPrioritizedLimited(
+              bounds,
+              priority: priority,
+              limit: selectionLimit,
+            )
+            .where(
+              (cell) => !excludedCellKeys.contains(MapCellGrid.keyFor(cell)),
+            )
             .take(_maxCellsPerRequest);
     final collections = <MapFeatureCollection>[];
     final optionalContext = <_OptionalContextLoad>[];
@@ -194,6 +213,20 @@ class OsmMapDataRepository implements MapDataRepository {
       lines: [for (final c in collections) ...c.lines],
       pois: [for (final c in collections) ...c.pois],
     ).deduplicated();
+  }
+
+  static LatLng _boundsCenter(GeoBounds bounds) {
+    var longitudeDelta =
+        bounds.northEast.longitude - bounds.southWest.longitude;
+    if (longitudeDelta > 180) longitudeDelta -= 360;
+    if (longitudeDelta < -180) longitudeDelta += 360;
+    var longitude = bounds.southWest.longitude + longitudeDelta / 2;
+    if (longitude >= 180) longitude -= 360;
+    if (longitude < -180) longitude += 360;
+    return LatLng(
+      (bounds.southWest.latitude + bounds.northEast.latitude) / 2,
+      longitude,
+    );
   }
 
   Future<_CellLoadResult> _loadCellShared(
@@ -360,6 +393,7 @@ class OsmMapDataRepository implements MapDataRepository {
         abortTrigger: abortTrigger,
         markEndpointSlowOnAbort: markEndpointSlowOnAbort,
       );
+      if (_closed) return const _CellLoadResult.unavailable();
       _rememberCell(key, _MemoryCell(DateTime.now(), fetched));
       // Rendering must not wait for JSON encoding and SQLite persistence.
       // The cell is already valid at this point; cache it in the background.
@@ -393,6 +427,7 @@ class OsmMapDataRepository implements MapDataRepository {
   ) async {
     try {
       final base = await _fetchBaseFromOverpass(cell);
+      if (_closed) return;
       _rememberCell(key, _MemoryCell(DateTime.now(), base));
       await _storeCell(key, base);
       _scheduleOptionalContext(
@@ -418,6 +453,7 @@ class OsmMapDataRepository implements MapDataRepository {
     bool Function()? shouldContinue,
     Future<void>? abortTrigger,
   }) {
+    if (_closed) return;
     _pendingOptionalContexts[key] = _OptionalContextRequest(
       cell: cell,
       key: key,
@@ -454,6 +490,7 @@ class OsmMapDataRepository implements MapDataRepository {
   }
 
   Future<void> _runOptionalContext(String key) async {
+    if (_closed) return;
     final request = _pendingOptionalContexts[key];
     if (request == null) return;
     try {
@@ -467,6 +504,7 @@ class OsmMapDataRepository implements MapDataRepository {
         ),
         abortTrigger: request.abortTrigger,
       );
+      if (_closed) return;
       if (request.shouldContinue != null && !request.shouldContinue!()) {
         return;
       }
@@ -479,6 +517,7 @@ class OsmMapDataRepository implements MapDataRepository {
               abortTrigger: request.abortTrigger,
             )
           : null;
+      if (_closed) return;
       if (request.shouldContinue != null && !request.shouldContinue!()) {
         return;
       }
@@ -615,6 +654,7 @@ class OsmMapDataRepository implements MapDataRepository {
     bool includesBuildings = false,
     bool includesIndividualTrees = false,
   }) async {
+    if (_closed) return;
     // Dense urban cells can contain several thousand building polygons.
     // JSON encoding them synchronously was enough to stall Android's UI
     // thread and trigger the "wait or close" ANR dialog.
@@ -626,6 +666,7 @@ class OsmMapDataRepository implements MapDataRepository {
         includesIndividualTrees: includesIndividualTrees,
       ),
     );
+    if (_closed) return;
     await _database
         .into(_database.cachedMapCells)
         .insertOnConflictUpdate(
@@ -668,6 +709,7 @@ class OsmMapDataRepository implements MapDataRepository {
     Future<void>? abortTrigger,
     bool Function()? markEndpointSlowOnAbort,
   }) async {
+    if (_closed) throw StateError('OsmMapDataRepository is closed');
     Object? lastError;
     for (final endpoint in OverpassEndpoints.all) {
       if (_endpoints.isCoolingDown(endpoint)) {
@@ -688,8 +730,7 @@ class OsmMapDataRepository implements MapDataRepository {
               ..headers.addAll(const {
                 // Overpass's public instances reject requests with no identifying
                 // User-Agent (406 Not Acceptable) — this is required, not decorative.
-                'User-Agent':
-                    'WildBit/1.0 (+https://wildbit.app) hiking-app',
+                'User-Agent': 'WildBit/1.0 (+https://wildbit.app) hiking-app',
                 'Accept': 'application/json',
               })
               ..bodyFields = {'data': query};
@@ -708,13 +749,13 @@ class OsmMapDataRepository implements MapDataRepository {
         await for (final chunk in streamed.stream.timeout(
           _overpassResponseTimeout,
         )) {
-          bytes.add(chunk);
           byteLength += chunk.length;
           if (byteLength > _maxResponseBytes) {
             throw Exception(
               'Overpass response exceeded the maximum accepted size',
             );
           }
+          bytes.add(chunk);
         }
         // UTF-8 decoding, jsonDecode and OSM composition are CPU-heavy for a
         // city response. Keep all three off the Flutter UI isolate.
@@ -734,6 +775,7 @@ class OsmMapDataRepository implements MapDataRepository {
         }
         rethrow;
       } catch (error) {
+        if (_closed) throw StateError('OsmMapDataRepository is closed');
         lastError = error;
         // Public Overpass instances need recovery time. A short circuit here
         // prevents every GPS/camera refresh from waiting through the same

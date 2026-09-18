@@ -2,6 +2,38 @@
 
 All notable changes to WildBit are documented here.
 
+## [0.1.3] - 2026-09-18
+
+### Fixed
+
+- Prevented stale map, weather, Explore, route-download, GPS, voice, and Nostr
+  callbacks from updating disposed or superseded screens.
+- Added bounded response handling for public OSM, Overpass, Waymarked Trails,
+  Nominatim, and weather requests.
+- Preserved an in-progress track when saving fails, with a safe retry path.
+- Fixed GPX imports with multiple segments and rejected invalid or unusable
+  coordinates.
+- Corrected antimeridian bounds, route corridors, map-cell coverage, and stale
+  cache refresh behavior.
+- Fixed empty/error states in Routes and Track details instead of leaving an
+  endless spinner or opening an invalid map preview.
+
+### Performance
+
+- Limited broad map requests to nearby cells without materializing huge grids.
+- Added bounded Waymarked Trails detail concurrency and coalesced weather
+  refreshes.
+- Cached selected-route preview geometry and stopped animating static weather
+  overlays.
+- Added transient map-cache eviction and lifecycle cleanup for HTTP clients,
+  repositories, controllers, and map resources.
+
+### Release notes
+
+- Android version code: `4`.
+- Split APKs are built for `armeabi-v7a`, `arm64-v8a`, and `x86_64`.
+- Release builds must be signed with the configured WildBit release keystore.
+
 ## [0.1.2] - 2026-09-04
 
 ### Added

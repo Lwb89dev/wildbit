@@ -58,6 +58,10 @@ class DatabaseKeyManager {
     final wrapped = await signer.encryptToSelf(key, identity.pubkeyHex);
     if (wrapped == null) return false;
 
+    // The two signing modes are mutually exclusive. Keeping an older nsec
+    // after switching to Amber could sign an event for the newly linked
+    // pubkey with the previous account's private key.
+    await _secureStorage.delete(key: nsecStorageKey);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_wrappedKeyPrefsKey, wrapped);
     await prefs.setString(_linkedPubkeyPrefsKey, identity.pubkeyHex);
@@ -110,6 +114,9 @@ class DatabaseKeyManager {
   Future<void> linkNsecIdentity(NostrIdentity identity, String nsec) async {
     await _secureStorage.write(key: nsecStorageKey, value: nsec);
     final prefs = await SharedPreferences.getInstance();
+    // A wrapped key created for a previous Amber identity cannot be recovered
+    // by this nsec. Do not leave mismatched recovery metadata in Auto Backup.
+    await prefs.remove(_wrappedKeyPrefsKey);
     await prefs.setString(_linkedPubkeyPrefsKey, identity.pubkeyHex);
     await prefs.setString(_linkedNpubPrefsKey, identity.npub);
   }

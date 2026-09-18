@@ -40,6 +40,9 @@ class TrackRecorderController extends ChangeNotifier {
   final TrackRepository _repository;
   final WildBitVoiceService? _voice;
   StreamSubscription<GeoFix>? _subscription;
+  int _subscriptionGeneration = 0;
+  bool _isSaving = false;
+  bool _disposed = false;
 
   RecorderState state = RecorderState.idle;
   final List<GeoFix> points = [];
@@ -48,6 +51,8 @@ class TrackRecorderController extends ChangeNotifier {
   DateTime? _startedAt;
   Duration _pausedAccumulated = Duration.zero;
   DateTime? _pausedAt;
+
+  bool get isSaving => _isSaving;
 
   Duration get elapsed {
     final start = _startedAt;
@@ -60,20 +65,21 @@ class TrackRecorderController extends ChangeNotifier {
       points.isEmpty ? 0 : (points.last.speedMetersPerSecond ?? 0);
 
   void start() {
-    if (state != RecorderState.idle) return;
+    if (_disposed || _isSaving || state != RecorderState.idle) return;
     state = RecorderState.recording;
     points.clear();
     distanceMeters = 0;
     elevationGainMeters = 0;
     _startedAt = DateTime.now();
     _pausedAccumulated = Duration.zero;
-    _subscription = _locationService.positionStream.listen(_onFix);
-    notifyListeners();
+    _pausedAt = null;
+    _subscribeToLocation();
+    _notifyListeners();
     unawaited(_voice?.announceTrackStarted());
   }
 
   void pause() {
-    if (state != RecorderState.recording) return;
+    if (_disposed || _isSaving || state != RecorderState.recording) return;
     state = RecorderState.paused;
     _pausedAt = DateTime.now();
     // A pause must actually disconnect from GPS — not just freeze the
@@ -81,59 +87,111 @@ class TrackRecorderController extends ChangeNotifier {
     // bestForNavigation-accuracy GPS (and silently keeps appending points to
     // the "paused" track) for as long as the app is left open, which is a
     // real battery drain if someone pauses and forgets about it.
-    _subscription?.cancel();
+    final subscription = _subscription;
     _subscription = null;
-    notifyListeners();
+    _subscriptionGeneration++;
+    unawaited(subscription?.cancel());
+    _notifyListeners();
   }
 
   void resume() {
-    if (state != RecorderState.paused) return;
+    if (_disposed || _isSaving || state != RecorderState.paused) return;
     state = RecorderState.recording;
     final pausedAt = _pausedAt;
     if (pausedAt != null) {
       _pausedAccumulated += DateTime.now().difference(pausedAt);
     }
     _pausedAt = null;
-    _subscription = _locationService.positionStream.listen(_onFix);
-    notifyListeners();
+    _subscribeToLocation();
+    _notifyListeners();
   }
 
   /// Stops recording and persists the session as a [SavedTrack], returning
   /// its id. Returns null if there was nothing worth saving.
   Future<int?> stopAndSave({required String name}) async {
-    await _subscription?.cancel();
-    _subscription = null;
+    if (_disposed || _isSaving) return null;
     final wasRecording = state != RecorderState.idle;
-    state = RecorderState.idle;
-    notifyListeners();
+    if (!wasRecording || points.length < 2) {
+      await _cancelLocationSubscription();
+      state = RecorderState.idle;
+      _resetTiming();
+      _notifyListeners();
+      return null;
+    }
 
-    if (!wasRecording || points.length < 2) return null;
+    _isSaving = true;
+    if (state == RecorderState.recording) _pausedAt = DateTime.now();
+    state = RecorderState.paused;
+    _notifyListeners();
 
-    final track = SavedTrack(
-      name: name,
-      createdAt: _startedAt ?? DateTime.now(),
-      distanceMeters: distanceMeters,
-      durationSeconds: elapsed.inSeconds,
-      elevationGainMeters: elevationGainMeters,
-      source: TrackSource.recorded,
-      points: List.unmodifiable(points),
-    );
-    final id = await _repository.saveTrack(track);
-    unawaited(_voice?.announceTrackSaved());
-    return id;
+    final startedAt = _startedAt;
+    final duration = elapsed;
+    try {
+      await _cancelLocationSubscription();
+      final track = SavedTrack(
+        name: name,
+        createdAt: startedAt ?? DateTime.now(),
+        distanceMeters: distanceMeters,
+        durationSeconds: duration.inSeconds,
+        elevationGainMeters: elevationGainMeters,
+        source: TrackSource.recorded,
+        points: List.unmodifiable(points),
+      );
+      final id = await _repository.saveTrack(track);
+      state = RecorderState.idle;
+      _resetTiming();
+      unawaited(_voice?.announceTrackSaved());
+      return id;
+    } finally {
+      // On persistence failure the session deliberately remains paused, with
+      // all points intact, so the user can retry instead of losing the hike.
+      _isSaving = false;
+      _notifyListeners();
+    }
   }
 
   void discard() {
-    _subscription?.cancel();
+    if (_disposed || _isSaving) return;
+    final subscription = _subscription;
     _subscription = null;
+    _subscriptionGeneration++;
+    unawaited(subscription?.cancel());
     state = RecorderState.idle;
     points.clear();
     distanceMeters = 0;
     elevationGainMeters = 0;
-    notifyListeners();
+    _resetTiming();
+    _notifyListeners();
+  }
+
+  void _subscribeToLocation() {
+    final generation = ++_subscriptionGeneration;
+    _subscription = _locationService.positionStream.listen((fix) {
+      if (!_disposed && generation == _subscriptionGeneration) _onFix(fix);
+    });
+  }
+
+  Future<void> _cancelLocationSubscription() async {
+    final subscription = _subscription;
+    _subscription = null;
+    _subscriptionGeneration++;
+    await subscription?.cancel();
+  }
+
+  void _resetTiming() {
+    _startedAt = null;
+    _pausedAt = null;
+    _pausedAccumulated = Duration.zero;
+  }
+
+  void _notifyListeners() {
+    if (!_disposed) notifyListeners();
   }
 
   void _onFix(GeoFix fix) {
+    // Stream cancellation is asynchronous. A fix already queued when the user
+    // pauses/discards must never leak into a non-recording session.
+    if (state != RecorderState.recording) return;
     if (!_acceptsFix(fix)) return;
     if (points.isNotEmpty) {
       distanceMeters += _distance.as(
@@ -148,7 +206,7 @@ class TrackRecorderController extends ChangeNotifier {
       }
     }
     points.add(fix);
-    notifyListeners();
+    _notifyListeners();
   }
 
   bool _acceptsFix(GeoFix fix) {
@@ -174,7 +232,11 @@ class TrackRecorderController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _subscription?.cancel();
+    _disposed = true;
+    _subscriptionGeneration++;
+    state = RecorderState.idle;
+    unawaited(_subscription?.cancel());
+    _subscription = null;
     super.dispose();
   }
 }

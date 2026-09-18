@@ -28,11 +28,14 @@ void main() {
     expect(await client.search('Nessunlandia'), isNull);
   });
 
-  test('search returns null on a non-200 response instead of throwing', () async {
-    final client = NominatimClient(httpClient: _FakeClient(503, ''));
+  test(
+    'search returns null on a non-200 response instead of throwing',
+    () async {
+      final client = NominatimClient(httpClient: _FakeClient(503, ''));
 
-    expect(await client.search('Genova'), isNull);
-  });
+      expect(await client.search('Genova'), isNull);
+    },
+  );
 
   test('an empty query is never sent', () async {
     final fakeClient = _FakeClient(200, '[]');
@@ -40,6 +43,17 @@ void main() {
 
     expect(await client.search('   '), isNull);
     expect(fakeClient.calls, 0);
+  });
+
+  test('an oversized streamed response is rejected while reading', () async {
+    final client = NominatimClient(
+      httpClient: _StreamingClient([
+        List<int>.filled(300 * 1024, 0x20),
+        List<int>.filled(300 * 1024, 0x20),
+      ]),
+    );
+
+    expect(await client.search('Genova'), isNull);
   });
 }
 
@@ -59,4 +73,14 @@ class _FakeClient extends http.BaseClient {
       request: request,
     );
   }
+}
+
+class _StreamingClient extends http.BaseClient {
+  _StreamingClient(this.chunks);
+
+  final List<List<int>> chunks;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async =>
+      http.StreamedResponse(Stream<List<int>>.fromIterable(chunks), 200);
 }

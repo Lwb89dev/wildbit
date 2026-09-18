@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
@@ -50,7 +51,8 @@ class WaymarkedRouteDetails {
 /// service no more than a visitor panning the map.
 class WaymarkedTrailsClient {
   WaymarkedTrailsClient({http.Client? httpClient})
-    : _httpClient = httpClient ?? http.Client();
+    : _httpClient = httpClient ?? http.Client(),
+      _ownsClient = httpClient == null;
 
   static const _base = 'https://hiking.waymarkedtrails.org/api/v1';
   static const _userAgent = 'WildBit/1.0 (+https://wildbit.app)';
@@ -70,8 +72,10 @@ class WaymarkedTrailsClient {
   /// coordinates per route, and turning one search into dozens of detail
   /// requests would be an unfair multiplier on a shared free service.
   static const _maxDetailFetches = 15;
+  static const _maxConcurrentDetailFetches = 4;
 
   final http.Client _httpClient;
+  final bool _ownsClient;
 
   /// Curated routes near [position], ranked by network importance
   /// (national/regional routes first) and capped to [_maxDetailFetches]
@@ -82,12 +86,23 @@ class WaymarkedTrailsClient {
   }) async {
     final summaries = await _listByArea(position, radiusKm);
     if (summaries.isEmpty) return const [];
-    summaries.sort(
-      (a, b) => _priority(a.group).compareTo(_priority(b.group)),
-    );
-    final capped = summaries.take(_maxDetailFetches);
-    final details = await Future.wait(
-      capped.map((s) => _detailsOrNull(s.relationId)),
+    summaries.sort((a, b) => _priority(a.group).compareTo(_priority(b.group)));
+    final capped = summaries.take(_maxDetailFetches).toList(growable: false);
+    final details = List<WaymarkedRouteDetails?>.filled(capped.length, null);
+    var nextIndex = 0;
+
+    Future<void> worker() async {
+      while (nextIndex < capped.length) {
+        final index = nextIndex++;
+        details[index] = await _detailsOrNull(capped[index].relationId);
+      }
+    }
+
+    await Future.wait(
+      List.generate(
+        math.min(_maxConcurrentDetailFetches, capped.length),
+        (_) => worker(),
+      ),
     );
     return [for (final detail in details) ?detail];
   }
@@ -199,29 +214,46 @@ class WaymarkedTrailsClient {
     return points;
   }
 
-  Future<String> _get(
-    Uri uri, {
-    Duration? timeout,
-    int? maxBytes,
-  }) async {
-    final response = await _httpClient
-        .get(
-          uri,
-          headers: const {
-            'User-Agent': _userAgent,
-            'Accept': 'application/json',
-          },
-        )
-        .timeout(timeout ?? _requestTimeout);
+  Future<String> _get(Uri uri, {Duration? timeout, int? maxBytes}) async {
+    final effectiveTimeout = timeout ?? _requestTimeout;
+    final request = http.Request('GET', uri)
+      ..headers.addAll(const {
+        'User-Agent': _userAgent,
+        'Accept': 'application/json',
+      });
+    final response = await _httpClient.send(request).timeout(effectiveTimeout);
+    final bytes = await _readBounded(
+      response.stream,
+      timeout: effectiveTimeout,
+      maxBytes: maxBytes ?? _maxResponseBytes,
+    );
     if (response.statusCode != 200) {
       throw Exception('Waymarked Trails returned ${response.statusCode}');
     }
-    if (response.bodyBytes.length > (maxBytes ?? _maxResponseBytes)) {
-      throw Exception(
-        'Waymarked Trails response exceeded the maximum accepted size',
-      );
+    return utf8.decode(bytes);
+  }
+
+  Future<Uint8List> _readBounded(
+    Stream<List<int>> stream, {
+    required Duration timeout,
+    required int maxBytes,
+  }) async {
+    final bytes = BytesBuilder(copy: false);
+    var length = 0;
+    await for (final chunk in stream.timeout(timeout)) {
+      length += chunk.length;
+      if (length > maxBytes) {
+        throw Exception(
+          'Waymarked Trails response exceeded the maximum accepted size',
+        );
+      }
+      bytes.add(chunk);
     }
-    return response.body;
+    return bytes.takeBytes();
+  }
+
+  void close() {
+    if (_ownsClient) _httpClient.close();
   }
 
   static int _priority(String? group) => switch (group) {
@@ -240,9 +272,7 @@ class WaymarkedTrailsClient {
     const earthRadius = 6378137.0;
     final x = position.longitude * math.pi / 180 * earthRadius;
     final y =
-        math.log(
-          math.tan(math.pi / 4 + position.latitude * math.pi / 360),
-        ) *
+        math.log(math.tan(math.pi / 4 + position.latitude * math.pi / 360)) *
         earthRadius;
     return (x, y);
   }

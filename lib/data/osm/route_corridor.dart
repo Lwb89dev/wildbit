@@ -43,10 +43,16 @@ abstract final class RouteCorridor {
       );
       for (var step = 1; step <= steps; step++) {
         final t = step / steps;
+        var longitudeDelta = point.longitude - previous.longitude;
+        if (longitudeDelta > 180) longitudeDelta -= 360;
+        if (longitudeDelta < -180) longitudeDelta += 360;
+        final longitude = _normalizeLongitude(
+          previous.longitude + longitudeDelta * t,
+        );
         addAround(
           LatLng(
             previous.latitude + (point.latitude - previous.latitude) * t,
-            previous.longitude + (point.longitude - previous.longitude) * t,
+            longitude,
           ),
         );
       }
@@ -72,5 +78,10 @@ abstract final class RouteCorridor {
         point.longitude + longitudeDelta,
       ),
     );
+  }
+
+  static double _normalizeLongitude(double longitude) {
+    final normalized = (longitude + 180) % 360;
+    return (normalized < 0 ? normalized + 360 : normalized) - 180;
   }
 }

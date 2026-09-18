@@ -22,6 +22,9 @@ class ThemeProvider extends ChangeNotifier {
   double? _lastLat;
   double? _lastLng;
   Timer? _autoDarkTimer;
+  bool _disposed = false;
+  int _themeWriteGeneration = 0;
+  int _autoDarkWriteGeneration = 0;
 
   AppThemeId get current => _current;
   bool get autoDarkEnabled => _autoDarkEnabled;
@@ -36,35 +39,47 @@ class ThemeProvider extends ChangeNotifier {
   ThemeData get effectiveThemeData => WildBitTheme.build(effective);
 
   Future<void> init() async {
-    _prefs = await SharedPreferences.getInstance();
-    _current = AppThemeIdExt.fromIndex(_prefs?.getInt(_themeKey) ?? 0);
-    _autoDarkEnabled = _prefs?.getBool(_autoDarkKey) ?? false;
-    notifyListeners();
+    final themeGeneration = _themeWriteGeneration;
+    final autoDarkGeneration = _autoDarkWriteGeneration;
+    final prefs = await SharedPreferences.getInstance();
+    if (_disposed) return;
+    _prefs = prefs;
+    if (themeGeneration == _themeWriteGeneration) {
+      _current = AppThemeIdExt.fromIndex(prefs.getInt(_themeKey) ?? 0);
+    }
+    if (autoDarkGeneration == _autoDarkWriteGeneration) {
+      _autoDarkEnabled = prefs.getBool(_autoDarkKey) ?? false;
+    }
+    _notifyListeners();
   }
 
   void setTheme(AppThemeId id) {
+    if (_disposed) return;
+    final generation = ++_themeWriteGeneration;
     _current = id;
-    _prefs?.setInt(_themeKey, AppThemeId.values.indexOf(id));
-    notifyListeners();
+    unawaited(_persistTheme(id, generation));
+    _notifyListeners();
   }
 
   void setAutoDarkEnabled(bool value) {
+    if (_disposed) return;
+    final generation = ++_autoDarkWriteGeneration;
     _autoDarkEnabled = value;
-    _prefs?.setBool(_autoDarkKey, value);
+    unawaited(_persistAutoDark(value, generation));
     if (!value) {
       _autoDarkTimer?.cancel();
       _autoDarkActive = false;
     } else if (_lastLat != null && _lastLng != null) {
       _recalc(_lastLat!, _lastLng!);
     }
-    notifyListeners();
+    _notifyListeners();
   }
 
   /// Feed the latest GPS position. Debounced to ~10 km moves — the sun's
   /// position barely changes over a hike, so there's no need to recompute
   /// on every fix.
   void onPositionUpdate(double lat, double lng) {
-    if (!_autoDarkEnabled) return;
+    if (_disposed || !_autoDarkEnabled) return;
     final prevLat = _lastLat;
     final prevLng = _lastLng;
     if (prevLat != null && prevLng != null) {
@@ -90,7 +105,9 @@ class ThemeProvider extends ChangeNotifier {
       nextTransition = now.add(const Duration(hours: 24));
     } else if (now.isBefore(times.rise!) || now.isAfter(times.set!)) {
       active = true;
-      nextTransition = now.isBefore(times.rise!) ? times.rise! : _tomorrowSunrise(lat, lng, now);
+      nextTransition = now.isBefore(times.rise!)
+          ? times.rise!
+          : _tomorrowSunrise(lat, lng, now);
     } else {
       active = false;
       nextTransition = times.set!;
@@ -98,11 +115,14 @@ class ThemeProvider extends ChangeNotifier {
 
     final changed = active != _autoDarkActive;
     _autoDarkActive = active;
-    if (changed) notifyListeners();
+    if (changed) _notifyListeners();
 
     const minDelay = Duration(seconds: 1);
     final delay = nextTransition.difference(now);
-    _autoDarkTimer = Timer(delay < minDelay ? minDelay : delay, () => _recalc(lat, lng));
+    _autoDarkTimer = Timer(
+      delay < minDelay ? minDelay : delay,
+      () => _recalc(lat, lng),
+    );
   }
 
   DateTime _tomorrowSunrise(double lat, double lng, DateTime now) {
@@ -111,8 +131,27 @@ class ThemeProvider extends ChangeNotifier {
     return times.rise ?? now.add(const Duration(hours: 24));
   }
 
+  void _notifyListeners() {
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _persistTheme(AppThemeId id, int generation) async {
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    if (_disposed || generation != _themeWriteGeneration) return;
+    _prefs = prefs;
+    await prefs.setInt(_themeKey, AppThemeId.values.indexOf(id));
+  }
+
+  Future<void> _persistAutoDark(bool value, int generation) async {
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    if (_disposed || generation != _autoDarkWriteGeneration) return;
+    _prefs = prefs;
+    await prefs.setBool(_autoDarkKey, value);
+  }
+
   @override
   void dispose() {
+    _disposed = true;
     _autoDarkTimer?.cancel();
     super.dispose();
   }

@@ -45,6 +45,57 @@ void main() {
     expect(recorder.distanceMeters, greaterThan(8));
     expect(recorder.distanceMeters, lessThan(15));
   });
+
+  test('a new session does not inherit the previous pause timestamp', () async {
+    final location = _StreamLocationService();
+    final recorder = TrackRecorderController(
+      locationService: location,
+      repository: _MemoryTrackRepository(),
+    );
+    addTearDown(() async {
+      recorder.dispose();
+      await location.dispose();
+    });
+
+    recorder.start();
+    recorder.pause();
+    await recorder.stopAndSave(name: 'first');
+    recorder.start();
+
+    expect(recorder.elapsed.isNegative, isFalse);
+    expect(recorder.elapsed, lessThan(const Duration(seconds: 1)));
+  });
+
+  test('a failed save keeps the paused session available for retry', () async {
+    final location = _StreamLocationService();
+    final repository = _FailOnceTrackRepository();
+    final recorder = TrackRecorderController(
+      locationService: location,
+      repository: repository,
+    );
+    addTearDown(() async {
+      recorder.dispose();
+      await location.dispose();
+    });
+    final started = DateTime.utc(2026, 9, 1, 8);
+
+    recorder.start();
+    location.add(_fix(46, 11, started, accuracy: 5));
+    location.add(
+      _fix(46.0001, 11, started.add(const Duration(seconds: 10)), accuracy: 5),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    await expectLater(
+      recorder.stopAndSave(name: 'retry me'),
+      throwsA(isA<StateError>()),
+    );
+    expect(recorder.state, RecorderState.paused);
+    expect(recorder.points, hasLength(2));
+
+    expect(await recorder.stopAndSave(name: 'retry me'), 2);
+    expect(recorder.state, RecorderState.idle);
+  });
 }
 
 GeoFix _fix(
@@ -59,7 +110,7 @@ GeoFix _fix(
 );
 
 class _StreamLocationService implements LocationService {
-  final _controller = StreamController<GeoFix>();
+  final _controller = StreamController<GeoFix>.broadcast();
 
   void add(GeoFix fix) => _controller.add(fix);
   Future<void> dispose() => _controller.close();
@@ -86,4 +137,15 @@ class _MemoryTrackRepository implements TrackRepository {
 
   @override
   Future<int> saveTrack(SavedTrack track) async => 1;
+}
+
+class _FailOnceTrackRepository extends _MemoryTrackRepository {
+  var _attempts = 0;
+
+  @override
+  Future<int> saveTrack(SavedTrack track) async {
+    _attempts++;
+    if (_attempts == 1) throw StateError('disk full');
+    return 2;
+  }
 }

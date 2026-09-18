@@ -157,8 +157,12 @@ class TrackShareService {
             }
           } catch (_) {}
         },
-        onError: (_) => response.complete(false),
-        onDone: () => response.complete(false),
+        onError: (_) {
+          if (!response.isCompleted) response.complete(false);
+        },
+        onDone: () {
+          if (!response.isCompleted) response.complete(false);
+        },
       );
       await socket.ready.timeout(const Duration(seconds: 5));
       socket.sink.add(jsonEncode(['EVENT', event]));

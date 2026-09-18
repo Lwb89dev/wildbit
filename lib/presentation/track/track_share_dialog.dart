@@ -27,34 +27,36 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
-                height: 150,
-                child: FlutterMap(
-                  options: MapOptions(
-                    initialCenter: track.points.first.position,
-                    initialZoom: 14,
-                    initialCameraFit: track.points.length < 2
-                        ? null
-                        : CameraFit.coordinates(
-                            coordinates: [
-                              for (final point in track.points) point.position,
-                            ],
-                            padding: const EdgeInsets.all(18),
-                            maxZoom: 16,
-                          ),
-                  ),
-                  children: [
-                    const HdTerrainLayer(
-                      features: MapFeatureCollection(
-                        areas: [],
-                        lines: [],
-                        pois: [],
-                      ),
+              if (track.points.isNotEmpty)
+                SizedBox(
+                  height: 150,
+                  child: FlutterMap(
+                    options: MapOptions(
+                      initialCenter: track.points.first.position,
+                      initialZoom: 14,
+                      initialCameraFit: track.points.length < 2
+                          ? null
+                          : CameraFit.coordinates(
+                              coordinates: [
+                                for (final point in track.points)
+                                  point.position,
+                              ],
+                              padding: const EdgeInsets.all(18),
+                              maxZoom: 16,
+                            ),
                     ),
-                    PixelRecordedTrackLayer(points: track.points),
-                  ],
+                    children: [
+                      const HdTerrainLayer(
+                        features: MapFeatureCollection(
+                          areas: [],
+                          lines: [],
+                          pois: [],
+                        ),
+                      ),
+                      PixelRecordedTrackLayer(points: track.points),
+                    ],
+                  ),
                 ),
-              ),
               const SizedBox(height: 12),
               Text(
                 context.l10n.shareSummary(

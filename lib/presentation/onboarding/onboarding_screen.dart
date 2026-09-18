@@ -62,6 +62,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (await databaseKeys.linkNostrIdentity(identity, signer)) {
         if (mounted) setState(() => _nostrIdentity = identity);
       }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(context.l10n.amberEncryptionFailed)),
+      );
     } finally {
       if (mounted) setState(() => _waitingAmber = false);
     }

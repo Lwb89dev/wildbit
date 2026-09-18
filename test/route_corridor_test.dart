@@ -6,13 +6,15 @@ import 'package:wildbit/domain/entities/geo_bounds.dart';
 
 void main() {
   test('a single point still yields the cell(s) around it', () {
-    final cells = RouteCorridor.cellsCovering(
-      const [LatLng(46.0, 11.0)],
-      bufferMeters: 400,
-    );
+    final cells = RouteCorridor.cellsCovering(const [
+      LatLng(46.0, 11.0),
+    ], bufferMeters: 400);
 
     expect(cells, isNotEmpty);
-    expect(cells.any((cell) => cell.contains(const LatLng(46.0, 11.0))), isTrue);
+    expect(
+      cells.any((cell) => cell.contains(const LatLng(46.0, 11.0))),
+      isTrue,
+    );
   });
 
   test('a wider buffer never covers fewer cells than a narrower one', () {
@@ -75,5 +77,15 @@ void main() {
 
   test('an empty route yields no cells', () {
     expect(RouteCorridor.cellsCovering(const []), isEmpty);
+  });
+
+  test('a dateline crossing follows the short arc', () {
+    final cells = RouteCorridor.cellsCovering(const [
+      LatLng(10, 179.99),
+      LatLng(10, -179.99),
+    ], bufferMeters: 100);
+
+    expect(cells.length, lessThan(20));
+    expect(cells.every((cell) => cell.southWest.longitude.abs() > 179), isTrue);
   });
 }

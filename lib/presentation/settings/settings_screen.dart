@@ -15,6 +15,7 @@ import '../../services/nostr/amber_signer_service.dart';
 import '../../services/nostr/nostr_profile_service.dart';
 import '../../services/security/backup_service.dart';
 import '../../services/security/database_key_manager.dart';
+import '../../storage/database.dart';
 import '../../app/localization/app_localizations.dart';
 
 enum _KokoroStatus { unknown, notDownloaded, downloading, ready }
@@ -50,6 +51,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _downloadProgress = manager.lastProgress;
     }
     _progressSub = manager.progressStream.listen((p) {
+      if (!mounted) return;
       setState(() {
         _downloadProgress = p;
         if (p >= 1.0) _kokoroStatus = _KokoroStatus.ready;
@@ -62,10 +64,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _checkKokoroStatus() async {
-    final ready = await KokoroModelManager.instance.isReady(
-      kokoroSupportedLanguages,
-    );
+    final manager = KokoroModelManager.instance;
+    final ready = await manager.isReady(kokoroSupportedLanguages);
     if (!mounted) return;
+    if (manager.isDownloading) {
+      setState(() {
+        _kokoroStatus = _KokoroStatus.downloading;
+        _downloadProgress = manager.lastProgress;
+      });
+      return;
+    }
     setState(
       () => _kokoroStatus = ready
           ? _KokoroStatus.ready
@@ -153,6 +161,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         });
         _loadNostrProfile(identity);
       }
+    } catch (error) {
+      if (mounted) _showSnack(error.toString());
     } finally {
       if (mounted) setState(() => _linkingNostr = false);
     }
@@ -164,6 +174,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _nostrIdentity = null;
         _nostrProfile = null;
+        _loadingNostrProfile = false;
       });
     }
   }
@@ -171,7 +182,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _exportBackup() async {
     setState(() => _exportingBackup = true);
     try {
-      await BackupService().exportAndShare();
+      await BackupService().exportAndShare(context.read<WildBitDatabase>());
     } catch (e) {
       if (mounted) _showSnack(context.l10n.exportFailed(e));
     } finally {

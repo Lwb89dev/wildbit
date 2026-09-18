@@ -45,22 +45,27 @@ class _KeyRecoveryGateState extends State<KeyRecoveryGate> {
     });
     try {
       if (!await _signer.isInstalled()) {
+        if (!mounted) return;
         setState(() => _error = _l10n.amberNotInstalled);
         return;
       }
       final key = await widget.keyManager.recoverKeyFromAmber(_signer);
+      if (!mounted) return;
       if (key == null) {
         setState(() => _error = _l10n.amberCancelled);
         return;
       }
       widget.onKeyResolved(key);
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _recovering = false);
     }
   }
 
   Future<void> _startFresh() async {
-    widget.onKeyResolved(await widget.keyManager.resolveKey());
+    final key = await widget.keyManager.resolveKey();
+    if (mounted) widget.onKeyResolved(key);
   }
 
   @override

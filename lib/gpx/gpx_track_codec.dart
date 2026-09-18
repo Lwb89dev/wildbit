@@ -9,20 +9,26 @@ import '../domain/enums/track_source.dart';
 abstract final class GpxTrackCodec {
   static SavedTrack decode(String xmlContent, {required String fallbackName}) {
     final doc = gpx.GpxReader().fromString(xmlContent);
-    final segment = doc.trks.firstOrNull?.trksegs.firstOrNull;
+    final track = doc.trks.firstOrNull;
     final points = [
-      for (final wpt in segment?.trkpts ?? const <gpx.Wpt>[])
-        if (wpt.lat != null && wpt.lon != null)
-          GeoFix(
-            position: LatLng(wpt.lat!, wpt.lon!),
-            timestamp: wpt.time ?? DateTime.now(),
-            altitudeMeters: wpt.ele,
-          ),
+      for (final segment in track?.trksegs ?? const <gpx.Trkseg>[])
+        for (final wpt in segment.trkpts)
+          if (_isValidCoordinate(wpt.lat, wpt.lon))
+            GeoFix(
+              position: LatLng(wpt.lat!, wpt.lon!),
+              timestamp: wpt.time ?? DateTime.now(),
+              altitudeMeters: wpt.ele,
+            ),
     ];
+    if (points.length < 2) {
+      throw const FormatException(
+        'Il file GPX non contiene una traccia con almeno due punti.',
+      );
+    }
 
     return SavedTrack(
-      name: doc.trks.firstOrNull?.name ?? doc.metadata?.name ?? fallbackName,
-      createdAt: points.firstOrNull?.timestamp ?? DateTime.now(),
+      name: track?.name ?? doc.metadata?.name ?? fallbackName,
+      createdAt: points.first.timestamp,
       distanceMeters: _totalDistance(points),
       durationSeconds: _durationSeconds(points),
       elevationGainMeters: _elevationGain(points),
@@ -62,14 +68,21 @@ abstract final class GpxTrackCodec {
     const distance = Distance();
     var total = 0.0;
     for (var i = 1; i < points.length; i++) {
-      total += distance.as(LengthUnit.Meter, points[i - 1].position, points[i].position);
+      total += distance.as(
+        LengthUnit.Meter,
+        points[i - 1].position,
+        points[i].position,
+      );
     }
     return total;
   }
 
   static int _durationSeconds(List<GeoFix> points) {
     if (points.length < 2) return 0;
-    return points.last.timestamp.difference(points.first.timestamp).inSeconds.abs();
+    return points.last.timestamp
+        .difference(points.first.timestamp)
+        .inSeconds
+        .abs();
   }
 
   static double _elevationGain(List<GeoFix> points) {
@@ -83,4 +96,14 @@ abstract final class GpxTrackCodec {
     }
     return gain;
   }
+
+  static bool _isValidCoordinate(double? latitude, double? longitude) =>
+      latitude != null &&
+      longitude != null &&
+      latitude.isFinite &&
+      longitude.isFinite &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180;
 }

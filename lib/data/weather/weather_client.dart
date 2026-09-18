@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
@@ -47,18 +48,16 @@ class OpenMeteoClient implements WeatherClient {
         'forecast_days': '1',
       },
     );
-    final response = await _httpClient
-        .get(uri, headers: const {'Accept': 'application/json'})
-        .timeout(_requestTimeout);
+    final request = http.Request('GET', uri)
+      ..headers['Accept'] = 'application/json';
+    final response = await _httpClient.send(request).timeout(_requestTimeout);
+    final bytes = await _readBounded(response.stream);
     if (response.statusCode != 200) {
       throw WeatherFetchException(
         'Weather service returned ${response.statusCode}',
       );
     }
-    if (response.bodyBytes.length > _maxResponseBytes) {
-      throw const WeatherFetchException('Weather response is too large');
-    }
-    final decoded = jsonDecode(response.body);
+    final decoded = jsonDecode(utf8.decode(bytes));
     if (decoded is! Map) {
       throw const WeatherFetchException('Weather response is invalid');
     }
@@ -86,6 +85,19 @@ class OpenMeteoClient implements WeatherClient {
       windDirectionDegrees: number('wind_direction_10m'),
       isDay: integer('is_day') == 1,
     );
+  }
+
+  Future<Uint8List> _readBounded(Stream<List<int>> stream) async {
+    final bytes = BytesBuilder(copy: false);
+    var length = 0;
+    await for (final chunk in stream.timeout(_requestTimeout)) {
+      length += chunk.length;
+      if (length > _maxResponseBytes) {
+        throw const WeatherFetchException('Weather response is too large');
+      }
+      bytes.add(chunk);
+    }
+    return bytes.takeBytes();
   }
 
   void close() {

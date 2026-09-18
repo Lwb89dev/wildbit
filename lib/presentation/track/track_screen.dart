@@ -103,6 +103,7 @@ class _StatsAndControls extends StatelessWidget {
         ],
       ),
     );
+    nameController.dispose();
     if (name == null || !context.mounted) return;
     final track = SavedTrack(
       name: name.trim().isEmpty
@@ -115,9 +116,18 @@ class _StatsAndControls extends StatelessWidget {
       source: TrackSource.recorded,
       points: List.unmodifiable(recorder.points),
     );
-    final id = await recorder.stopAndSave(name: track.name);
-    if (id != null && context.mounted) {
-      showTrackShareDialog(context, track.copyWith(id: id));
+    try {
+      final id = await recorder.stopAndSave(name: track.name);
+      if (id != null && context.mounted) {
+        showTrackShareDialog(context, track.copyWith(id: id));
+      }
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${context.l10n.text('map.dataUnavailable')}: $error'),
+        ),
+      );
     }
   }
 
@@ -176,6 +186,12 @@ class _Controls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (recorder.isSaving) {
+      return const Padding(
+        padding: EdgeInsets.all(8),
+        child: CircularProgressIndicator(),
+      );
+    }
     return switch (recorder.state) {
       RecorderState.idle => FilledButton.icon(
         onPressed: recorder.start,

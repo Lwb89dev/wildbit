@@ -351,12 +351,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _frameMonitor.dispose();
     _compassSub?.cancel();
     _compassService.dispose();
+    _bitController.dispose();
+    _mapController.dispose();
     super.dispose();
   }
 
   GeoBounds _padded(LatLngBounds bounds) {
     final latPad = (bounds.north - bounds.south) * 0.5;
-    final lngPad = (bounds.east - bounds.west) * 0.5;
+    var longitudeSpan = bounds.east - bounds.west;
+    if (longitudeSpan < 0) longitudeSpan += 360;
+    final lngPad = longitudeSpan * 0.5;
     return GeoBounds(
       southWest: LatLng(bounds.south - latPad, bounds.west - lngPad),
       northEast: LatLng(bounds.north + latPad, bounds.east + lngPad),
@@ -379,8 +383,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await _fetchFeatures(bounds, priorityPosition: priorityPosition);
   }
 
-  bool _isFeatureAreaCovered(GeoBounds bounds) =>
-      MapCellGrid.isCoveredBy(bounds, _loadedFeatureRegions);
+  bool _isFeatureAreaCovered(GeoBounds bounds) {
+    final priority =
+        _lastFix.value?.position ??
+        _bitRenderedPosition.value ??
+        _mapController.camera.center;
+    final targetCells = MapCellGrid.cellsCoveringPrioritizedLimited(
+      bounds,
+      priority: priority,
+      limit: _maxRetainedMapCells,
+    );
+    return targetCells.every(
+      (cell) =>
+          _loadedFeatureRegions.any((region) => region.containsBounds(cell)),
+    );
+  }
 
   /// Loads an area centred on a GPS fix instead of relying on the map camera.
   /// `MapController.move` is applied on the next frame, so reading
@@ -442,6 +459,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       shouldContinue: () => mounted && requestId == _featureRequestId,
       priorityPosition: priorityPosition,
       abortTrigger: abort.future,
+      excludedCellKeys: _retainedMapCells.keys.toSet(),
       onCellLoaded: (cell, features) => _commitCellFeatures(
         features,
         cell: cell,
@@ -1244,14 +1262,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 builder: (context, selectedRoute, _) {
                   final geometry = selectedRoute.geometry;
                   if (geometry == null) return const SizedBox.shrink();
-                  return PixelRecordedTrackLayer(
-                    points: [
-                      for (final (index, point) in geometry.indexed)
-                        GeoFix(
-                          position: point,
-                          timestamp: DateTime.fromMillisecondsSinceEpoch(index),
-                        ),
-                    ],
+                  return _SelectedRoutePreviewLayer(
+                    geometry: geometry,
                     color: const Color(0xFF4FC3F7),
                   );
                 },
@@ -1333,6 +1345,45 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+class _SelectedRoutePreviewLayer extends StatefulWidget {
+  const _SelectedRoutePreviewLayer({
+    required this.geometry,
+    required this.color,
+  });
+
+  final List<LatLng> geometry;
+  final Color color;
+
+  @override
+  State<_SelectedRoutePreviewLayer> createState() =>
+      _SelectedRoutePreviewLayerState();
+}
+
+class _SelectedRoutePreviewLayerState
+    extends State<_SelectedRoutePreviewLayer> {
+  late List<GeoFix> _points = _toFixes(widget.geometry);
+
+  @override
+  void didUpdateWidget(covariant _SelectedRoutePreviewLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.geometry, widget.geometry)) {
+      _points = _toFixes(widget.geometry);
+    }
+  }
+
+  static List<GeoFix> _toFixes(List<LatLng> geometry) => List.unmodifiable([
+    for (final (index, point) in geometry.indexed)
+      GeoFix(
+        position: point,
+        timestamp: DateTime.fromMillisecondsSinceEpoch(index),
+      ),
+  ]);
+
+  @override
+  Widget build(BuildContext context) =>
+      PixelRecordedTrackLayer(points: _points, color: widget.color);
 }
 
 class _RetainedMapCell {

@@ -46,8 +46,17 @@ class _RoutesScreenState extends State<RoutesScreen> {
   }
 
   Future<void> _delete(int id) async {
-    await context.read<TrackRepository>().deleteTrack(id);
-    setState(_reload);
+    try {
+      await context.read<TrackRepository>().deleteTrack(id);
+      if (mounted) setState(_reload);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${context.l10n.text('routes.importError')}: $error'),
+        ),
+      );
+    }
   }
 
   @override
@@ -66,6 +75,9 @@ class _RoutesScreenState extends State<RoutesScreen> {
       body: FutureBuilder<List<SavedTrack>>(
         future: _tracksFuture,
         builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return _RoutesLoadError(onRetry: () => setState(_reload));
+          }
           final tracks = snapshot.data;
           if (tracks == null) {
             return const Center(child: CircularProgressIndicator());
@@ -83,6 +95,35 @@ class _RoutesScreenState extends State<RoutesScreen> {
       ),
     );
   }
+}
+
+class _RoutesLoadError extends StatelessWidget {
+  const _RoutesLoadError({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline, size: 48),
+          const SizedBox(height: 12),
+          Text(
+            context.l10n.text('map.dataUnavailable'),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton(
+            onPressed: onRetry,
+            child: Text(context.l10n.text('common.retry')),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _EmptyState extends StatelessWidget {

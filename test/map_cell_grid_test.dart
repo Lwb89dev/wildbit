@@ -56,4 +56,39 @@ void main() {
     expect(MapCellGrid.isCoveredBy(gpsViewport, [southernCell]), isFalse);
     expect(MapCellGrid.isCoveredBy(gpsViewport, cells), isTrue);
   });
+
+  test('wraps a viewport crossing the antimeridian into valid cells', () {
+    const bounds = GeoBounds(
+      southWest: LatLng(10, 179.99),
+      northEast: LatLng(10.01, -179.99),
+    );
+
+    final cells = MapCellGrid.cellsCovering(bounds);
+
+    expect(cells, hasLength(2));
+    expect(
+      cells.every(
+        (cell) =>
+            cell.southWest.longitude >= -180 && cell.northEast.longitude <= 180,
+      ),
+      isTrue,
+    );
+  });
+
+  test('limits an overview viewport without building the whole grid', () {
+    const world = GeoBounds(
+      southWest: LatLng(-80, -180),
+      northEast: LatLng(80, 180),
+    );
+
+    final cells = MapCellGrid.cellsCoveringPrioritizedLimited(
+      world,
+      priority: gps,
+      limit: 6,
+    );
+
+    expect(cells, hasLength(6));
+    expect(cells.first.contains(gps), isTrue);
+    expect(MapCellGrid.cellCount(world), greaterThan(1000000));
+  });
 }

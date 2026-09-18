@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:wildbit/domain/entities/geo_bounds.dart';
@@ -43,19 +45,22 @@ void main() {
     expect(controller.corridorCellCount, isNull);
   });
 
-  test('a successful download fetches every corridor cell and finishes done', () async {
-    final fake = _FakeMapDataRepository();
-    final controller = SelectedRouteController(mapDataRepository: fake)
-      ..select(trail, geometry);
-    final expectedCells = controller.corridorCellCount!;
+  test(
+    'a successful download fetches every corridor cell and finishes done',
+    () async {
+      final fake = _FakeMapDataRepository();
+      final controller = SelectedRouteController(mapDataRepository: fake)
+        ..select(trail, geometry);
+      final expectedCells = controller.corridorCellCount!;
 
-    await controller.startDownload();
+      await controller.startDownload();
 
-    expect(fake.requestedBounds.length, expectedCells);
-    expect(controller.downloadedCells, expectedCells);
-    expect(controller.failedCells, 0);
-    expect(controller.downloadState, RouteDownloadState.done);
-  });
+      expect(fake.requestedBounds.length, expectedCells);
+      expect(controller.downloadedCells, expectedCells);
+      expect(controller.failedCells, 0);
+      expect(controller.downloadState, RouteDownloadState.done);
+    },
+  );
 
   test('a failing cell is counted but does not stop the rest', () async {
     final fake = _FakeMapDataRepository(failEveryOther: true);
@@ -81,6 +86,37 @@ void main() {
 
     expect(fake.requestedBounds.length, controller.corridorCellCount);
   });
+
+  test('clearing cancels publication of an in-flight download', () async {
+    final fake = _BlockingMapDataRepository();
+    final controller = SelectedRouteController(mapDataRepository: fake)
+      ..select(trail, geometry);
+
+    final download = controller.startDownload();
+    await fake.started.future;
+    controller.clear();
+    fake.release.complete();
+    await download;
+
+    expect(controller.trail, isNull);
+    expect(controller.downloadedCells, 0);
+    expect(controller.downloadState, RouteDownloadState.idle);
+    expect(fake.requestedBounds, hasLength(1));
+  });
+}
+
+class _BlockingMapDataRepository implements MapDataRepository {
+  final started = Completer<void>();
+  final release = Completer<void>();
+  final List<GeoBounds> requestedBounds = [];
+
+  @override
+  Future<MapFeatureCollection> loadFeatures(GeoBounds bounds) async {
+    requestedBounds.add(bounds);
+    if (!started.isCompleted) started.complete();
+    await release.future;
+    return const MapFeatureCollection(areas: [], lines: [], pois: []);
+  }
 }
 
 class _FakeMapDataRepository implements MapDataRepository {

@@ -31,6 +31,8 @@ class SelectedRouteController extends ChangeNotifier {
   RouteDownloadState _downloadState = RouteDownloadState.idle;
   int _downloadedCells = 0;
   int _failedCells = 0;
+  int _selectionGeneration = 0;
+  bool _disposed = false;
 
   HikingTrail? get trail => _trail;
   List<LatLng>? get geometry => _geometry;
@@ -43,6 +45,7 @@ class SelectedRouteController extends ChangeNotifier {
   int? get corridorCellCount => _corridorCells?.length;
 
   void select(HikingTrail trail, List<LatLng> geometry) {
+    _selectionGeneration++;
     _trail = trail;
     _geometry = geometry;
     _corridorCells = RouteCorridor.cellsCovering(geometry);
@@ -53,6 +56,7 @@ class SelectedRouteController extends ChangeNotifier {
   }
 
   void clear() {
+    _selectionGeneration++;
     _trail = null;
     _geometry = null;
     _corridorCells = null;
@@ -74,20 +78,32 @@ class SelectedRouteController extends ChangeNotifier {
     _downloadedCells = 0;
     _failedCells = 0;
     notifyListeners();
+    final generation = _selectionGeneration;
 
     for (final cell in cells) {
+      if (_disposed || generation != _selectionGeneration) return;
       try {
         await mapDataRepository.loadFeatures(cell);
+        if (_disposed || generation != _selectionGeneration) return;
         _downloadedCells++;
       } catch (_) {
+        if (_disposed || generation != _selectionGeneration) return;
         _failedCells++;
       }
       notifyListeners();
     }
 
+    if (_disposed || generation != _selectionGeneration) return;
     _downloadState = _failedCells == 0
         ? RouteDownloadState.done
         : RouteDownloadState.failed;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _selectionGeneration++;
+    super.dispose();
   }
 }

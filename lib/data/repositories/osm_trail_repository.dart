@@ -30,9 +30,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// resolves them with a real length and position instead of raw,
 /// sometimes-missing Overpass tags.
 class OsmTrailRepository {
-  OsmTrailRepository({http.Client? httpClient, WaymarkedTrailsClient? waymarkedClient})
-    : _httpClient = httpClient ?? http.Client(),
-      _waymarkedClient = waymarkedClient ?? WaymarkedTrailsClient(httpClient: httpClient);
+  factory OsmTrailRepository({
+    http.Client? httpClient,
+    WaymarkedTrailsClient? waymarkedClient,
+  }) {
+    final resolvedHttpClient = httpClient ?? http.Client();
+    return OsmTrailRepository._(
+      resolvedHttpClient,
+      waymarkedClient ?? WaymarkedTrailsClient(httpClient: resolvedHttpClient),
+      httpClient == null,
+    );
+  }
+
+  OsmTrailRepository._(
+    this._httpClient,
+    this._waymarkedClient,
+    this._ownsHttpClient,
+  );
 
   static const _distance = Distance();
   static const _maxResponseBytes = 10 * 1024 * 1024;
@@ -44,6 +58,7 @@ class OsmTrailRepository {
   static const _endpointResponseTimeout = Duration(seconds: 8);
 
   final http.Client _httpClient;
+  final bool _ownsHttpClient;
   final WaymarkedTrailsClient _waymarkedClient;
   final _endpoints = OverpassEndpoints.instance;
   final _cache = <String, _TrailCacheEntry>{};
@@ -52,6 +67,10 @@ class OsmTrailRepository {
   /// True when the last result came from a local cache because the network
   /// was unavailable. The UI can explain stale data without hiding it.
   bool lastResultWasStale = false;
+
+  void close() {
+    if (_ownsHttpClient) _httpClient.close();
+  }
 
   Future<List<HikingTrail>> findNearby({
     required LatLng position,
@@ -128,7 +147,10 @@ class OsmTrailRepository {
       return byDistance != 0 ? byDistance : a.id.compareTo(b.id);
     });
 
-    _cache[cacheKey] = _TrailCacheEntry(fetchedAt: DateTime.now(), trails: trails);
+    _cache[cacheKey] = _TrailCacheEntry(
+      fetchedAt: DateTime.now(),
+      trails: trails,
+    );
     unawaited(_persistCache());
     return trails;
   }
@@ -168,13 +190,13 @@ class OsmTrailRepository {
         await for (final chunk in streamed.stream.timeout(
           _endpointResponseTimeout,
         )) {
-          bytes.add(chunk);
           byteLength += chunk.length;
           if (byteLength > _maxResponseBytes) {
             throw Exception(
               'Overpass response exceeded the maximum accepted size',
             );
           }
+          bytes.add(chunk);
         }
         // JSON decoding and eligibility classification can be expensive at a
         // 100 km radius. Keep the composition off Flutter's UI isolate, just

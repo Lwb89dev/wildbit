@@ -80,6 +80,7 @@ class WildBitProviders extends StatelessWidget {
           TrackShareService
         >(
           update: (context, database, keyManager, amber, previous) =>
+              previous ??
               TrackShareService(
                 database: database,
                 keyManager: keyManager,
@@ -87,7 +88,8 @@ class WildBitProviders extends StatelessWidget {
               ),
         ),
         ProxyProvider<WildBitDatabase, TrackRepository>(
-          update: (context, db, previous) => DriftTrackRepository(db),
+          update: (context, db, previous) =>
+              previous ?? DriftTrackRepository(db),
         ),
         ChangeNotifierProxyProvider<TrackRepository, TrackRecorderController>(
           create: (context) => TrackRecorderController(
@@ -98,13 +100,19 @@ class WildBitProviders extends StatelessWidget {
           update: (context, repository, controller) => controller!,
         ),
         ProxyProvider<WildBitDatabase, OsmMapDataRepository>(
-          update: (context, db, previous) => OsmMapDataRepository(
-            database: db,
-            offlinePreview: offlinePreview,
-            mixedPreview: mixedPreview,
-          ),
+          update: (context, db, previous) =>
+              previous ??
+              OsmMapDataRepository(
+                database: db,
+                offlinePreview: offlinePreview,
+                mixedPreview: mixedPreview,
+              ),
+          dispose: (_, repository) => repository.close(),
         ),
-        Provider<OsmTrailRepository>(create: (_) => OsmTrailRepository()),
+        Provider<OsmTrailRepository>(
+          create: (_) => OsmTrailRepository(),
+          dispose: (_, repository) => repository.close(),
+        ),
         ChangeNotifierProxyProvider<
           OsmMapDataRepository,
           SelectedRouteController

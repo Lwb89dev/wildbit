@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
@@ -47,6 +49,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
   LatLng? _position;
   double _radiusKm = 12;
   bool _usingCachedResults = false;
+  int _trailRequestGeneration = 0;
+  int _geocodeRequestGeneration = 0;
 
   /// Set once a city search succeeds; searches then centre on this instead
   /// of the device's GPS fix until "Vicino a me" is used again.
@@ -61,11 +65,17 @@ class _ExploreScreenState extends State<ExploreScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadTrails());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_loadTrails());
+    });
   }
 
   @override
   void dispose() {
+    _trailRequestGeneration++;
+    _geocodeRequestGeneration++;
+    _nominatim.close();
+    _waymarkedClient.close();
     _searchController.dispose();
     _radiusController.dispose();
     _cityController.dispose();
@@ -73,6 +83,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
   }
 
   Future<void> _loadTrails({String? query, bool forceRefresh = false}) async {
+    final requestGeneration = ++_trailRequestGeneration;
     final requestedQuery = query ?? _searchController.text;
     setState(() {
       _isLoading = true;
@@ -83,7 +94,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
     LatLng? position = _manualPosition;
     if (position == null) {
       final fix = await widget.locationService.getCurrentPosition();
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _trailRequestGeneration) return;
       if (fix == null) {
         setState(() {
           _isLoading = false;
@@ -102,7 +113,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
         radiusKm: _radiusKm,
         forceRefresh: forceRefresh,
       );
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _trailRequestGeneration) return;
       setState(() {
         _position = position;
         _activeQuery = requestedQuery.trim();
@@ -111,7 +122,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
         _usingCachedResults = repository.lastResultWasStale;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _trailRequestGeneration) return;
       setState(() {
         _isLoading = false;
         _error = context.l10n.downloadTrailsError;
@@ -120,13 +131,14 @@ class _ExploreScreenState extends State<ExploreScreen> {
   }
 
   void _showNearby() {
+    _geocodeRequestGeneration++;
     _searchController.clear();
     setState(() {
       _manualPosition = null;
       _manualPositionLabel = null;
       _cityController.clear();
     });
-    _loadTrails(query: '');
+    unawaited(_loadTrails(query: ''));
   }
 
   void _applyRadius(String value) {
@@ -138,18 +150,19 @@ class _ExploreScreenState extends State<ExploreScreen> {
     final clamped = parsed.clamp(1, 100).toDouble();
     setState(() => _radiusKm = clamped);
     _radiusController.text = clamped.round().toString();
-    _loadTrails();
+    unawaited(_loadTrails());
   }
 
   Future<void> _searchCity() async {
     final query = _cityController.text.trim();
     if (query.isEmpty) return;
+    final requestGeneration = ++_geocodeRequestGeneration;
     setState(() {
       _isGeocoding = true;
       _error = null;
     });
     final place = await _nominatim.search(query);
-    if (!mounted) return;
+    if (!mounted || requestGeneration != _geocodeRequestGeneration) return;
     setState(() => _isGeocoding = false);
     if (place == null) {
       setState(() => _error = context.l10n.cityNotFound(query));
@@ -159,10 +172,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
       _manualPosition = place.position;
       _manualPositionLabel = place.displayName.split(',').first;
     });
-    _loadTrails(query: '');
+    unawaited(_loadTrails(query: ''));
   }
 
   Future<void> _openTrail(HikingTrail trail) async {
+    if (_openingRelationId != null) return;
     final route = trail.route;
     if (route == null) return;
     final relationId = int.tryParse(route.relationId);
@@ -417,7 +431,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
               ].whereType<String>().join(' · '),
             ),
             trailing: curated ? const Icon(Icons.chevron_right) : null,
-            onTap: curated && !opening ? () => _openTrail(trail) : null,
+            onTap: curated && _openingRelationId == null
+                ? () => _openTrail(trail)
+                : null,
           ),
         );
       },

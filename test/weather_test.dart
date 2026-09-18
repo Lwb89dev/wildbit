@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -80,6 +81,49 @@ void main() {
     expect(service.snapshot, same(previous));
     expect(service.lastError, isA<WeatherFetchException>());
   });
+
+  test(
+    'weather service fetches the latest cell after an in-flight request',
+    () async {
+      final fake = _ControlledWeatherClient();
+      final service = WeatherService(client: fake);
+
+      final first = service.refresh(const LatLng(44.4, 8.9));
+      service.refresh(const LatLng(45.4, 9.9));
+      expect(fake.positions, [const LatLng(44.4, 8.9)]);
+
+      fake.completeNext(_snapshot(DateTime(2026, 1, 1)));
+      await first;
+      await Future<void>.delayed(Duration.zero);
+      expect(fake.positions, [
+        const LatLng(44.4, 8.9),
+        const LatLng(45.4, 9.9),
+      ]);
+
+      fake.completeNext(_snapshot(DateTime(2026, 1, 2)));
+      await Future<void>.delayed(Duration.zero);
+      expect(service.snapshot?.fetchedAt, DateTime(2026, 1, 2));
+    },
+  );
+
+  test(
+    'weather service retries a failed cell sooner than a successful one',
+    () async {
+      var now = DateTime(2026, 1, 1, 12);
+      final fake = _FakeWeatherClient(_snapshot(now))
+        ..error = const WeatherFetchException('offline');
+      final service = WeatherService(client: fake, now: () => now);
+
+      await service.refresh(const LatLng(44.4, 8.9));
+      now = now.add(const Duration(minutes: 1));
+      await service.refresh(const LatLng(44.4, 8.9));
+      expect(fake.calls, 1);
+
+      now = now.add(const Duration(minutes: 2));
+      await service.refresh(const LatLng(44.4, 8.9));
+      expect(fake.calls, 2);
+    },
+  );
 }
 
 WeatherSnapshot _snapshot(DateTime fetchedAt) => WeatherSnapshot(
@@ -127,4 +171,21 @@ class _FakeHttpClient extends http.BaseClient {
         statusCode,
         request: request,
       );
+}
+
+class _ControlledWeatherClient implements WeatherClient {
+  final positions = <LatLng>[];
+  final _requests = <Completer<WeatherSnapshot>>[];
+
+  @override
+  Future<WeatherSnapshot> fetchCurrent(LatLng position) {
+    positions.add(position);
+    final request = Completer<WeatherSnapshot>();
+    _requests.add(request);
+    return request.future;
+  }
+
+  void completeNext(WeatherSnapshot snapshot) {
+    _requests.removeAt(0).complete(snapshot);
+  }
 }

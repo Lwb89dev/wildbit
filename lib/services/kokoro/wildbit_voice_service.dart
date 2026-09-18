@@ -32,6 +32,8 @@ class WildBitVoiceService extends ChangeNotifier {
   bool _audioSessionConfigured = false;
   bool _isSpeaking = false;
   String? _pending;
+  bool _disposed = false;
+  int _initGeneration = 0;
 
   final Map<String, Float32List> _synthCache = {};
   static const _maxCacheEntries = 24;
@@ -43,21 +45,24 @@ class WildBitVoiceService extends ChangeNotifier {
   double get volume => _volume;
 
   void setGender(String gender) {
-    if (gender == _gender) return;
+    if (_disposed || gender == _gender) return;
+    _initGeneration++;
     _gender = gender;
     _ready = false;
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setSpeed(double speed) {
+    if (_disposed) return;
     _speed = speed;
-    notifyListeners();
+    _notifyListeners();
   }
 
   void setVolume(double volume) {
+    if (_disposed) return;
     _volume = volume;
     unawaited(_player.setVolume(volume));
-    notifyListeners();
+    _notifyListeners();
   }
 
   /// Convenience for app startup: loads the voice if the model has already
@@ -66,7 +71,7 @@ class WildBitVoiceService extends ChangeNotifier {
   Future<void> checkAndInit(String languageCode) async {
     try {
       final ready = await KokoroModelManager.instance.isReady({languageCode});
-      if (ready) await init(languageCode);
+      if (!_disposed && ready) await init(languageCode);
     } catch (error) {
       // Voice output is optional. In particular, a desktop development
       // machine may not have the native eSpeak library installed; that must
@@ -79,7 +84,9 @@ class WildBitVoiceService extends ChangeNotifier {
   /// announcements, no error) when the model hasn't been downloaded yet or
   /// the language has no Kokoro voice.
   Future<void> init(String languageCode) async {
+    if (_disposed) return;
     if (_ready && _language == languageCode) return;
+    final generation = ++_initGeneration;
     _language = languageCode;
     _ready = false;
 
@@ -90,18 +97,21 @@ class WildBitVoiceService extends ChangeNotifier {
     if (!await modelFile.exists() || !await voiceFile.exists()) return;
 
     try {
-      _voiceData = (await voiceFile.readAsBytes()).buffer.asFloat32List();
+      final voiceData = (await voiceFile.readAsBytes()).buffer.asFloat32List();
+      if (_disposed || generation != _initGeneration) return;
       await _phonemizer.init();
       await _engine.init();
       await _configureAudioSession();
+      if (_disposed || generation != _initGeneration) return;
+      _voiceData = voiceData;
       _ready = true;
-      notifyListeners();
+      _notifyListeners();
       // Warm the exact Settings preview in the background. The first neural
       // synthesis otherwise happens only after the user taps play and feels
       // like the voice button has frozen.
       unawaited(_precache('Ciao! Sono Bit, la tua guida escursionistica.'));
     } catch (error) {
-      _disableAfterFailure(error);
+      if (generation == _initGeneration) _disableAfterFailure(error);
     }
   }
 
@@ -115,7 +125,7 @@ class WildBitVoiceService extends ChangeNotifier {
   /// Speaks [text] on-device. Queues at most one pending phrase (the newest
   /// wins) so a burst of announcements doesn't pile up.
   Future<void> speak(String text) async {
-    if (!_ready) return;
+    if (_disposed || !_ready) return;
     if (_isSpeaking) {
       _pending = text;
       return;
@@ -131,7 +141,7 @@ class WildBitVoiceService extends ChangeNotifier {
       _isSpeaking = false;
       final next = _pending;
       _pending = null;
-      if (next != null) unawaited(speak(next));
+      if (!_disposed && next != null) unawaited(speak(next));
     }
   }
 
@@ -179,10 +189,15 @@ class WildBitVoiceService extends ChangeNotifier {
   }
 
   void _disableAfterFailure(Object error) {
+    if (_disposed) return;
     _ready = false;
     _voiceData = null;
     debugPrint('WildBit voice disabled for this session: $error');
-    notifyListeners();
+    _notifyListeners();
+  }
+
+  void _notifyListeners() {
+    if (!_disposed) notifyListeners();
   }
 
   // ── Hiking-specific announcements ─────────────────────────────────────────
@@ -267,6 +282,9 @@ class WildBitVoiceService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _initGeneration++;
+    _pending = null;
     _player.dispose();
     super.dispose();
   }

@@ -25,18 +25,28 @@ class WeatherOverlay extends StatelessWidget {
       builder: (context, _) {
         final snapshot = weather.snapshot;
         if (snapshot == null) return const SizedBox.expand();
+        final isAnimated =
+            snapshot.isRain ||
+            snapshot.isSnow ||
+            snapshot.isStorm ||
+            snapshot.fogIntensity > .05 ||
+            !snapshot.isDay;
+        Widget paint(double phase) => CustomPaint(
+          painter: WeatherOverlayPainter(
+            snapshot: snapshot,
+            phase: phase,
+            quality: MapRenderingBudget.decorativeQuality,
+          ),
+        );
         return RepaintBoundary(
           child: IgnorePointer(
-            child: AnimatedBuilder(
-              animation: MapRenderingBudget.ambientClock,
-              builder: (context, _) => CustomPaint(
-                painter: WeatherOverlayPainter(
-                  snapshot: snapshot,
-                  phase: MapRenderingBudget.ambientClock.phase,
-                  quality: MapRenderingBudget.decorativeQuality,
-                ),
-              ),
-            ),
+            child: isAnimated
+                ? AnimatedBuilder(
+                    animation: MapRenderingBudget.ambientClock,
+                    builder: (context, _) =>
+                        paint(MapRenderingBudget.ambientClock.phase),
+                  )
+                : paint(0),
           ),
         );
       },
