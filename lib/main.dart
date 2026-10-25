@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'app/app.dart';
@@ -9,6 +10,7 @@ import 'location/geolocator_location_service.dart';
 import 'location/location_service.dart';
 import 'location/simulated_location_service.dart';
 import 'presentation/onboarding/key_recovery_gate.dart';
+import 'presentation/onboarding/startup_error_screen.dart';
 import 'services/security/database_key_manager.dart';
 
 class _BitSplashGate extends StatefulWidget {
@@ -63,6 +65,10 @@ LocationService _buildLocationService() {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Release builds keep diagnostics out of logcat: messages can carry map
+  // cell keys (coordinates), endpoint failures and other user context that
+  // bug reports and log readers would otherwise collect.
+  if (kReleaseMode) debugPrint = (String? message, {int? wrapWidth}) {};
   final locationService = _buildLocationService();
   runApp(_KeyResolutionRoot(locationService: locationService));
 }
@@ -87,6 +93,7 @@ class _KeyResolutionRootState extends State<_KeyResolutionRoot> {
   final _keyManager = DatabaseKeyManager();
   String? _databaseKey;
   bool _showRecoveryGate = false;
+  bool _storageFailed = false;
 
   @override
   void initState() {
@@ -95,12 +102,23 @@ class _KeyResolutionRootState extends State<_KeyResolutionRoot> {
   }
 
   Future<void> _resolve() async {
-    if (await _keyManager.hasRecoverableIdentity()) {
-      if (mounted) setState(() => _showRecoveryGate = true);
-      return;
+    try {
+      if (await _keyManager.hasRecoverableIdentity()) {
+        if (mounted) setState(() => _showRecoveryGate = true);
+        return;
+      }
+      final key = await _keyManager.resolveKey();
+      if (mounted) setState(() => _databaseKey = key);
+    } catch (_) {
+      // Never fall back to a fresh key here: the existing encrypted database
+      // would become unreadable. A failure used to leave a blank screen.
+      if (mounted) setState(() => _storageFailed = true);
     }
-    final key = await _keyManager.resolveKey();
-    if (mounted) setState(() => _databaseKey = key);
+  }
+
+  void _retry() {
+    setState(() => _storageFailed = false);
+    _resolve();
   }
 
   @override
@@ -115,6 +133,7 @@ class _KeyResolutionRootState extends State<_KeyResolutionRoot> {
         ),
       );
     }
+    if (_storageFailed) return StartupErrorScreen(onRetry: _retry);
     if (_showRecoveryGate) {
       return KeyRecoveryGate(
         keyManager: _keyManager,

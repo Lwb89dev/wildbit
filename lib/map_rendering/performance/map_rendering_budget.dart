@@ -303,6 +303,8 @@ abstract final class MapRenderingBudget {
       Expando<_GeographicExtent>('wildbit-area-extent');
   static final Expando<_GeographicExtent> _lineExtents =
       Expando<_GeographicExtent>('wildbit-line-extent');
+  static final Expando<_GeographicExtent> _ownedExtents =
+      Expando<_GeographicExtent>('wildbit-owned-extent');
 
   static const maxShoreSpritesPerPolygon = 18;
   // Routes are not capped by count: hiding a mapped way at a lower zoom can
@@ -572,6 +574,18 @@ abstract final class MapRenderingBudget {
     return _GeographicExtent.from(coordinates).overlaps(viewport);
   }
 
+  /// Same check for composed geometry that is retained between frames (for
+  /// example a river chain cached per OSM snapshot). The extent is cached on
+  /// [owner], so a long chain is not rescanned on every camera update.
+  static bool ownedPointsMayBeVisible(
+    Object owner,
+    List<LatLng> points,
+    LatLngBounds viewport,
+  ) {
+    final extent = _ownedExtents[owner] ??= _GeographicExtent.from(points);
+    return extent.overlaps(viewport);
+  }
+
   /// Returns true when two longitude intervals overlap, including intervals
   /// that wrap from +180° to -180°. OSM extracts around the antimeridian must
   /// not be culled as if their west edge were numerically smaller than east.
@@ -582,6 +596,18 @@ abstract final class MapRenderingBudget {
     double secondEast, {
     double margin = 0,
   }) {
+    // Culling runs for every feature on every camera update. Ordinary
+    // intervals that neither wrap nor touch the dateline need no range
+    // lists: compare them directly.
+    if (firstWest <= firstEast &&
+        secondWest <= secondEast &&
+        firstWest - margin >= -180 &&
+        secondWest - margin >= -180 &&
+        firstEast + margin <= 180 &&
+        secondEast + margin <= 180) {
+      return firstWest - margin <= secondEast + margin &&
+          secondWest - margin <= firstEast + margin;
+    }
     final first = _longitudeRanges(firstWest, firstEast, margin: margin);
     final second = _longitudeRanges(secondWest, secondEast, margin: margin);
     for (final a in first) {

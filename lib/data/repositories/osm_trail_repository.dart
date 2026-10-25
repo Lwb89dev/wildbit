@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:drift/drift.dart' show StringExpressionOperators;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
@@ -11,6 +12,7 @@ import '../../domain/entities/hiking_route_membership.dart';
 import '../../domain/entities/hiking_trail.dart';
 import '../../domain/entities/route_metadata.dart';
 import '../../domain/routing/route_eligibility_gate.dart';
+import '../../storage/database.dart';
 import '../osm/trail_cache_codec.dart';
 import '../osm/overpass_endpoints.dart';
 import '../osm/trail_query_builder.dart';
@@ -33,12 +35,14 @@ class OsmTrailRepository {
   factory OsmTrailRepository({
     http.Client? httpClient,
     WaymarkedTrailsClient? waymarkedClient,
+    WildBitDatabase? database,
   }) {
     final resolvedHttpClient = httpClient ?? http.Client();
     return OsmTrailRepository._(
       resolvedHttpClient,
       waymarkedClient ?? WaymarkedTrailsClient(httpClient: resolvedHttpClient),
       httpClient == null,
+      database,
     );
   }
 
@@ -46,13 +50,17 @@ class OsmTrailRepository {
     this._httpClient,
     this._waymarkedClient,
     this._ownsHttpClient,
+    this._database,
   );
 
   static const _distance = Distance();
   static const _maxResponseBytes = 10 * 1024 * 1024;
   static const _cacheTtl = Duration(minutes: 10);
   static const _staleGrace = Duration(hours: 24);
-  static const _persistentCacheKey = 'wildbit.explore.cache.v1';
+  // Older versions kept this cache as plaintext JSON in SharedPreferences,
+  // which Android also uploads in cloud backups.
+  static const _legacyPreferencesKey = 'wildbit.explore.cache.v1';
+  static const _persistentKeyPrefix = 'explore.v1:';
   static const _maxPersistentEntries = 24;
   static const _endpointConnectTimeout = Duration(seconds: 6);
   static const _endpointResponseTimeout = Duration(seconds: 8);
@@ -60,6 +68,10 @@ class OsmTrailRepository {
   final http.Client _httpClient;
   final bool _ownsHttpClient;
   final WaymarkedTrailsClient _waymarkedClient;
+
+  /// Encrypted store for results that must survive a restart. Results around
+  /// searched places are location history, so they never go to preferences.
+  final WildBitDatabase? _database;
   final _endpoints = OverpassEndpoints.instance;
   final _cache = <String, _TrailCacheEntry>{};
   Future<void>? _persistentLoad;
@@ -147,11 +159,9 @@ class OsmTrailRepository {
       return byDistance != 0 ? byDistance : a.id.compareTo(b.id);
     });
 
-    _cache[cacheKey] = _TrailCacheEntry(
-      fetchedAt: DateTime.now(),
-      trails: trails,
-    );
-    unawaited(_persistCache());
+    final entry = _TrailCacheEntry(fetchedAt: DateTime.now(), trails: trails);
+    _cache[cacheKey] = entry;
+    unawaited(_persistEntry(cacheKey, entry));
     return trails;
   }
 
@@ -241,10 +251,8 @@ class OsmTrailRepository {
     lengthKm: route.lengthKm,
   );
 
-  // Hashed rather than kept as plain "lat:lon:..." text: this key is also
-  // used verbatim as the persisted SharedPreferences key in
-  // `_persistCache`, and Android's default Auto Backup would otherwise
-  // carry the user's past search coordinates off-device in plaintext.
+  // Hashed rather than kept as plain "lat:lon:..." text, so the stored key
+  // itself never spells out a searched position.
   String _cacheKey(LatLng position, double radiusKm, String query) {
     final raw =
         '${position.latitude.toStringAsFixed(3)}:'
@@ -258,51 +266,64 @@ class OsmTrailRepository {
   }
 
   Future<void> _readPersistentCache() async {
+    unawaited(_dropLegacyPreferencesCache());
+    final database = _database;
+    if (database == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_persistentCacheKey);
-      if (raw == null) return;
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) return;
-      final entries = decoded['entries'];
-      if (entries is! Map) return;
-      for (final entry in entries.entries) {
-        final value = entry.value;
-        if (value is! Map) continue;
-        final fetchedAt = DateTime.tryParse(
-          value['fetchedAt'] as String? ?? '',
-        );
-        final payload = value['payload'] as String?;
-        if (fetchedAt == null || payload == null) continue;
-        final trails = TrailCacheCodec.decode(payload);
-        _cache[entry.key as String] = _TrailCacheEntry(
-          fetchedAt: fetchedAt,
-          trails: trails,
-        );
+      final rows = await (database.select(
+        database.cachedMapCells,
+      )..where((row) => row.cellKey.like('$_persistentKeyPrefix%'))).get();
+      for (final row in rows) {
+        try {
+          _cache[row.cellKey.substring(
+            _persistentKeyPrefix.length,
+          )] = _TrailCacheEntry(
+            fetchedAt: row.fetchedAt,
+            trails: TrailCacheCodec.decode(row.featuresJson),
+          );
+        } catch (_) {
+          // A corrupt entry is simply fetched again.
+        }
       }
     } catch (_) {
-      // Explore must remain usable if preferences are unavailable/corrupt.
+      // Explore must remain usable if the cache is unavailable/corrupt.
     }
   }
 
-  Future<void> _persistCache() async {
+  Future<void> _persistEntry(String key, _TrailCacheEntry entry) async {
+    final database = _database;
+    if (database == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final sorted = _cache.entries.toList()
-        ..sort((a, b) => b.value.fetchedAt.compareTo(a.value.fetchedAt));
-      final entries = <String, dynamic>{};
-      for (final entry in sorted.take(_maxPersistentEntries)) {
-        entries[entry.key] = {
-          'fetchedAt': entry.value.fetchedAt.toIso8601String(),
-          'payload': TrailCacheCodec.encode(entry.value.trails),
-        };
-      }
-      await prefs.setString(
-        _persistentCacheKey,
-        jsonEncode({'version': 1, 'entries': entries}),
+      await database
+          .into(database.cachedMapCells)
+          .insertOnConflictUpdate(
+            CachedMapCellsCompanion.insert(
+              cellKey: '$_persistentKeyPrefix$key',
+              fetchedAt: entry.fetchedAt,
+              featuresJson: TrailCacheCodec.encode(entry.trails),
+            ),
+          );
+      await database.customStatement(
+        'DELETE FROM cached_map_cells WHERE cell_key LIKE ? '
+        'AND cell_key NOT IN (SELECT cell_key FROM cached_map_cells '
+        'WHERE cell_key LIKE ? ORDER BY fetched_at DESC LIMIT ?)',
+        [
+          '$_persistentKeyPrefix%',
+          '$_persistentKeyPrefix%',
+          _maxPersistentEntries,
+        ],
       );
     } catch (_) {
       // The in-memory cache remains the fast path when persistence fails.
+    }
+  }
+
+  static Future<void> _dropLegacyPreferencesCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_legacyPreferencesKey);
+    } catch (_) {
+      // Preferences may be unavailable (tests, early shutdown).
     }
   }
 

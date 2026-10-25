@@ -110,7 +110,8 @@ class WildBitProviders extends StatelessWidget {
           dispose: (_, repository) => repository.close(),
         ),
         Provider<OsmTrailRepository>(
-          create: (_) => OsmTrailRepository(),
+          create: (context) =>
+              OsmTrailRepository(database: context.read<WildBitDatabase>()),
           dispose: (_, repository) => repository.close(),
         ),
         ChangeNotifierProxyProvider<

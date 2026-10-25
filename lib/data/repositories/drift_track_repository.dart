@@ -80,8 +80,13 @@ class DriftTrackRepository implements TrackRepository {
   }
 
   @override
-  Future<void> deleteTrack(int id) async {
-    await (_database.delete(_database.tracks)..where((t) => t.id.equals(id))).go();
+  Future<void> deleteTrack(int id) {
+    // Delete the GPS points explicitly: a deleted hike must not leave its
+    // coordinates behind even where foreign keys are not enforced.
+    return _database.transaction(() async {
+      await (_database.delete(_database.trackPoints)..where((t) => t.trackId.equals(id))).go();
+      await (_database.delete(_database.tracks)..where((t) => t.id.equals(id))).go();
+    });
   }
 
   SavedTrack _toSavedTrack(Track row, List<TrackPoint> pointRows) {

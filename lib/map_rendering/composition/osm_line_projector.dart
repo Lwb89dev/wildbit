@@ -1,20 +1,29 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
-import 'package:latlong2/latlong.dart';
+import 'package:flutter_map/flutter_map.dart' show MapCamera;
+import 'package:latlong2/latlong.dart' show LatLng;
 
 import '../../domain/entities/line_feature.dart';
 import '../../domain/enums/map_feature_kind.dart';
+import 'pan_projection_frame.dart';
 
-/// Short-lived cache shared by route geometry and route labels for one camera
-/// view. A camera change invalidates the view; different OSM ways remain
-/// independently keyed by their stable geometry seed and LOD parameters.
+/// Projection cache shared by route geometry and route labels.
+///
+/// Entries live in a [PanProjectionFrame]: while the camera only pans they
+/// stay valid and are painted with one canvas translation, so a drag no
+/// longer reprojects every visible way on each frame. A zoom, rotation or
+/// viewport change starts a new frame. Ways are keyed by their stable
+/// geometry seed and LOD parameters, independently of the collection that
+/// currently contains them.
 class ProjectedLineCache {
   ProjectedLineCache({this.maxEntries = 2048});
 
   final int maxEntries;
-  String? _viewKey;
-  final _entries = <String, List<Offset>>{};
+  PanProjectionFrame? _frame;
+  Offset _offset = Offset.zero;
+  final _entries = <(int, double, int), ProjectedLine>{};
   int _hits = 0;
   int _misses = 0;
 
@@ -29,49 +38,159 @@ class ProjectedLineCache {
     return total == 0 ? 0 : _hits / total;
   }
 
-  void beginView(String viewKey) {
-    if (_viewKey == viewKey) return;
-    _viewKey = viewKey;
-    _entries.clear();
+  /// Translation from cached frame coordinates to the current screen.
+  Offset get offset => _offset;
+
+  /// Starts a paint pass for [camera] and returns [offset].
+  Offset beginCamera(MapCamera camera) {
+    final frame = _frame;
+    if (frame == null || !frame.accepts(camera)) {
+      _frame = PanProjectionFrame(camera);
+      _entries.clear();
+    }
+    return _offset = _frame!.offsetFor(camera);
   }
 
   /// Drops only screen-space work. Source OSM geometry remains owned by the
   /// map data cache and can be projected again on demand after an Android
   /// memory-pressure callback.
   void clearTransient() {
-    _viewKey = null;
+    _frame = null;
     _entries.clear();
   }
 
-  List<Offset> project(
+  /// Projects [feature] into frame coordinates. [camera] must be the camera
+  /// passed to the latest [beginCamera].
+  ProjectedLine project(
     LineFeature feature,
-    Offset Function(LatLng point) projectPoint, {
+    MapCamera camera, {
     required double minimumDistancePixels,
     required int maximumPoints,
   }) {
-    final key =
-        '${OsmLineProjector.seedFor(feature)}:'
-        '${minimumDistancePixels.toStringAsFixed(2)}:$maximumPoints';
+    final key = (
+      OsmLineProjector.seedFor(feature),
+      minimumDistancePixels,
+      maximumPoints,
+    );
     final cached = _entries[key];
     if (cached != null) {
       _hits++;
       return cached;
     }
     _misses++;
-    final points = OsmLineProjector.projectSimplified(
-      feature,
-      projectPoint,
-      minimumDistancePixels: minimumDistancePixels,
-      maximumPoints: maximumPoints,
+    final offset = _offset;
+    final projected = ProjectedLine(
+      OsmLineProjector.projectSimplified(
+        feature,
+        (point) => PanProjectionFrame.project(camera, offset, point),
+        minimumDistancePixels: minimumDistancePixels,
+        maximumPoints: maximumPoints,
+      ),
     );
     if (_entries.length >= maxEntries && _entries.isNotEmpty) {
       _entries.remove(_entries.keys.first);
     }
-    _entries[key] = points;
-    return points;
+    _entries[key] = projected;
+    return projected;
   }
 
   int get length => _entries.length;
+}
+
+/// One simplified way in [PanProjectionFrame] coordinates, with the derived
+/// geometry painters reuse across pan frames.
+class ProjectedLine {
+  ProjectedLine(this.points) : bounds = _boundsOf(points);
+
+  final List<Offset> points;
+
+  /// Bounding box of [points]; empty geometry yields [Rect.zero].
+  final Rect bounds;
+
+  Path? _path;
+  Map<(double, double), Float32List>? _dashes;
+
+  /// Open polyline through [points], built once per frame entry.
+  Path get path => _path ??= _polyline(points);
+
+  /// Line-segment endpoints of a dash pattern along [points], suitable for
+  /// `Canvas.drawRawPoints(PointMode.lines, ...)`: one draw call instead of
+  /// one per dash.
+  Float32List dashes(double dash, double gap) =>
+      (_dashes ??= {})[(dash, gap)] ??= dashSegments(points, dash, gap);
+
+  /// Inclusive overlap with [viewport] grown by [margin], matching
+  /// [OsmLineProjector.overlapsViewport].
+  bool overlaps(Rect viewport, {double margin = 24}) =>
+      points.isNotEmpty &&
+      bounds.right >= viewport.left - margin &&
+      bounds.left <= viewport.right + margin &&
+      bounds.bottom >= viewport.top - margin &&
+      bounds.top <= viewport.bottom + margin;
+
+  static Rect _boundsOf(List<Offset> points) {
+    if (points.isEmpty) return Rect.zero;
+    var left = points.first.dx;
+    var right = left;
+    var top = points.first.dy;
+    var bottom = top;
+    for (final point in points.skip(1)) {
+      if (point.dx < left) left = point.dx;
+      if (point.dx > right) right = point.dx;
+      if (point.dy < top) top = point.dy;
+      if (point.dy > bottom) bottom = point.dy;
+    }
+    return Rect.fromLTRB(left, top, right, bottom);
+  }
+
+  static Path _polyline(List<Offset> points) {
+    final path = Path();
+    if (points.isEmpty) return path;
+    path.moveTo(points.first.dx, points.first.dy);
+    for (final point in points.skip(1)) {
+      path.lineTo(point.dx, point.dy);
+    }
+    return path;
+  }
+
+  /// Splits a polyline into dash segments. The pattern continues across
+  /// vertices, exactly like stroking the dashes one segment at a time.
+  static Float32List dashSegments(
+    List<Offset> points,
+    double dash,
+    double gap,
+  ) {
+    final coordinates = <double>[];
+    var drawing = true;
+    var remaining = dash;
+    for (var index = 0; index + 1 < points.length; index++) {
+      final start = points[index];
+      final delta = points[index + 1] - start;
+      final length = delta.distance;
+      if (length <= 0) continue;
+      final direction = delta / length;
+      var travelled = 0.0;
+      while (travelled < length) {
+        final step = math.min(remaining, length - travelled);
+        if (drawing && step > 0) {
+          final from = start + direction * travelled;
+          final to = start + direction * (travelled + step);
+          coordinates
+            ..add(from.dx)
+            ..add(from.dy)
+            ..add(to.dx)
+            ..add(to.dy);
+        }
+        travelled += step;
+        remaining -= step;
+        if (remaining <= .001) {
+          drawing = !drawing;
+          remaining = drawing ? dash : gap;
+        }
+      }
+    }
+    return Float32List.fromList(coordinates);
+  }
 }
 
 /// Projection adapter for OSM-derived linear features (paths and roads).

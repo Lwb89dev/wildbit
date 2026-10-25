@@ -13,15 +13,19 @@ import 'location_service.dart';
 class GeolocatorLocationService implements LocationService {
   static const _gnssChannel = MethodChannel('app.wildbit/gnss');
 
-  static final _settings = Platform.isAndroid
+  /// Text of the Android foreground-service notification shown while the
+  /// position stream runs. The app sets it from the active language.
+  static String foregroundNotificationText = 'GPS active';
+
+  static LocationSettings _streamSettings() => Platform.isAndroid
       ? AndroidSettings(
           accuracy: LocationAccuracy.bestForNavigation,
           distanceFilter: 0,
           intervalDuration: const Duration(milliseconds: 500),
           forceLocationManager: true,
-          foregroundNotificationConfig: const ForegroundNotificationConfig(
+          foregroundNotificationConfig: ForegroundNotificationConfig(
             notificationTitle: 'WildBit',
-            notificationText: 'GPS attivo',
+            notificationText: foregroundNotificationText,
             enableWakeLock: false,
           ),
         )
@@ -86,7 +90,7 @@ class GeolocatorLocationService implements LocationService {
   Stream<GeoFix> get positionStream {
     unawaited(_primeAssistanceData());
     return Geolocator.getPositionStream(
-      locationSettings: _settings,
+      locationSettings: _streamSettings(),
     ).map(_toGeoFix).where((fix) => fix != null).cast<GeoFix>();
   }
 
@@ -176,7 +180,14 @@ class GeolocatorLocationService implements LocationService {
     required double bearing,
     required double speed,
   }) {
-    if (!latitude.isFinite || !longitude.isFinite) return null;
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180) {
+      return null;
+    }
     final fix = GeoFix(
       position: LatLng(latitude, longitude),
       timestamp: timestamp,

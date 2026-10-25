@@ -35,6 +35,11 @@ class _RoutesScreenState extends State<RoutesScreen> {
       if (imported == null || !mounted) return;
       await context.read<TrackRepository>().saveTrack(imported);
       setState(_reload);
+    } on GpxImportException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(context.l10n.text(e.messageKey))));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -53,7 +58,7 @@ class _RoutesScreenState extends State<RoutesScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${context.l10n.text('routes.importError')}: $error'),
+          content: Text('${context.l10n.text('routes.deleteError')}: $error'),
         ),
       );
     }

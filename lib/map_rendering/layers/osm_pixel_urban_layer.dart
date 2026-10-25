@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart';
 import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/projected_depth_order.dart';
 import '../composition/structure_footprint.dart';
 import '../performance/map_rendering_budget.dart';
@@ -89,15 +90,12 @@ class _OsmPixelUrbanLayerState extends State<OsmPixelUrbanLayer> {
       _cache.visibleBuildings = const [];
       return const [];
     }
-    final buildings =
-        widget.features.areas
-            .where(
-              (area) =>
-                  area.kind == MapFeatureKind.building &&
-                  MapRenderingBudget.areaMayBeVisible(area, bounds),
-            )
-            .toList(growable: false)
-          ..sort((a, b) => _sortKey(a).compareTo(_sortKey(b)));
+    // The snapshot's buildings are sorted once in [UrbanRenderCache.prepare];
+    // filtering keeps that order, so no per-frame sort is needed.
+    final buildings = [
+      for (final area in _cache._sortedBuildings)
+        if (MapRenderingBudget.areaMayBeVisible(area, bounds)) area,
+    ];
     final limit = MapRenderingBudget.urbanPaintLimit();
     final result = buildings.length <= limit
         ? buildings
@@ -141,10 +139,6 @@ class _OsmPixelUrbanLayerState extends State<OsmPixelUrbanLayer> {
     return IgnorePointer(child: child);
   }
 
-  static String _sortKey(AreaFeature area) =>
-      '${area.sourceId ?? ''}:'
-      '${StructureFootprint.centroid(area.ring).latitude.toStringAsFixed(7)}';
-
   List<_ProjectedBuilding> _projectBuildings(
     MapCamera camera,
     List<AreaFeature> buildings,
@@ -166,30 +160,32 @@ class _OsmPixelUrbanLayerState extends State<OsmPixelUrbanLayer> {
     if (cached != null && _cache.projectedBuildingsViewKey == viewKey) {
       return cached;
     }
+    final offset = _cache._beginCamera(camera);
     final projectedBuildings = <_ProjectedBuilding>[];
     for (final indexed in buildings.indexed) {
       final area = indexed.$2;
-      final ring = StructureFootprint.sanitize(area.ring);
-      if (ring == null) continue;
-      final raw = [
-        for (final point in ring) camera.latLngToScreenOffset(point),
-      ];
-      final rawHoles = [
-        for (final hole in area.holes)
-          if (StructureFootprint.sanitize(hole) case final cleanHole?)
-            [for (final point in cleanHole) camera.latLngToScreenOffset(point)],
-      ];
-      final snapDelta = _snap(raw.first) - raw.first;
-      final projected = [for (final point in raw) point + snapDelta];
-      final projectedHoles = [
-        for (final hole in rawHoles)
-          [for (final point in hole) point + snapDelta],
-      ];
+      final footprint = _cache._frameFootprints.containsKey(area)
+          ? _cache._frameFootprints[area]
+          : _cache._frameFootprints[area] = _projectFootprint(
+              area,
+              camera,
+              offset,
+            );
+      if (footprint == null) continue;
+      // Snap each footprint's first corner to a whole screen pixel, exactly
+      // as a fresh projection did; the frame geometry itself stays unsnapped
+      // so the snap does not accumulate across pans.
+      final origin = footprint.projected.first + offset;
+      final translation =
+          offset +
+          Offset(
+            origin.dx.roundToDouble() - origin.dx,
+            origin.dy.roundToDouble() - origin.dy,
+          );
       projectedBuildings.add(
         _ProjectedBuilding(
-          projected: projected,
-          holes: projectedHoles,
-          foot: ProjectedDepthOrder.footprintAnchor(projected),
+          footprint: footprint,
+          translation: translation,
           stableOrder: indexed.$1,
         ),
       );
@@ -206,8 +202,35 @@ class _OsmPixelUrbanLayerState extends State<OsmPixelUrbanLayer> {
     return _cache._projectedBuildings!;
   }
 
-  static Offset _snap(Offset point) =>
-      Offset(point.dx.roundToDouble(), point.dy.roundToDouble());
+  /// Projects one footprint into the cache's pan frame.
+  static _FrameFootprint? _projectFootprint(
+    AreaFeature area,
+    MapCamera camera,
+    Offset offset,
+  ) {
+    final ring = _sanitized(area.ring);
+    if (ring == null) return null;
+    Offset project(LatLng point) =>
+        PanProjectionFrame.project(camera, offset, point);
+    return _FrameFootprint(
+      projected: [for (final point in ring) project(point)],
+      holes: [
+        for (final hole in area.holes)
+          if (_sanitized(hole) case final cleanHole?)
+            [for (final point in cleanHole) project(point)],
+      ],
+    );
+  }
+
+  // Footprint validation formats every vertex and tests all edge pairs for
+  // self-intersection. OSM features are immutable, so validate each ring once.
+  static final Expando<_SanitizedRing> _sanitizedRings =
+      Expando<_SanitizedRing>('wildbit-urban-footprint');
+
+  static List<LatLng>? _sanitized(List<LatLng> ring) =>
+      (_sanitizedRings[ring] ??= _SanitizedRing(
+        StructureFootprint.sanitize(ring),
+      )).points;
 }
 
 /// Per-camera cache owned by the map composition, rather than one depth
@@ -215,18 +238,39 @@ class _OsmPixelUrbanLayerState extends State<OsmPixelUrbanLayer> {
 /// the projected footprint data.
 class UrbanRenderCache {
   MapFeatureCollection? _source;
+  List<AreaFeature> _sortedBuildings = const [];
   int? visibleBuildingsViewKey;
   List<AreaFeature>? visibleBuildings;
   int? projectedBuildingsViewKey;
   List<_ProjectedBuilding>? _projectedBuildings;
+  // Footprints projected into the current pan frame, keyed by OSM feature.
+  PanProjectionFrame? _frame;
+  final Map<AreaFeature, _FrameFootprint?> _frameFootprints = {};
 
   void prepare(MapFeatureCollection source) {
     if (identical(_source, source)) return;
     _source = source;
+    // A stable, deterministic draw/budget order for the whole snapshot. The
+    // key used to be rebuilt (centroid + string) inside every comparison of
+    // a sort that ran on each camera frame.
+    final keyed = [
+      for (final area in source.areas)
+        if (area.kind == MapFeatureKind.building)
+          (
+            area: area,
+            key:
+                '${area.sourceId ?? ''}:'
+                '${StructureFootprint.centroid(area.ring).latitude.toStringAsFixed(7)}',
+          ),
+    ]..sort((a, b) => a.key.compareTo(b.key));
+    _sortedBuildings = List.unmodifiable([
+      for (final entry in keyed) entry.area,
+    ]);
     visibleBuildingsViewKey = null;
     visibleBuildings = null;
     projectedBuildingsViewKey = null;
     _projectedBuildings = null;
+    _frameFootprints.clear();
   }
 
   /// Retains the OSM source identity but releases camera-dependent polygons.
@@ -235,6 +279,19 @@ class UrbanRenderCache {
     visibleBuildings = null;
     projectedBuildingsViewKey = null;
     _projectedBuildings = null;
+    _frame = null;
+    _frameFootprints.clear();
+  }
+
+  /// Returns the translation from the footprint frame to [camera]'s screen,
+  /// starting a new frame when needed.
+  Offset _beginCamera(MapCamera camera) {
+    final frame = _frame;
+    if (frame == null || !frame.accepts(camera)) {
+      _frame = PanProjectionFrame(camera);
+      _frameFootprints.clear();
+    }
+    return _frame!.offsetFor(camera);
   }
 }
 
@@ -250,6 +307,16 @@ class _UrbanPainter extends CustomPainter {
   final List<_ProjectedBuilding> projectedBuildings;
   final int? pivotBoundary;
   final ProjectedDepthSlice slice;
+
+  static final Paint _shadowPaint = Paint()
+    ..color = const Color(0x55312624)
+    ..style = PaintingStyle.fill;
+  static final Paint _wallPaint = Paint()
+    ..color = const Color(0xFF6F5542)
+    ..style = PaintingStyle.fill;
+  static final Paint _roofPaint = Paint()
+    ..color = const Color(0xFF8D694C)
+    ..style = PaintingStyle.fill;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -275,53 +342,43 @@ class _UrbanPainter extends CustomPainter {
           start = boundary;
       }
     }
+    final viewport = Offset.zero & size;
+    final outline = Paint()
+      ..color = const Color(0xFF3B302A)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1 + .4 * ((camera.zoom - 11) / 5).clamp(0.0, 1.0);
     for (var index = start; index < end; index++) {
       final building = projectedBuildings[index];
-      final projected = building.projected;
-      final projectedHoles = building.holes;
-      final roof = _path(projected, holes: projectedHoles);
-      if (!roof.getBounds().inflate(8 * scale).overlaps(Offset.zero & size)) {
+      final footprint = building.footprint;
+      final translation = building.translation;
+      if (!footprint.bounds
+          .shift(translation)
+          .inflate(8 * scale)
+          .overlaps(viewport)) {
         continue;
       }
-      final wall = _path(
-        [for (final point in projected) point.translate(0, extrusion)],
-        holes: [
-          for (final hole in projectedHoles)
-            [for (final point in hole) point.translate(0, extrusion)],
-        ],
-      );
-      canvas.drawPath(
-        wall.shift(Offset(2 * scale, 2 * scale)),
-        Paint()
-          ..color = const Color(0x55312624)
-          ..style = PaintingStyle.fill,
-      );
-      canvas.drawPath(
-        wall,
-        Paint()
-          ..color = const Color(0xFF6F5542)
-          ..style = PaintingStyle.fill,
-      );
-      canvas.drawPath(
-        roof,
-        Paint()
-          ..color = const Color(0xFF8D694C)
-          ..style = PaintingStyle.fill,
-      );
-      canvas.drawPath(
-        roof,
-        Paint()
-          ..color = const Color(0xFF3B302A)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1 + .4 * ((camera.zoom - 11) / 5).clamp(0.0, 1.0),
-      );
-      if (detail > 0) {
-        _paintRoofInset(canvas, projected, detail, holes: projectedHoles);
-      }
+      final roof = footprint.roof;
+      canvas.save();
+      canvas.translate(translation.dx, translation.dy);
+      // Walls and their shadow are the roof outline moved down (and right):
+      // translate the canvas instead of rebuilding two paths per building.
+      canvas.save();
+      canvas.translate(2 * scale, extrusion + 2 * scale);
+      canvas.drawPath(roof, _shadowPaint);
+      canvas.translate(-2 * scale, -2 * scale);
+      canvas.drawPath(roof, _wallPaint);
+      canvas.restore();
+      canvas.drawPath(roof, _roofPaint);
+      canvas.drawPath(roof, outline);
+      if (detail > 0) _paintRoofInset(canvas, footprint, detail);
+      canvas.restore();
     }
   }
 
-  ui.Path _path(List<Offset> points, {List<List<Offset>> holes = const []}) {
+  static ui.Path _path(
+    List<Offset> points, {
+    List<List<Offset>> holes = const [],
+  }) {
     final path = ui.Path()
       ..fillType = ui.PathFillType.evenOdd
       ..moveTo(points.first.dx, points.first.dy);
@@ -342,30 +399,15 @@ class _UrbanPainter extends CustomPainter {
 
   void _paintRoofInset(
     Canvas canvas,
-    List<Offset> projected,
-    double detail, {
-    List<List<Offset>> holes = const [],
-  }) {
+    _FrameFootprint footprint,
+    double detail,
+  ) {
+    final projected = footprint.projected;
     if (projected.length < 3) return;
     canvas.save();
-    canvas.clipPath(_path(projected, holes: holes));
-    var center = Offset.zero;
-    for (final point in projected) {
-      center += point;
-    }
-    center /= projected.length.toDouble();
-    final inset = ui.Path();
-    for (var i = 0; i < projected.length; i++) {
-      final point = Offset.lerp(center, projected[i], .78)!;
-      if (i == 0) {
-        inset.moveTo(point.dx, point.dy);
-      } else {
-        inset.lineTo(point.dx, point.dy);
-      }
-    }
-    inset.close();
+    canvas.clipPath(footprint.roof);
     canvas.drawPath(
-      inset,
+      footprint.inset,
       Paint()
         ..color = const Color(0xFF3E3934).withValues(alpha: .4 * detail)
         ..style = PaintingStyle.fill,
@@ -398,15 +440,57 @@ class _UrbanPainter extends CustomPainter {
 }
 
 class _ProjectedBuilding {
-  const _ProjectedBuilding({
-    required this.projected,
-    required this.holes,
-    required this.foot,
+  _ProjectedBuilding({
+    required this.footprint,
+    required this.translation,
     required this.stableOrder,
-  });
+  }) : foot = footprint.foot + translation;
+
+  final _FrameFootprint footprint;
+
+  /// Pan offset plus this footprint's whole-pixel snap.
+  final Offset translation;
+
+  /// Screen-space ground contact, used for depth ordering around Bit.
+  final Offset foot;
+  final int stableOrder;
+}
+
+/// A building footprint in pan-frame coordinates, with the paths painters
+/// reuse until the next zoom or rotation.
+class _FrameFootprint {
+  _FrameFootprint({required this.projected, required this.holes})
+    : foot = ProjectedDepthOrder.footprintAnchor(projected);
 
   final List<Offset> projected;
   final List<List<Offset>> holes;
   final Offset foot;
-  final int stableOrder;
+
+  late final ui.Path roof = _UrbanPainter._path(projected, holes: holes);
+  late final Rect bounds = roof.getBounds();
+
+  /// Roof ridge inset: the outline pulled 22% toward its vertex centroid.
+  late final ui.Path inset = () {
+    var center = Offset.zero;
+    for (final point in projected) {
+      center += point;
+    }
+    center /= projected.length.toDouble();
+    final path = ui.Path();
+    for (var i = 0; i < projected.length; i++) {
+      final point = Offset.lerp(center, projected[i], .78)!;
+      if (i == 0) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
+    return path..close();
+  }();
+}
+
+class _SanitizedRing {
+  const _SanitizedRing(this.points);
+
+  final List<LatLng>? points;
 }

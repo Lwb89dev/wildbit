@@ -12,6 +12,7 @@ import '../../domain/entities/trail_classification.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../assets/map_visual_asset_warmup.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/route_visual_style.dart';
 import '../performance/map_rendering_budget.dart';
 
@@ -63,13 +64,15 @@ class _OsmPixelRouteLayerState extends State<OsmPixelRouteLayer> {
   }
 
   void _ensureImages() {
+    // Runs on every camera rebuild: check the cheap state before scanning.
+    if (_shaders.isNotEmpty || _loading != null) return;
     if (!widget.features.lines.any(
       (line) =>
           line.kind == MapFeatureKind.trail || line.kind == MapFeatureKind.road,
     )) {
       return;
     }
-    if (_shaders.isEmpty) _loading ??= _loadImages();
+    _loading = _loadImages();
   }
 
   Future<void> _loadImages() async {
@@ -104,7 +107,7 @@ class _OsmPixelRouteLayerState extends State<OsmPixelRouteLayer> {
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
     final projectionCache = widget.projectionCache ?? _localProjectionCache;
-    projectionCache.beginView(_viewKey(camera, widget.features));
+    projectionCache.beginCamera(camera);
     final lines = _linesForSource();
     return RepaintBoundary(
       child: IgnorePointer(
@@ -115,6 +118,7 @@ class _OsmPixelRouteLayerState extends State<OsmPixelRouteLayer> {
             lines: lines,
             shaders: _shaders,
             projectionCache: projectionCache,
+            interacting: MapRenderingBudget.mapInteracting,
           ),
         ),
       ),
@@ -149,24 +153,15 @@ class _OsmPixelRouteLayerState extends State<OsmPixelRouteLayer> {
     _orderedLines = List.unmodifiable(lines);
     return _orderedLines;
   }
-
-  String _viewKey(MapCamera camera, MapFeatureCollection features) {
-    final bounds = camera.visibleBounds;
-    // A projection cache may save work but must never quantise geography.
-    // At walking zoom, a rounded centre/rotation can visibly displace a trail
-    // from the cursor or hide a small junction until the next cache miss.
-    return '${identityHashCode(features)}:${camera.center.latitude}:'
-        '${camera.center.longitude}:${camera.zoom}:${camera.rotation}:'
-        '${bounds.south}:${bounds.west}:${bounds.north}:${bounds.east}';
-  }
 }
 
 class _RoutePainter extends CustomPainter {
-  const _RoutePainter({
+  _RoutePainter({
     required this.camera,
     required this.lines,
     required this.shaders,
     required this.projectionCache,
+    required this.interacting,
   });
 
   final MapCamera camera;
@@ -174,15 +169,35 @@ class _RoutePainter extends CustomPainter {
   final List<ui.Shader> shaders;
   final ProjectedLineCache projectionCache;
 
+  /// Gesture state at build time. Texture and vertex budgets depend on it,
+  /// so the end of a gesture must repaint even with an unchanged camera.
+  final bool interacting;
+
+  final Paint _stroke = Paint()
+    ..filterQuality = FilterQuality.none
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.square
+    ..strokeJoin = StrokeJoin.bevel;
+  final Paint _overlay = Paint()
+    ..strokeCap = StrokeCap.square
+    ..isAntiAlias = false;
+  final Paint _segment = Paint();
+
   @override
   void paint(Canvas canvas, Size size) {
+    // Projections are cached in a pan frame: one translation places every
+    // way, so a drag reprojects only ways that newly enter the viewport.
+    final offset = projectionCache.beginCamera(camera);
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     for (final line in lines) {
       if (!MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds)) {
         continue;
       }
-      final points = projectionCache.project(
+      final projected = projectionCache.project(
         line,
-        camera.latLngToScreenOffset,
+        camera,
         // At small scales preserve every line but collapse its geometry more
         // aggressively. The route itself must never disappear just because
         // more neighbouring ways entered the viewport.
@@ -192,12 +207,13 @@ class _RoutePainter extends CustomPainter {
         ),
         maximumPoints: MapRenderingBudget.routeMaximumPoints(line, camera.zoom),
       );
-      if (!OsmLineProjector.overlapsViewport(points, size)) continue;
+      if (!projected.overlaps(viewport)) continue;
+      final points = projected.points;
       final seed = OsmLineProjector.seedFor(line);
       final style = RouteVisualStyle.forLine(line, camera.zoom);
       _paintContinuousLine(
         canvas,
-        points,
+        projected,
         color: style.outlineColor,
         width: style.outlineWidth,
       );
@@ -209,15 +225,15 @@ class _RoutePainter extends CustomPainter {
           shaders.length >= _assetsCount &&
           style.family != RouteTextureFamily.paved &&
           camera.zoom >= 14.5 &&
-          !MapRenderingBudget.mapInteracting;
+          !interacting;
       if (!useTexture) {
-        _paintFallbackLine(
+        _paintContinuousLine(
           canvas,
-          points,
+          projected,
           width: style.width,
           color: style.fallbackColor,
         );
-        _paintTechnicalOverlay(canvas, points, line.kind, style);
+        _paintTechnicalOverlay(canvas, projected, line.kind, style);
         continue;
       }
       // A long surveyed way can still retain dozens of visible bends after
@@ -229,7 +245,7 @@ class _RoutePainter extends CustomPainter {
       if (points.length > _batchedTexturePointThreshold) {
         _paintTexturedLine(
           canvas,
-          points,
+          projected,
           width: style.width,
           shader: shaders[_imageIndex(style.family, seed, 0)],
         );
@@ -248,26 +264,24 @@ class _RoutePainter extends CustomPainter {
           );
         }
       }
-      _paintTechnicalOverlay(canvas, points, line.kind, style);
+      _paintTechnicalOverlay(canvas, projected, line.kind, style);
     }
+    canvas.restore();
   }
 
   void _paintTechnicalOverlay(
     Canvas canvas,
-    List<Offset> points,
+    ProjectedLine projected,
     MapFeatureKind kind,
     RouteVisualStyle style,
   ) {
-    if (points.length < 2) return;
+    if (projected.points.length < 2) return;
     if (style.isTunnel) {
       _paintDashedLine(
         canvas,
-        points,
-        paint: Paint()
-          ..color = const Color(0xFF303A3A)
-          ..strokeWidth = math.max(1.5, style.width * .26)
-          ..strokeCap = StrokeCap.square
-          ..isAntiAlias = false,
+        projected,
+        color: const Color(0xFF303A3A),
+        width: math.max(1.5, style.width * .26),
         dash: 5,
         gap: 5,
       );
@@ -275,12 +289,9 @@ class _RoutePainter extends CustomPainter {
     if (style.isConditional) {
       _paintDashedLine(
         canvas,
-        points,
-        paint: Paint()
-          ..color = const Color(0xFFE4A43B)
-          ..strokeWidth = math.max(1.4, style.width * .22)
-          ..strokeCap = StrokeCap.square
-          ..isAntiAlias = false,
+        projected,
+        color: const Color(0xFFE4A43B),
+        width: math.max(1.4, style.width * .22),
         dash: 2,
         gap: 5,
       );
@@ -290,12 +301,9 @@ class _RoutePainter extends CustomPainter {
     if (difficultyColor != null && camera.zoom >= 13) {
       _paintDashedLine(
         canvas,
-        points,
-        paint: Paint()
-          ..color = difficultyColor
-          ..strokeWidth = math.max(1.4, style.width * .24)
-          ..strokeCap = StrokeCap.square
-          ..isAntiAlias = false,
+        projected,
+        color: difficultyColor,
+        width: math.max(1.4, style.width * .24),
         dash: style.difficulty.level >= 4 ? 5 : 3,
         gap: style.difficulty.level >= 4 ? 8 : 12,
       );
@@ -304,14 +312,11 @@ class _RoutePainter extends CustomPainter {
         style.visibility == TrailVisibilityStatus.poor) {
       _paintDashedLine(
         canvas,
-        points,
-        paint: Paint()
-          ..color = style.visibility == TrailVisibilityStatus.poor
-              ? const Color(0xFFE9D9A2)
-              : const Color(0xFFEEE2B8)
-          ..strokeWidth = math.max(1.2, style.width * .18)
-          ..strokeCap = StrokeCap.square
-          ..isAntiAlias = false,
+        projected,
+        color: style.visibility == TrailVisibilityStatus.poor
+            ? const Color(0xFFE9D9A2)
+            : const Color(0xFFEEE2B8),
+        width: math.max(1.2, style.width * .18),
         dash: 2,
         gap: style.visibility == TrailVisibilityStatus.poor ? 7 : 11,
       );
@@ -319,108 +324,61 @@ class _RoutePainter extends CustomPainter {
     if (style.access == TrailAccessStatus.restricted) {
       _paintDashedLine(
         canvas,
-        points,
-        paint: Paint()
-          ..color = const Color(0xFFD53A35)
-          ..strokeWidth = math.max(2.0, style.width * .38)
-          ..strokeCap = StrokeCap.square
-          ..isAntiAlias = false,
+        projected,
+        color: const Color(0xFFD53A35),
+        width: math.max(2.0, style.width * .38),
         dash: 7,
         gap: 4,
       );
     }
   }
 
+  /// All dashes of one overlay go to the GPU in a single call; the segment
+  /// endpoints are cached with the projected way for later pan frames.
   void _paintDashedLine(
     Canvas canvas,
-    List<Offset> points, {
-    required Paint paint,
+    ProjectedLine projected, {
+    required Color color,
+    required double width,
     required double dash,
     required double gap,
   }) {
-    var drawing = true;
-    var remaining = dash;
-    for (var index = 0; index + 1 < points.length; index++) {
-      final start = points[index];
-      final delta = points[index + 1] - start;
-      final length = delta.distance;
-      if (length <= 0) continue;
-      final direction = delta / length;
-      var travelled = 0.0;
-      while (travelled < length) {
-        final step = math.min(remaining, length - travelled);
-        if (drawing && step > 0) {
-          canvas.drawLine(
-            start + direction * travelled,
-            start + direction * (travelled + step),
-            paint,
-          );
-        }
-        travelled += step;
-        remaining -= step;
-        if (remaining <= .001) {
-          drawing = !drawing;
-          remaining = drawing ? dash : gap;
-        }
-      }
-    }
+    final segments = projected.dashes(dash, gap);
+    if (segments.isEmpty) return;
+    _overlay
+      ..color = color
+      ..strokeWidth = width;
+    canvas.drawRawPoints(ui.PointMode.lines, segments, _overlay);
   }
 
   static const _assetsCount = 7;
   static const _batchedTexturePointThreshold = 48;
 
-  void _paintFallbackLine(
-    Canvas canvas,
-    List<Offset> points, {
-    required double width,
-    required Color color,
-  }) {
-    _paintContinuousLine(canvas, points, color: color, width: width);
-  }
-
   void _paintContinuousLine(
     Canvas canvas,
-    List<Offset> points, {
+    ProjectedLine projected, {
     required double width,
     required Color color,
   }) {
-    if (points.length < 2) return;
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
-    for (final point in points.skip(1)) {
-      path.lineTo(point.dx, point.dy);
-    }
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.square
-        ..strokeJoin = StrokeJoin.bevel
-        ..strokeWidth = width,
-    );
+    if (projected.points.length < 2) return;
+    _stroke
+      ..shader = null
+      ..color = color
+      ..strokeWidth = width;
+    canvas.drawPath(projected.path, _stroke);
   }
 
   void _paintTexturedLine(
     Canvas canvas,
-    List<Offset> points, {
+    ProjectedLine projected, {
     required double width,
     required ui.Shader shader,
   }) {
-    if (points.length < 2) return;
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
-    for (final point in points.skip(1)) {
-      path.lineTo(point.dx, point.dy);
-    }
-    canvas.drawPath(
-      path,
-      Paint()
-        ..shader = shader
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.square
-        ..strokeJoin = StrokeJoin.bevel
-        ..strokeWidth = width
-        ..filterQuality = FilterQuality.none,
-    );
+    if (projected.points.length < 2) return;
+    _stroke
+      ..shader = shader
+      ..strokeWidth = width;
+    canvas.drawPath(projected.path, _stroke);
   }
 
   int _imageIndex(RouteTextureFamily family, int seed, int segment) {
@@ -450,7 +408,7 @@ class _RoutePainter extends CustomPainter {
     canvas.rotate(math.atan2(delta.dy, delta.dx));
     canvas.drawRect(
       Rect.fromLTWH(-length / 2 - width / 2, -width / 2, length + width, width),
-      Paint()..shader = shader,
+      _segment..shader = shader,
     );
     canvas.restore();
   }
@@ -480,5 +438,6 @@ class _RoutePainter extends CustomPainter {
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
       oldDelegate.lines != lines ||
-      oldDelegate.shaders != shaders;
+      oldDelegate.shaders != shaders ||
+      oldDelegate.interacting != interacting;
 }

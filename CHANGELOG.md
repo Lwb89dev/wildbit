@@ -2,6 +2,80 @@
 
 All notable changes to WildBit are documented here.
 
+## [0.1.4] - 2026-10-25
+
+### Security and privacy
+
+- Release builds no longer write diagnostics to the system log (map cell keys
+  revealed the visited area); native GNSS code never logs coordinates.
+- Weather requests send the position rounded to about 1 km instead of 11 m.
+- Deleted tracks no longer leave their GPS points in the database: foreign keys
+  are enforced, points are deleted explicitly, schema 6 purges points orphaned
+  by earlier deletions, and `secure_delete` overwrites freed pages.
+- GPX exports and database backups are staged in the cache directory and
+  deleted after sharing; plaintext GPX exports left by earlier versions are
+  removed. The picker's copy of an imported GPX file is cleared.
+- Explore results are cached in the encrypted database instead of plaintext
+  preferences; the old preference entry is deleted.
+- Android backups are limited to preferences and the encrypted database.
+  Cleartext network traffic is disabled explicitly.
+- Amber: requests target Amber's package explicitly (an implicit intent could
+  be claimed by another app, including the database key while linking), and
+  content-provider answers are accepted only from Amber.
+- Track events signed by Amber are verified (author, kind, content, tags, id
+  and Schnorr signature) before they are published.
+- The database key is validated before it reaches SQLite, and secure storage
+  no longer wipes it after a transient Keystore error.
+- Optional privacy zone: the share dialog can hide the first and last 200 m
+  of a track (off by default; statistics stay complete).
+- CI: signing secrets are scoped to the steps that use them, actions are
+  pinned to commit SHAs, and checkout no longer persists the token.
+
+### Fixed
+
+- Publishing a track through Amber always failed: the signature was parsed as
+  the signed event.
+- Cancelling a request in Amber left the app waiting forever.
+- A secure-storage failure at startup left a blank screen; a retry screen is
+  shown instead, and no new key is ever generated over an existing database.
+- Starting over after a restore left an unreadable database in place; it is
+  now moved aside.
+- Map artwork and Bit could disappear after Android memory pressure, because
+  shared image handles were disposed by the image cache.
+- Trails stayed untextured and simplified after a pan until the camera moved
+  again.
+- Voice guidance went silent for the rest of the session after an interrupted
+  announcement; mapped trees and unnamed POIs no longer queue empty
+  announcements.
+- Nostr profile requests used a subscription id longer than NIP-01 allows;
+  profile pictures load over HTTPS only.
+- Building shadows apply to the buildings in view rather than the first ones
+  of the whole data set.
+- GPX import runs off the UI thread; import, export and sharing errors and the
+  GPS notification are localized.
+
+### Performance
+
+- Pan frames reuse projected geometry through a single canvas translation in
+  every pixel layer (trails and labels, water, waterways, coastlines, bridges,
+  land cover, contours, buildings, POIs, trees, shrubs, flowers, recorded
+  track and weather shadows). A widget test checks that panned frames are
+  pixel-identical to a fresh projection.
+- Per-frame work removed: feature signatures recomputed for unchanged data,
+  building sorting with a centroid computed inside the comparator, footprint
+  validation, POI asset scans, polygon areas recomputed while sorting water.
+- Dashed trail overlays draw in one call per overlay; river bank tiles draw in
+  one atlas call per river.
+- Measured on a Galaxy S24 with the renderer profile harness (stress scene,
+  medians of three runs): pan UI frame time 5.1–5.4 ms → 2.6 ms and p95 frame
+  time 9.6–10.1 ms → 5.3 ms; fast pans p95 8.3–8.6 ms → 5.2 ms; zoom and
+  rotation p95 8.3–8.8 ms → 5.6 ms. The profile harness can now run every
+  scene and motion unattended (`WILDBIT_AUTORUN_MATRIX`) and logs the results.
+
+### Release notes
+
+- Android version code: `5`.
+
 ## [0.1.3] - 2026-09-18
 
 ### Fixed

@@ -90,7 +90,9 @@ class _BitNormalizedSpriteState extends State<BitNormalizedSprite> {
     listener = ImageStreamListener(
       (info, _) {
         stream.removeListener(listener);
-        completer.complete(info.image);
+        // Frames are retained in a static cache beyond this stream's life;
+        // the image cache would otherwise dispose the shared handle.
+        completer.complete(info.image.clone());
       },
       onError: (error, stackTrace) {
         stream.removeListener(listener);

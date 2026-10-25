@@ -63,18 +63,17 @@ class MainActivity : FlutterFragmentActivity() {
     private val maxCacheAgeMs = 5 * 60 * 1000L
 
     private fun lastKnownLocation(): Map<String, Any?>? {
-        Log.d("WildBitGNSS", "lastKnownLocation requested")
         val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             ?: return null
         val now = System.currentTimeMillis()
         val candidates = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
             .mapNotNull { provider ->
                 val value = runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
-                Log.d("WildBitGNSS", "$provider cached=${value != null} time=${value?.time ?: 0} accuracy=${value?.accuracy ?: -1}")
+                debugLog("$provider cached=${value != null} accuracy=${value?.accuracy ?: -1}")
                 value
             }
         if (candidates.isEmpty()) {
-            Log.d("WildBitGNSS", "no cached location")
+            debugLog("no cached location")
             return null
         }
         // Prefer accuracy over recency among fixes still worth trusting; only
@@ -82,7 +81,9 @@ class MainActivity : FlutterFragmentActivity() {
         // candidate has aged out.
         val fresh = candidates.filter { now - it.time <= maxCacheAgeMs }
         val location = (fresh.ifEmpty { candidates }).minByOrNull { it.accuracy }!!
-        Log.d("WildBitGNSS", "using lat=${location.latitude} lon=${location.longitude} accuracy=${location.accuracy}")
+        // Never log coordinates: logcat ends up in bug reports and is
+        // readable by privileged apps.
+        debugLog("using ${location.provider} fix accuracy=${location.accuracy}")
         return mapOf(
             "latitude" to location.latitude,
             "longitude" to location.longitude,
@@ -94,7 +95,14 @@ class MainActivity : FlutterFragmentActivity() {
         )
     }
 
+    /// GNSS diagnostics are off unless enabled for a debugging session with
+    /// `adb shell setprop log.tag.WildBitGNSS DEBUG`.
+    private fun debugLog(message: String) {
+        if (Log.isLoggable(GNSS_LOG_TAG, Log.DEBUG)) Log.d(GNSS_LOG_TAG, message)
+    }
+
     private companion object {
         const val GNSS_CHANNEL = "app.wildbit/gnss"
+        const val GNSS_LOG_TAG = "WildBitGNSS"
     }
 }

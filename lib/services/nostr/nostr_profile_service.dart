@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -26,9 +27,9 @@ class NostrProfile {
     final raw = picture?.trim();
     if (raw == null || raw.isEmpty) return null;
     final uri = Uri.tryParse(raw);
-    if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) {
-      return null;
-    }
+    // Profile metadata is untrusted: load pictures over TLS only. Android
+    // blocks cleartext anyway, and a plain-http URL would only fail.
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) return null;
     return uri;
   }
 
@@ -128,7 +129,9 @@ class NostrProfileService {
       socket.sink.add(
         jsonEncode([
           'REQ',
-          'wildbit-profile-$pubkeyHex',
+          // NIP-01 caps subscription ids at 64 characters; the full pubkey
+          // plus a prefix exceeded it and strict relays refused the request.
+          'wbp-${pubkeyHex.substring(0, math.min(16, pubkeyHex.length))}',
           {
             'kinds': [0],
             'authors': [pubkeyHex],

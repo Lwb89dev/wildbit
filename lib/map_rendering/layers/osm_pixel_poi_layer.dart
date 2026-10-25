@@ -12,6 +12,7 @@ import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/poi.dart';
 import '../../domain/enums/poi_type.dart';
 import '../assets/map_visual_asset_warmup.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/poi_label_layout.dart';
 import '../composition/projected_depth_order.dart';
 import '../composition/shelter_sprite_metrics.dart';
@@ -53,8 +54,12 @@ class OsmPixelPoiLayer extends StatefulWidget {
 }
 
 class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
-  final Map<String, ui.Image> _images = {};
+  // Replaced atomically when an image arrives: a stable identity lets the
+  // painter skip repaints when only Bit's depth pivot or a parent changed.
+  Map<String, ui.Image> _images = const {};
   final Set<String> _loading = {};
+  MapFeatureCollection? _assetSource;
+  Set<String> _requiredAssetSet = const {};
   final PoiProjectionCache _localProjectionCache = PoiProjectionCache();
   Offset? _pointerDown;
   bool _pointerMoved = false;
@@ -82,7 +87,10 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
     }
   }
 
+  /// Runs on every camera rebuild; the POI scan only depends on the source.
   Set<String> _requiredAssets() {
+    if (identical(_assetSource, widget.features)) return _requiredAssetSet;
+    _assetSource = widget.features;
     final result = <String>{};
     for (final poi in widget.features.pois) {
       switch (poi.type) {
@@ -104,13 +112,15 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
           break;
       }
     }
-    return result;
+    return _requiredAssetSet = result;
   }
 
   Future<void> _loadImage(String asset) async {
     try {
       final image = await MapVisualAssetWarmup.resolveImage(context, asset);
-      if (mounted) setState(() => _images[asset] = image);
+      if (mounted) {
+        setState(() => _images = Map.unmodifiable({..._images, asset: image}));
+      }
     } catch (_) {
       // Procedural glyphs preserve every POI if artwork cannot be loaded.
     } finally {
@@ -127,6 +137,7 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
     // dense, mapped forest twice on every camera frame just to discard the
     // same tree nodes again.
     final projectedPois = _projectPois(camera);
+    final offset = _projectionCache._offset;
     Widget paintForPivot(LatLng? pivot) {
       if (pivot == null && widget.slice == ProjectedDepthSlice.inFrontOfPivot) {
         return const SizedBox.expand();
@@ -135,15 +146,17 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
           ? null
           : ProjectedDepthOrder.firstInFrontIndex(
               projectedPois,
-              camera.latLngToScreenOffset(pivot),
+              camera.latLngToScreenOffset(pivot) - offset,
               (poi) => poi.foot,
             );
       return CustomPaint(
         size: Size.infinite,
         painter: _PoiPainter(
           camera: camera,
+          offset: offset,
           projectedPois: projectedPois,
-          images: Map.unmodifiable(_images),
+          labelCache: _projectionCache,
+          images: _images,
           onPoiTap: widget.onPoiTap,
           pivotBoundary: pivotBoundary,
           slice: widget.slice,
@@ -182,6 +195,7 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
         if (!_pointerMoved) {
           final poi = _hitTestPoi(
             camera,
+            offset,
             projectedPois,
             event.localPosition,
             context.size ?? Size.zero,
@@ -197,6 +211,7 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
 
   Poi? _hitTestPoi(
     MapCamera camera,
+    Offset offset,
     List<_ProjectedPoi> projectedPois,
     Offset tap,
     Size viewport,
@@ -206,7 +221,7 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
         ? null
         : ProjectedDepthOrder.firstInFrontIndex(
             projectedPois,
-            camera.latLngToScreenOffset(pivot),
+            camera.latLngToScreenOffset(pivot) - offset,
             (poi) => poi.foot,
           );
     final visibleProjected = _sliceProjectedPois(
@@ -215,7 +230,12 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
       slice: widget.slice,
     );
     final visiblePois = [for (final item in visibleProjected) item.poi];
-    for (final label in _composePoiLabels(camera, visiblePois, viewport)) {
+    for (final label in _composePoiLabels(
+      camera,
+      visiblePois,
+      viewport,
+      labelCache: _projectionCache,
+    )) {
       if (label.rect.inflate(3).contains(tap)) return label.poi;
     }
     Poi? closest;
@@ -226,7 +246,7 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
         poi.type,
         camera.zoom,
       );
-      final center = projected.foot.translate(0, -markerSize / 2);
+      final center = (projected.foot + offset).translate(0, -markerSize / 2);
       final distance = (tap - center).distance;
       final hitRadius = math.max(22.0, markerSize * .72);
       if (distance <= hitRadius && distance < closestDistance) {
@@ -249,15 +269,28 @@ class _OsmPixelPoiLayerState extends State<OsmPixelPoiLayer> {
       bounds.west,
       bounds.north,
       bounds.east,
+      // The secondary-marker budget follows the decorative quality tier.
+      MapRenderingBudget.decorativeQuality,
     );
     final cached = _projectionCache._projectedPois;
     if (cached != null && _projectionCache.projectedPoiViewKey == viewKey) {
       return cached;
     }
+    // Culling and the marker budget still follow the live viewport; only
+    // the projection of each POI is reused while the camera pans.
+    final offset = _projectionCache._beginCamera(camera);
+    final feet = _projectionCache._frameFeet;
     final projected = <_ProjectedPoi>[
       for (final poi in _projectionCache.nonTreePois)
         if (bounds.contains(poi.position))
-          (poi: poi, foot: camera.latLngToScreenOffset(poi.position)),
+          (
+            poi: poi,
+            foot: feet[poi] ??= PanProjectionFrame.project(
+              camera,
+              offset,
+              poi.position,
+            ),
+          ),
     ];
     final paintLimit = MapRenderingBudget.poiPaintLimit(camera.zoom);
     if (projected.length > paintLimit) {
@@ -300,6 +333,45 @@ class PoiProjectionCache {
   List<Poi> _nonTreePois = const [];
   int? projectedPoiViewKey;
   List<_ProjectedPoi>? _projectedPois;
+  PanProjectionFrame? _frame;
+  Offset _offset = Offset.zero;
+  final Map<Poi, Offset> _frameFeet = {};
+  // Laid-out label text by POI name. Names are immutable; re-laying out a
+  // paragraph for every visible label on every idle repaint was wasted work.
+  final Map<String, TextPainter> _labelPainters = {};
+  static const _maxLabelPainters = 256;
+
+  Offset _beginCamera(MapCamera camera) {
+    final frame = _frame;
+    if (frame == null || !frame.accepts(camera)) {
+      _frame = PanProjectionFrame(camera);
+      _frameFeet.clear();
+    }
+    return _offset = _frame!.offsetFor(camera);
+  }
+
+  TextPainter _labelPainter(String name) {
+    final cached = _labelPainters.remove(name);
+    if (cached != null) return _labelPainters[name] = cached;
+    if (_labelPainters.length >= _maxLabelPainters) {
+      // Not disposed here: the evicted label may still belong to the
+      // composition being painted. Its paragraph is reclaimed by the GC.
+      _labelPainters.remove(_labelPainters.keys.first);
+    }
+    return _labelPainters[name] = TextPainter(
+      text: TextSpan(text: name, style: _poiLabelStyle),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+      ellipsis: '…',
+    )..layout(maxWidth: 124);
+  }
+
+  void _disposeLabels() {
+    for (final painter in _labelPainters.values) {
+      painter.dispose();
+    }
+    _labelPainters.clear();
+  }
 
   /// Stable source subset shared by both POI depth slices. Individual tree
   /// nodes are handled by [OsmPixelTreeLayer], so retaining them here creates
@@ -315,19 +387,25 @@ class PoiProjectionCache {
     ]);
     projectedPoiViewKey = null;
     _projectedPois = null;
+    _frameFeet.clear();
   }
 
   /// Releases only the current viewport projection, never the POI source.
   void clearTransient() {
     projectedPoiViewKey = null;
     _projectedPois = null;
+    _frame = null;
+    _frameFeet.clear();
+    _disposeLabels();
   }
 }
 
 class _PoiPainter extends CustomPainter {
   const _PoiPainter({
     required this.camera,
+    required this.offset,
     required this.projectedPois,
+    required this.labelCache,
     required this.images,
     required this.onPoiTap,
     required this.pivotBoundary,
@@ -336,7 +414,11 @@ class _PoiPainter extends CustomPainter {
   });
 
   final MapCamera camera;
+
+  /// Translation from the POI feet's pan frame to the screen.
+  final Offset offset;
   final List<_ProjectedPoi> projectedPois;
+  final PoiProjectionCache labelCache;
   final Map<String, ui.Image> images;
   final ValueChanged<Poi>? onPoiTap;
   final int? pivotBoundary;
@@ -350,10 +432,9 @@ class _PoiPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final imagePaint = Paint()..filterQuality = FilterQuality.none;
     final visibleProjected = _visibleProjectedPois;
-    final visiblePois = [for (final item in visibleProjected) item.poi];
-    final projectedFeet = {
-      for (final item in visibleProjected) item.poi.id: item.foot,
-    };
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     for (final item in visibleProjected) {
       final poi = item.poi;
       final foot = item.foot;
@@ -361,10 +442,10 @@ class _PoiPainter extends CustomPainter {
         poi.type,
         camera.zoom,
       );
-      if (foot.dx < -markerSize ||
-          foot.dy < -markerSize ||
-          foot.dx > size.width + markerSize ||
-          foot.dy > size.height + markerSize) {
+      if (foot.dx < viewport.left - markerSize ||
+          foot.dy < viewport.top - markerSize ||
+          foot.dx > viewport.right + markerSize ||
+          foot.dy > viewport.bottom + markerSize) {
         continue;
       }
       final asset = _assetFor(poi);
@@ -408,18 +489,26 @@ class _PoiPainter extends CustomPainter {
         imagePaint,
       );
     }
+    canvas.restore();
     // Markers are navigational evidence and never disappear. Label layout is
     // deferred while the camera is moving, then restored on the idle frame.
+    // Labels are laid out against the screen edges and controls, so they
+    // are composed in screen coordinates.
     if (!showLabels || MapRenderingBudget.mapInteracting) return;
     for (final label in _composePoiLabels(
       camera,
-      visiblePois,
+      [for (final item in visibleProjected) item.poi],
       size,
-      projectedFeet: projectedFeet,
+      projectedFeet: _screenFeet(visibleProjected),
+      labelCache: labelCache,
     )) {
       _paintLabel(canvas, label);
     }
   }
+
+  Map<String, Offset> _screenFeet(List<_ProjectedPoi> projected) => {
+    for (final item in projected) item.poi.id: item.foot + offset,
+  };
 
   Rect _squareDestination(Offset foot, double markerSize, ui.Image image) {
     final imageScale = math.min(
@@ -571,15 +660,13 @@ class _PoiPainter extends CustomPainter {
   SemanticsBuilderCallback get semanticsBuilder => (size) {
     final visibleProjected = _visibleProjectedPois;
     final visiblePois = [for (final item in visibleProjected) item.poi];
-    final projectedFeet = {
-      for (final item in visibleProjected) item.poi.id: item.foot,
-    };
     final labels = {
       for (final label in _composePoiLabels(
         camera,
         visiblePois,
         size,
-        projectedFeet: projectedFeet,
+        projectedFeet: _screenFeet(visibleProjected),
+        labelCache: labelCache,
       ))
         label.poi.id: label.rect,
     };
@@ -632,6 +719,7 @@ class _PoiPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_PoiPainter oldDelegate) =>
+      oldDelegate.offset != offset ||
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
@@ -686,6 +774,7 @@ List<_PoiLabelVisual> _composePoiLabels(
   List<Poi> pois,
   Size viewport, {
   Map<String, Offset>? projectedFeet,
+  required PoiProjectionCache labelCache,
 }) {
   if (viewport.isEmpty) return const [];
   final visible = <Poi>[];
@@ -716,12 +805,7 @@ List<_PoiLabelVisual> _composePoiLabels(
         poi.name.trim().isEmpty) {
       continue;
     }
-    final painter = TextPainter(
-      text: TextSpan(text: poi.name.trim(), style: _poiLabelStyle),
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-      ellipsis: '…',
-    )..layout(maxWidth: 124);
+    final painter = labelCache._labelPainter(poi.name.trim());
     painters[poi.id] = painter;
     candidates.add(
       PoiLabelCandidate(

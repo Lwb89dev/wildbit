@@ -182,7 +182,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _exportBackup() async {
     setState(() => _exportingBackup = true);
     try {
-      await BackupService().exportAndShare(context.read<WildBitDatabase>());
+      await BackupService().exportAndShare(
+        context.read<WildBitDatabase>(),
+        shareText: context.l10n.text('backup.shareText'),
+      );
+    } on BackupUnavailableException {
+      if (mounted) _showSnack(context.l10n.text('backup.missing'));
     } catch (e) {
       if (mounted) _showSnack(context.l10n.exportFailed(e));
     } finally {

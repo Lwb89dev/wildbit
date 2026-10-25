@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -73,11 +74,17 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
   static const _autorunMotion = String.fromEnvironment(
     'WILDBIT_PROFILE_MOTION',
   );
+  // Runs every scene with every scripted motion and prints one
+  // `WILDBIT_BENCH` line per result, so ADB can compare builds from logcat.
+  static const _autorunMatrix = bool.fromEnvironment('WILDBIT_AUTORUN_MATRIX');
   final MapController _mapController = MapController();
   final ValueNotifier<LatLng?> _actorPosition = ValueNotifier<LatLng?>(
     const LatLng(46.0672, 11.1215),
   );
-  final MapFramePerformanceMonitor _frameMonitor = MapFramePerformanceMonitor();
+  // Large enough to keep every measured frame of a scripted benchmark.
+  final MapFramePerformanceMonitor _frameMonitor = MapFramePerformanceMonitor(
+    windowSize: 200,
+  );
   final BitAnimationController _bitController = BitAnimationController();
   final ProjectedLineCache _lineProjectionCache = ProjectedLineCache();
   final UrbanRenderCache _urbanRenderCache = UrbanRenderCache();
@@ -85,11 +92,11 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
   final ForegroundVegetationRenderCache _foregroundVegetationRenderCache =
       ForegroundVegetationRenderCache();
   Timer? _interactionIdle;
-  Timer? _benchmarkTimer;
   Timer? _benchmarkSettle;
   bool _showDiagnostics = true;
   bool _benchmarkRunning = false;
   bool _layerSweepRunning = false;
+  bool _matrixRunning = false;
   MapFrameStats? _lastBenchmarkStats;
   String? _lastBenchmarkScene;
   final Map<_ProfilePassPreset, MapFrameStats> _layerBenchmarkStats =
@@ -123,10 +130,11 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
     _bitController.reportMovement(isMoving: false);
     _frameMonitor.stats.addListener(_onFrameStats);
     _frameMonitor.start();
-    if (_autorunLayerSweep) {
+    if (_autorunLayerSweep || _autorunMatrix) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future<void>.delayed(const Duration(seconds: 1), () {
-          if (mounted) unawaited(_runLayerSweep());
+          if (!mounted) return;
+          unawaited(_autorunMatrix ? _runMatrix() : _runLayerSweep());
         });
       });
     }
@@ -135,6 +143,9 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
   void _onFrameStats() {
     final stats = _frameMonitor.stats.value;
     if (stats.sampleCount == 0 || !MapRenderingBudget.mapVisible) return;
+    // A matrix run compares the cost of identical work between builds; an
+    // adaptive tier changing mid-run would measure different scenes.
+    if (_matrixRunning) return;
     final qualityChanged = MapRenderingBudget.configureFramePressure(
       averageBuildMicros: stats.averageBuildMicros,
       averageRasterMicros: stats.averageRasterMicros,
@@ -157,7 +168,6 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
   @override
   void dispose() {
     _interactionIdle?.cancel();
-    _benchmarkTimer?.cancel();
     _benchmarkSettle?.cancel();
     MapRenderingBudget.setMapInteracting(false);
     MapRenderingBudget.setMapVisible(false);
@@ -177,12 +187,14 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
     _mapController.rotate(_mapController.camera.rotation + delta);
   }
 
-  _ProfileMotion get _profileMotion =>
-      _autorunMotion == 'pan' ? _ProfileMotion.pan : _ProfileMotion.mixed;
+  _ProfileMotion get _profileMotion => switch (_autorunMotion) {
+    'pan' => _ProfileMotion.pan,
+    'fling' => _ProfileMotion.fling,
+    _ => _ProfileMotion.mixed,
+  };
 
-  Future<MapFrameStats?> _runBenchmark() {
+  Future<MapFrameStats?> _runBenchmark({_ProfileMotion? motionOverride}) {
     if (_benchmarkRunning) return Future<MapFrameStats?>.value(null);
-    _benchmarkTimer?.cancel();
     _benchmarkSettle?.cancel();
     // The profiling card is useful between runs but its large text repaint is
     // not part of the shipping map. Hide it while collecting timings so p95
@@ -197,44 +209,50 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
     final origin = _mapController.camera.center;
     final originZoom = _mapController.camera.zoom;
     final originRotation = _mapController.camera.rotation;
-    final motion = _profileMotion;
+    final motion = motionOverride ?? _profileMotion;
     final benchmarkScene =
         '${_loadedReplayLabel ?? _scene.label} · ${_passPreset.label} · '
         '${motion.label}';
     var step = 0;
     // A bounded camera loop deliberately resembles a user
     // inspecting nearby trail choices. The normal plan mixes pans, zoom and
-    // rotation; the explicit pan plan isolates the caches used by ordinary
-    // one-finger drags. Both are deterministic, fetch no data and restore
-    // the original camera at the end.
+    // rotation; the explicit pan plans isolate the caches used by ordinary
+    // one-finger drags. All are deterministic, fetch no data and restore
+    // the original camera at the end. The camera moves once per vsync, like
+    // a real drag: sparse timer steps let the CPU idle between frames and
+    // made the timings depend on frequency scaling rather than on the map.
     final completion = Completer<MapFrameStats?>();
-    _benchmarkTimer = Timer.periodic(const Duration(milliseconds: 120), (
-      timer,
-    ) {
+    const warmupSteps = 30;
+    const totalSteps = warmupSteps + 150;
+    void onFrame(Duration _) {
+      if (!mounted) {
+        if (!completion.isCompleted) completion.complete(null);
+        return;
+      }
       // The first movements warm projection caches and let the adaptive
       // detail tier settle. Excluding this explicit warm-up keeps p95 about
       // sustained map interaction rather than shader/asset start-up.
-      const warmupSteps = 12;
-      const totalSteps = warmupSteps + 36;
       if (step == warmupSteps) _frameMonitor.reset();
       final angle = step * math.pi * 2 / totalSteps;
+      final amplitude = motion.amplitude;
       final center = LatLng(
-        origin.latitude + math.sin(angle) * .0011,
-        origin.longitude + math.cos(angle * 1.4) * .00145,
+        origin.latitude + math.sin(angle) * .0011 * amplitude,
+        origin.longitude + math.cos(angle * 1.4) * .00145 * amplitude,
       );
-      final zoom = motion == _ProfileMotion.pan
+      final zoom = motion != _ProfileMotion.mixed
           ? originZoom
           : (originZoom + math.sin(angle * 2) * .7).clamp(3.0, 19.0);
       _mapController.move(center, zoom);
-      if (motion == _ProfileMotion.mixed && step % 4 == 0) {
-        _mapController.rotate(originRotation + (step / 4) * 45);
+      if (motion == _ProfileMotion.mixed) {
+        _mapController.rotate(originRotation + step * 1.5);
       }
       step++;
-      if (step < totalSteps) return;
-      timer.cancel();
-      _benchmarkTimer = null;
+      if (step < totalSteps) {
+        SchedulerBinding.instance.scheduleFrameCallback(onFrame);
+        return;
+      }
       MapRenderingBudget.setMapInteracting(false);
-      if (mounted) setState(() => _benchmarkRunning = false);
+      setState(() => _benchmarkRunning = false);
       // FrameTiming arrives after raster work. Wait briefly, then freeze the
       // exact result for a comparable screenshot/log on another device.
       _benchmarkSettle = Timer(const Duration(milliseconds: 450), () {
@@ -249,13 +267,23 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
           _lastBenchmarkScene = benchmarkScene;
           _showDiagnostics = restoreDiagnostics;
         });
+        debugPrint(
+          'WILDBIT_BENCH scene=${_scene.name} motion=${motion.name} '
+          'pass=${_passPreset.name} frames=${stats.sampleCount} '
+          'build=${stats.averageBuildMicros}us '
+          'raster=${stats.averageRasterMicros}us '
+          'p95=${stats.p95FrameMicros}us worst=${stats.worstFrameMicros}us '
+          'slow=${stats.slowFrameCount}',
+        );
         // Do not leave a test pass in a shifted/rotated camera state. This
         // keeps the next layer measurement directly comparable.
         _mapController.move(origin, originZoom);
         _mapController.rotate(originRotation);
         completion.complete(stats);
       });
-    });
+    }
+
+    SchedulerBinding.instance.scheduleFrameCallback(onFrame);
     return completion.future;
   }
 
@@ -290,6 +318,58 @@ class _RendererProfileScreenState extends State<RendererProfileScreen> {
         });
       }
     }
+  }
+
+  Future<void> _runMatrix() async {
+    setState(() => _matrixRunning = true);
+    try {
+      // Three repetitions per configuration: compare medians, not a single
+      // run that happened to coincide with a thermal or scheduler blip.
+      for (var repetition = 0; repetition < 3; repetition++) {
+        for (final scene in _ProfileScene.values) {
+          for (final motion in _ProfileMotion.values) {
+            if (!mounted) return;
+            MapRenderingBudget.resetFramePressure();
+            _selectScene(scene);
+            await Future<void>.delayed(const Duration(milliseconds: 900));
+            await _runBenchmark(motionOverride: motion);
+            await Future<void>.delayed(const Duration(milliseconds: 250));
+          }
+        }
+      }
+      _selectScene(_ProfileScene.stress);
+      for (var repetition = 0; repetition < 3; repetition++) {
+        for (final pass in _ProfilePassPreset.values) {
+          if (!mounted) return;
+          MapRenderingBudget.resetFramePressure();
+          setState(() => _passPreset = pass);
+          await Future<void>.delayed(const Duration(milliseconds: 650));
+          await _runBenchmark(motionOverride: _ProfileMotion.pan);
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
+      }
+    } finally {
+      MapRenderingBudget.resetFramePressure();
+      if (mounted) {
+        setState(() {
+          _passPreset = _ProfilePassPreset.full;
+          _matrixRunning = false;
+        });
+      }
+      debugPrint('WILDBIT_BENCH_DONE');
+    }
+  }
+
+  void _selectScene(_ProfileScene scene) {
+    setState(() {
+      _scene = scene;
+      _features = scene.features;
+      _loadedReplayLabel = null;
+      _coastline = CoastlineTopologyComposer.compose(
+        _features.lines.where((line) => line.kind == MapFeatureKind.coastline),
+      );
+      MapRenderingBudget.configureScene(_features);
+    });
   }
 
   void _nextScene() {
@@ -532,11 +612,15 @@ enum _ProfileScene {
 /// exercise different renderer caches and must not be compared as one number.
 enum _ProfileMotion {
   mixed('pan · zoom · rotazione'),
-  pan('solo trascinamento');
+  pan('solo trascinamento', amplitude: 3),
+  fling('trascinamento rapido', amplitude: 12);
 
-  const _ProfileMotion(this.label);
+  const _ProfileMotion(this.label, {this.amplitude = 1});
 
   final String label;
+
+  /// Multiplier of the scripted camera displacement per benchmark step.
+  final double amplitude;
 }
 
 /// Comparable groups of the production compositor.  These presets exist only

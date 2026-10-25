@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:nostr_tools/nostr_tools.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../../domain/entities/saved_track.dart';
 import '../../domain/entities/track_summary.dart';
@@ -38,11 +40,25 @@ class TrackShareService {
   /// yet. Because it isn't kind 1, generic social clients (Damus, Primal...)
   /// will not show it in a normal feed — that's the tradeoff for structured,
   /// stat-bearing data over generic visibility.
-  Future<TrackPublishResult> publish(SavedTrack track) async {
+  Future<TrackPublishResult> publish(
+    SavedTrack track, {
+    bool hideEndpoints = false,
+  }) async {
     final identity = await _keyManager.linkedIdentity;
-    if (identity == null) throw StateError('Collega prima un’identità Nostr.');
+    if (identity == null) {
+      throw const TrackShareException('share.needsIdentity');
+    }
     final summary = TrackSummary.fromTrack(track);
-    final content = jsonEncode(TrackSharePayload.fromTrack(track));
+    final Map<String, dynamic> payload;
+    try {
+      payload = TrackSharePayload.fromTrack(
+        track,
+        hideEndpoints: hideEndpoints,
+      );
+    } on StateError {
+      throw const TrackShareException('share.tooShortForPrivacy');
+    }
+    final content = jsonEncode(payload);
     final unsigned = Event(
       pubkey: identity.pubkeyHex,
       created_at: DateTime.now().millisecondsSinceEpoch ~/ 1000,
@@ -65,21 +81,111 @@ class TrackShareService {
       final privateKey = Nip19().decode(nsec)['data'] as String;
       event = EventApi().finishEvent(unsigned, privateKey).toJson();
     } else {
-      final result = await _amber.signEvent(
-        currentUser: identity.pubkeyHex,
-        eventJson: jsonEncode(unsigned.toJson()),
-      );
-      final raw = result['signature'] as String?;
-      if (raw == null || raw.isEmpty) {
-        throw StateError('Firma Amber annullata.');
+      final Map<dynamic, dynamic> result;
+      try {
+        result = await _amber.signEvent(
+          currentUser: identity.pubkeyHex,
+          eventJson: jsonEncode(unsigned.toJson()),
+        );
+      } on PlatformException {
+        // Amber missing, or no activity to start it from.
+        throw const TrackShareException('share.signCancelled');
       }
-      event = jsonDecode(raw) as Map<String, dynamic>;
+      event = signedEventFromSigner(result, unsigned, identity.pubkeyHex);
     }
     if (await _publishToAnyRelay(event)) {
       return const TrackPublishResult.published();
     }
     await _queue(event, reason: 'Nessun relay ha accettato l’evento.');
     return const TrackPublishResult.queued();
+  }
+
+  /// Extracts the event an external NIP-55 signer returned and checks that
+  /// it is exactly the one the user approved: same author, kind, content and
+  /// tags, with a valid id and Schnorr signature. Signers return the signed
+  /// JSON in `event`; some return only the signature (`signature`/`result`),
+  /// which is then attached to the unsigned event.
+  @visibleForTesting
+  static Map<String, dynamic> signedEventFromSigner(
+    Map<dynamic, dynamic> result,
+    Event unsigned,
+    String pubkeyHex,
+  ) {
+    Event? signed;
+    final rawEvent = result['event'];
+    if (rawEvent is String && rawEvent.isNotEmpty) {
+      signed = _decodeEvent(rawEvent);
+    } else {
+      final signature = result['signature'] ?? result['result'];
+      if (signature is! String || signature.isEmpty) {
+        throw const TrackShareException('share.signCancelled');
+      }
+      signed = Event(
+        pubkey: pubkeyHex,
+        created_at: unsigned.created_at,
+        kind: unsigned.kind,
+        tags: unsigned.tags,
+        content: unsigned.content,
+        sig: signature,
+        verify: false,
+      );
+      signed.id = EventApi().getEventHash(signed);
+    }
+    if (signed == null || !_matches(signed, unsigned, pubkeyHex)) {
+      throw const TrackShareException('share.signRejected');
+    }
+    return signed.toJson();
+  }
+
+  static Event? _decodeEvent(String raw) {
+    try {
+      final json = jsonDecode(raw);
+      if (json is! Map) return null;
+      return Event(
+        id: json['id'] as String,
+        pubkey: json['pubkey'] as String,
+        created_at: json['created_at'] as int,
+        kind: json['kind'] as int,
+        tags: [
+          for (final tag in json['tags'] as List)
+            [for (final value in tag as List) value as String],
+        ],
+        content: json['content'] as String,
+        sig: json['sig'] as String,
+        verify: false,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _matches(Event signed, Event unsigned, String pubkeyHex) {
+    if (signed.pubkey.toLowerCase() != pubkeyHex.toLowerCase() ||
+        signed.kind != unsigned.kind ||
+        signed.content != unsigned.content ||
+        !_sameTags(signed.tags, unsigned.tags)) {
+      return false;
+    }
+    try {
+      final api = EventApi();
+      return api.getEventHash(signed) == signed.id &&
+          api.verifySignature(signed);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _sameTags(List<List<String>> first, List<List<String>> second) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      final a = first[index];
+      final b = second[index];
+      if (a.length != b.length) return false;
+      for (var position = 0; position < a.length; position++) {
+        if (a[position] != b[position]) return false;
+      }
+    }
+    return true;
   }
 
   /// Retries at most a few explicitly consented, already-signed events. This
@@ -177,6 +283,16 @@ class TrackShareService {
       await socket?.sink.close();
     }
   }
+}
+
+/// A publication the user can act on; [messageKey] is a localization key.
+class TrackShareException implements Exception {
+  const TrackShareException(this.messageKey);
+
+  final String messageKey;
+
+  @override
+  String toString() => 'TrackShareException($messageKey)';
 }
 
 /// Outcome shown by the UI after an explicitly confirmed Nostr publication.

@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart' show LatLng;
 import '../assets/map_visual_asset_warmup.dart';
 import '../composition/coastline_topology_composer.dart';
 import '../composition/coastline_ring_classifier.dart';
+import '../composition/pan_projection_frame.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Fills the water side of directed OSM coastlines in a single Canvas pass.
@@ -35,6 +36,9 @@ class _OsmPixelCoastlineLayerState extends State<OsmPixelCoastlineLayer> {
   Future<void>? _loading;
   _CoastlineViewKey? _painterViewKey;
   _CoastlinePainter? _cachedPainter;
+  // Chains projected and classified in the current pan frame.
+  PanProjectionFrame? _frame;
+  _CoastlineGeometry? _geometry;
 
   @override
   void didChangeDependencies() {
@@ -48,6 +52,8 @@ class _OsmPixelCoastlineLayerState extends State<OsmPixelCoastlineLayer> {
     if (!identical(oldWidget.topology, widget.topology)) {
       _painterViewKey = null;
       _cachedPainter = null;
+      _frame = null;
+      _geometry = null;
     }
     _ensureImage();
   }
@@ -128,24 +134,30 @@ class _OsmPixelCoastlineLayerState extends State<OsmPixelCoastlineLayer> {
     );
     final cached = _cachedPainter;
     if (cached != null && _painterViewKey == viewKey) return cached;
-    final closed = [
-      for (final chain in widget.topology.chains.where(
-        (chain) => chain.isClosed,
-      ))
-        if (chain.points.length >= 3)
-          _CoastlineProjection.projectWrapped(chain.points, camera),
-    ];
-    final open = [
-      for (final chain in widget.topology.chains.where(
-        (chain) => !chain.isClosed,
-      ))
-        if (chain.points.length >= 2)
-          _CoastlineProjection.projectWrapped(chain.points, camera),
-    ];
+    // Projection, unwrapping and ring classification depend on zoom and
+    // rotation only; a pan reuses them through a canvas translation.
+    // Unwrapping picks the world copy nearest the frame's centre, so a very
+    // long pan at continental zoom starts a fresh frame.
+    final worldWidth = camera.getWorldWidthAtZoom(camera.zoom);
+    final frame = _frame;
+    var geometry = _geometry;
+    var offset = frame != null && frame.accepts(camera)
+        ? frame.offsetFor(camera)
+        : null;
+    if (geometry == null ||
+        offset == null ||
+        (worldWidth > 0 && offset.dx.abs() > worldWidth / 4)) {
+      _frame = PanProjectionFrame(camera);
+      geometry = _geometry = _CoastlineGeometry.project(
+        widget.topology,
+        camera,
+      );
+      offset = Offset.zero;
+    }
     final painter = _CoastlinePainter(
       camera: camera,
-      closedRings: CoastlineRingClassifier.classify(closed),
-      openChains: List.unmodifiable(open),
+      offset: offset,
+      geometry: geometry,
       shader: _shader,
     );
     _painterViewKey = viewKey;
@@ -202,49 +214,129 @@ class _CoastlineViewKey {
   );
 }
 
+/// Coastline chains projected into one pan frame, with the derived paths
+/// reused by every paint until the next zoom or rotation.
+class _CoastlineGeometry {
+  _CoastlineGeometry({required this.closedRings, required this.openChains});
+
+  factory _CoastlineGeometry.project(
+    CoastlineTopology topology,
+    MapCamera camera,
+  ) {
+    final closed = [
+      for (final chain in topology.chains.where((chain) => chain.isClosed))
+        if (chain.points.length >= 3)
+          _CoastlineProjection.projectWrapped(chain.points, camera),
+    ];
+    final open = [
+      for (final chain in topology.chains.where((chain) => !chain.isClosed))
+        if (chain.points.length >= 2)
+          _CoastlineProjection.projectWrapped(chain.points, camera),
+    ];
+    return _CoastlineGeometry(
+      closedRings: CoastlineRingClassifier.classify(closed),
+      openChains: List.unmodifiable(open),
+    );
+  }
+
+  final List<CoastlineRing> closedRings;
+  final List<List<Offset>> openChains;
+
+  bool get isEmpty => closedRings.isEmpty && openChains.isEmpty;
+
+  /// Every closed ring in one even-odd path: islands, and lakes inside them.
+  late final Path closedRingsPath = () {
+    final path = Path()..fillType = PathFillType.evenOdd;
+    for (final ring in closedRings) {
+      path.addPolygon(ring.points, true);
+    }
+    return path;
+  }();
+
+  /// Closed ring outlines first, then open chains: the stroke order.
+  late final List<Path> edges = [
+    for (final ring in closedRings) Path()..addPolygon(ring.points, true),
+    for (final points in openChains) Path()..addPolygon(points, false),
+  ];
+
+  double? _openWaterExtent;
+  List<Path> _openWater = const [];
+
+  List<Path> openWaterPolygons(double extent) {
+    if (_openWaterExtent == extent) return _openWater;
+    _openWaterExtent = extent;
+    return _openWater = [
+      for (final points in openChains) _openWaterPolygon(points, extent),
+    ];
+  }
+
+  static Offset _rightNormal(Offset delta) {
+    final length = delta.distance;
+    if (length == 0) return Offset.zero;
+    return Offset(delta.dy / length, -delta.dx / length);
+  }
+
+  /// Builds the water-side half-plane for an open coastline chain.
+  ///
+  /// A single offset at each endpoint works for a straight coast but folds
+  /// into the land side as soon as the chain bends. Offsetting every vertex
+  /// from its local tangent keeps the sea on OSM's directed right side around
+  /// bays, headlands, and viewport-clipped island fragments.
+  static Path _openWaterPolygon(List<Offset> coast, double extent) {
+    final offset = <Offset>[];
+    for (var i = 0; i < coast.length; i++) {
+      final tangent = i == 0
+          ? coast[1] - coast[0]
+          : i == coast.length - 1
+          ? coast[i] - coast[i - 1]
+          : coast[i + 1] - coast[i - 1];
+      offset.add(coast[i] + _rightNormal(tangent) * extent);
+    }
+    return Path()..addPolygon([...coast, ...offset.reversed], true);
+  }
+}
+
 class _CoastlinePainter extends CustomPainter {
   const _CoastlinePainter({
     required this.camera,
-    required this.closedRings,
-    required this.openChains,
+    required this.offset,
+    required this.geometry,
     required this.shader,
   });
 
   final MapCamera camera;
-  final List<CoastlineRing> closedRings;
-  final List<List<Offset>> openChains;
+
+  /// Translation from the geometry's pan frame to the screen.
+  final Offset offset;
+  final _CoastlineGeometry geometry;
   final ui.Shader? shader;
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (size.isEmpty || (closedRings.isEmpty && openChains.isEmpty)) return;
+    if (size.isEmpty || geometry.isEmpty) return;
     final paint = Paint()
       ..color = const Color(0xFF3987A3)
       ..filterQuality = FilterQuality.none;
     if (shader != null) paint.shader = shader;
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
 
-    final closedWater = Path()
-      ..fillType = PathFillType.evenOdd
-      ..addRect(Offset.zero & size);
-    var hasClosedRing = false;
-    final closedEdges = <Path>[];
-    for (final ring in closedRings) {
-      closedWater.addPolygon(ring.points, true);
-      closedEdges.add(Path()..addPolygon(ring.points, true));
-      hasClosedRing = true;
+    if (geometry.closedRings.isNotEmpty) {
+      // Water everywhere in the viewport except inside islands: an even-odd
+      // fill of the viewport rectangle plus every ring.
+      final closedWater = Path()
+        ..fillType = PathFillType.evenOdd
+        ..addRect(PanProjectionFrame.viewportIn(size, offset))
+        ..addPath(geometry.closedRingsPath, Offset.zero);
+      canvas.drawPath(closedWater, paint);
     }
-    if (hasClosedRing) canvas.drawPath(closedWater, paint);
-
-    final openEdges = <Path>[];
-    for (final points in openChains) {
-      final extent = size.longestSide * 3;
-      final coastEdge = Path()..addPolygon(points, false);
-      openEdges.add(coastEdge);
-      canvas.drawPath(_openWaterPolygon(points, extent), paint);
+    for (final water in geometry.openWaterPolygons(size.longestSide * 3)) {
+      canvas.drawPath(water, paint);
     }
-    for (final edge in [...closedEdges, ...openEdges]) {
+    for (final edge in geometry.edges) {
       _paintCoastEdge(canvas, edge);
     }
+    canvas.restore();
   }
 
   void _paintCoastEdge(Canvas canvas, Path edge) {
@@ -288,38 +380,13 @@ class _CoastlinePainter extends CustomPainter {
     );
   }
 
-  Offset _rightNormal(Offset delta) {
-    final length = delta.distance;
-    if (length == 0) return Offset.zero;
-    return Offset(delta.dy / length, -delta.dx / length);
-  }
-
-  /// Builds the water-side half-plane for an open coastline chain.
-  ///
-  /// A single offset at each endpoint works for a straight coast but folds
-  /// into the land side as soon as the chain bends. Offsetting every vertex
-  /// from its local tangent keeps the sea on OSM's directed right side around
-  /// bays, headlands, and viewport-clipped island fragments.
-  Path _openWaterPolygon(List<Offset> coast, double extent) {
-    final offset = <Offset>[];
-    for (var i = 0; i < coast.length; i++) {
-      final tangent = i == 0
-          ? coast[1] - coast[0]
-          : i == coast.length - 1
-          ? coast[i] - coast[i - 1]
-          : coast[i + 1] - coast[i - 1];
-      offset.add(coast[i] + _rightNormal(tangent) * extent);
-    }
-    return Path()..addPolygon([...coast, ...offset.reversed], true);
-  }
-
   @override
   bool shouldRepaint(_CoastlinePainter oldDelegate) =>
+      oldDelegate.offset != offset ||
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
-      oldDelegate.closedRings != closedRings ||
-      oldDelegate.openChains != openChains ||
+      oldDelegate.geometry != geometry ||
       oldDelegate.shader != shader;
 }
 

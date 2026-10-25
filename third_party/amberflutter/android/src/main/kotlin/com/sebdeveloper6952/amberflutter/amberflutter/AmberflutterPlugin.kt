@@ -1,13 +1,15 @@
 package com.sebdeveloper6952.amberflutter.amberflutter
 
 import android.app.Activity
-import android.content.ContentResolver
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ProviderInfo
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import com.sebdeveloper6952.amberflutter.amberflutter.models.*
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -27,7 +29,10 @@ class AmberflutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugi
   private lateinit var _channel : MethodChannel
   private lateinit var _context : Context
   private var _activity: Activity? = null
-  private lateinit var _result: MethodChannel.Result
+  private var _activityBinding: ActivityPluginBinding? = null
+
+  /// The Dart call waiting for Amber's activity result, if any.
+  private var _pendingResult: MethodChannel.Result? = null
 
   private val _intentRequestCode = 0
 
@@ -38,20 +43,19 @@ class AmberflutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugi
   }
 
   fun isPackageInstalled(context: Context, target: String): Boolean {
-    return context.packageManager.getInstalledApplications(0).find { info -> info.packageName == target } != null
+    return try {
+      context.packageManager.getPackageInfo(target, 0)
+      true
+    } catch (e: PackageManager.NameNotFoundException) {
+      false
+    }
   }
 
   override fun onMethodCall(call: MethodCall, result: Result) {
     if (call.method == nostrsignerUri) {
-      _result = MethodResultWrapper(result)
-
-      var paramsMap: HashMap<*, *>? = null
-      if (call.arguments != null && call.arguments is HashMap<*, *>) {
-        paramsMap = call.arguments as HashMap<*, *>
-      }
-
+      val paramsMap = call.arguments as? HashMap<*, *>
       if (paramsMap == null) {
-        Log.d("onMethodCall", "paramsMap is null")
+        result.error("invalid_arguments", "Missing signer request", null)
         return
       }
 
@@ -62,16 +66,21 @@ class AmberflutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugi
       val uriData = paramsMap[intentExtraKeyUriData] as? String ?: ""
       val permissions = paramsMap[intentExtraKeyPermissions] as? String ?: ""
 
-     val data = getDataFromContentResolver(
-       requestType.uppercase(),
-       arrayOf(uriData, pubKey, currentUser),
-       _context.contentResolver,
-     )
-     if (!data.isNullOrEmpty()) {
-       Log.d("onMethodCall", "content resolver got data")
-       _result.success(data)
-       return
-     }
+      val data = getDataFromContentResolver(
+        requestType.uppercase(),
+        arrayOf(uriData, pubKey, currentUser),
+        _context,
+      )
+      if (!data.isNullOrEmpty()) {
+        result.success(data)
+        return
+      }
+
+      val activity = _activity
+      if (activity == null) {
+        result.error("no_activity", "No foreground activity to start Amber", null)
+        return
+      }
 
       val intent = Intent(
         Intent.ACTION_VIEW,
@@ -79,58 +88,60 @@ class AmberflutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugi
           "$nostrsignerUri:$uriData"
         )
       )
+      // Only Amber may receive the request: an implicit `nostrsigner:`
+      // intent can be claimed by any installed app, and the URI carries the
+      // payload in clear (for nip44_encrypt, the database key itself).
+      intent.setPackage(amberPackageName)
 
       intent.putExtra(intentExtraKeyType, requestType)
       intent.putExtra(intentExtraKeyCurrentUser, currentUser)
       intent.putExtra(intentExtraKeyPubKey, pubKey)
       intent.putExtra(intentExtraKeyId, id)
       intent.putExtra(intentExtraKeyPermissions, permissions)
-      // intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
-      _activity?.startActivityForResult(
-        intent,
-        _intentRequestCode
-      )
+      // A previous request still waiting for Amber can no longer be matched
+      // to a result; answer it as cancelled instead of leaving it hanging.
+      _pendingResult?.success(HashMap<String, String?>())
+      _pendingResult = MethodResultWrapper(result)
+      try {
+        activity.startActivityForResult(
+          intent,
+          _intentRequestCode
+        )
+      } catch (e: ActivityNotFoundException) {
+        _pendingResult = null
+        result.error("signer_unavailable", "Amber is not installed", null)
+      }
     } else if (call.method == "isAppInstalled") {
-        var paramsMap: HashMap<*, *>? = null
-        if (call.arguments != null && call.arguments is HashMap<*, *>) {
-            paramsMap = call.arguments as HashMap<*, *>
-        }
-        if (paramsMap == null) {
+        val paramsMap = call.arguments as? HashMap<*, *>
+        val packageName = paramsMap?.get("packageName") as? String
+        if (packageName == null) {
+            result.error("invalid_arguments", "Missing package name", null)
             return
         }
-        var packageName: String? = paramsMap["packageName"] as? String ?: return
-        val isInstalled: Boolean = isPackageInstalled(_context, packageName!!)
-        result.success(isInstalled);
+        result.success(isPackageInstalled(_context, packageName))
     } else {
       result.notImplemented()
     }
   }
 
   override fun onActivityResult(requestCode: Int, resultCode: Int, intent: Intent?): Boolean {
-    if (requestCode == _intentRequestCode) {
-      if (resultCode == Activity.RESULT_OK && intent != null) {
-        val dataMap: HashMap<String, String?> = HashMap()
-        if (intent.hasExtra(intentExtraKeySignature)) {
-          val signature = intent.getStringExtra(intentExtraKeySignature)
-          dataMap[intentExtraKeySignature] = signature
-        }
-        if (intent.hasExtra(intentExtraKeyId)) {
-          val id = intent.getStringExtra(intentExtraKeyId)
-          dataMap[intentExtraKeyId] = id
-        }
-        if (intent.hasExtra(intentExtraKeyEvent)) {
-          val event = intent.getStringExtra(intentExtraKeyEvent)
-          dataMap[intentExtraKeyEvent] = event
-        }
-
-        _result.success(dataMap)
-
-        return true
-      }
+    if (requestCode != _intentRequestCode) return false
+    val pending = _pendingResult ?: return true
+    _pendingResult = null
+    val dataMap: HashMap<String, String?> = HashMap()
+    if (resultCode == Activity.RESULT_OK && intent != null) {
+      // Recent NIP-55 signers name the signature extra `result`.
+      val signature = intent.getStringExtra(intentExtraKeySignature)
+        ?: intent.getStringExtra(intentExtraKeyResult)
+      if (signature != null) dataMap[intentExtraKeySignature] = signature
+      intent.getStringExtra(intentExtraKeyId)?.let { dataMap[intentExtraKeyId] = it }
+      intent.getStringExtra(intentExtraKeyEvent)?.let { dataMap[intentExtraKeyEvent] = it }
     }
-
-    return false
+    // An empty map is how the Dart side recognises a cancelled request. Not
+    // answering a cancelled or failed result left the caller waiting forever.
+    pending.success(dataMap)
+    return true
   }
 
   override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -138,21 +149,33 @@ class AmberflutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugi
   }
 
   override fun onDetachedFromActivity() {
+    _activityBinding?.removeActivityResultListener(this)
+    _activityBinding = null
     _activity = null
+    // The activity that would receive Amber's answer is gone for good.
+    _pendingResult?.success(HashMap<String, String?>())
+    _pendingResult = null
   }
 
   override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-    _activity = binding.activity
-    binding.addActivityResultListener(this)
+    attachTo(binding)
   }
 
   override fun onAttachedToActivity(binding: ActivityPluginBinding) {
-    _activity = binding.activity
-    binding.addActivityResultListener(this)
+    attachTo(binding)
   }
 
   override fun onDetachedFromActivityForConfigChanges() {
+    // Keep a pending request: the recreated activity receives Amber's result.
+    _activityBinding?.removeActivityResultListener(this)
+    _activityBinding = null
     _activity = null
+  }
+
+  private fun attachTo(binding: ActivityPluginBinding) {
+    _activity = binding.activity
+    _activityBinding = binding
+    binding.addActivityResultListener(this)
   }
 
   /*
@@ -161,45 +184,53 @@ class AmberflutterPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugi
   private fun getDataFromContentResolver(
     type: String,
     uriData: Array<out String>,
-    resolver: ContentResolver,
+    context: Context,
   ): HashMap<String, String?>? {
+    val authority = "${amberPackageName}.$type"
+    // Content provider authorities are first come, first served: without
+    // Amber installed, another app could register this one and receive the
+    // request payload. Only query the provider when Amber owns it.
+    if (providerFor(context, authority)?.packageName != amberPackageName) {
+      return null
+    }
     try {
-      resolver.query(
-        Uri.parse("content://${amberPackageName}.$type"),
+      context.contentResolver.query(
+        Uri.parse("content://$authority"),
         uriData,
         null,
         null,
         null
       ).use {
-        if (it == null) {
-          Log.d("getDataFromResolver", "resolver query is NULL")
-          return null
+        if (it == null || !it.moveToFirst()) return null
+        val dataMap: HashMap<String, String?> = HashMap()
+        val signatureIndex = it.getColumnIndex(intentExtraKeySignature)
+          .takeIf { index -> index >= 0 }
+          ?: it.getColumnIndex(intentExtraKeyResult)
+        if (signatureIndex >= 0) {
+          dataMap[intentExtraKeySignature] = it.getString(signatureIndex)
         }
-        if (it.moveToFirst()) {
-          val dataMap: HashMap<String, String?> = HashMap()
-          val index = it.getColumnIndex("signature")
-          if (index < 0) {
-            Log.d("getDataFromResolver", "column 'signature' not found")
-          } else {
-            val signature = it.getString(index)
-            dataMap["signature"] = signature
-          }
-          val indexJson = it.getColumnIndex("event")
-          if (indexJson < 0) {
-            Log.d("getDataFromResolver", "column 'event' not found")
-          } else {
-            val eventJson = it.getString(indexJson)
-            dataMap["event"] = eventJson
-          }
-
-          return dataMap
+        val eventIndex = it.getColumnIndex(intentExtraKeyEvent)
+        if (eventIndex >= 0) {
+          dataMap[intentExtraKeyEvent] = it.getString(eventIndex)
         }
+        return dataMap
       }
     } catch (e: Exception) {
-      Log.d("contentResolver", e.message ?: "unknown error")
       return null
     }
-    return null
+  }
+
+  private fun providerFor(context: Context, authority: String): ProviderInfo? {
+    val packageManager = context.packageManager
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      packageManager.resolveContentProvider(
+        authority,
+        PackageManager.ComponentInfoFlags.of(0),
+      )
+    } else {
+      @Suppress("DEPRECATION")
+      packageManager.resolveContentProvider(authority, 0)
+    }
   }
 }
 

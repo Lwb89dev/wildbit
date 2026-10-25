@@ -821,16 +821,31 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _checkPoiProximity(GeoFix point) {
+    final position = point.position;
+    // A cheap degree window rejects almost every POI before the precise (and
+    // iterative) geodesic distance; this runs on every GNSS fix.
+    const latitudeWindow = _poiAnnounceRadiusMeters / 110000;
+    final longitudeWindow =
+        latitudeWindow /
+        math.max(.2, math.cos(position.latitude * math.pi / 180));
     for (final poi in _features.pois) {
+      // Mapped trees and unnamed POIs have nothing to announce: in a mapped
+      // grove they used to queue an empty "Nearby:" for every single tree.
+      if (poi.type == PoiType.tree || poi.name.trim().isEmpty) continue;
       if (_announcedPoiIds.contains(poi.id)) continue;
+      if ((poi.position.latitude - position.latitude).abs() > latitudeWindow ||
+          (poi.position.longitude - position.longitude).abs() >
+              longitudeWindow) {
+        continue;
+      }
       final distance = _poiDistance.as(
         LengthUnit.Meter,
-        point.position,
+        position,
         poi.position,
       );
       if (distance > _poiAnnounceRadiusMeters) continue;
       _announcedPoiIds.add(poi.id);
-      context.read<WildBitVoiceService>().announcePoiNearby(poi.name);
+      context.read<WildBitVoiceService>().announcePoiNearby(poi.name.trim());
     }
   }
 

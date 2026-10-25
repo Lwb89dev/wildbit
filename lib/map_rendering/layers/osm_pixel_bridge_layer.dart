@@ -3,13 +3,17 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' show LatLng;
 
+import '../../domain/entities/area_feature.dart';
+import '../../domain/entities/line_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../assets/map_visual_asset_warmup.dart';
 import '../composition/pixel_bridge_geometry.dart';
 import '../composition/pixel_bridge_placement.dart';
 import '../composition/osm_water_polygon_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Batched bridge pass. A bridge is drawn only for an explicit OSM bridge
@@ -33,6 +37,15 @@ class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
 
   List<ui.Image> _images = const [];
   Future<void>? _loading;
+  MapFeatureCollection? _bridgeSource;
+  List<LineFeature> _bridgeLines = const [];
+  // Bridges and water polygons projected into the current pan frame.
+  PanProjectionFrame? _frame;
+  final Map<AreaFeature, _BridgeWaterArea> _frameWater = {};
+  final Map<LineFeature, (Offset, Offset)> _frameEndpoints = {};
+  Offset _offset = Offset.zero;
+  int? _placementKey;
+  List<PixelBridgeGeometry> _geometries = const [];
 
   @override
   void didChangeDependencies() {
@@ -47,12 +60,22 @@ class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
   }
 
   void _ensureImages() {
-    if (!widget.features.lines.any(
-      (line) => line.metadata.hasConfirmedBridge,
-    )) {
-      return;
-    }
-    if (_images.isEmpty) _loading ??= _loadImages();
+    if (_images.isNotEmpty || _loading != null) return;
+    if (_confirmedBridges().isEmpty) return;
+    _loading = _loadImages();
+  }
+
+  /// Explicitly tagged bridge ways of the current snapshot.
+  List<LineFeature> _confirmedBridges() {
+    if (identical(_bridgeSource, widget.features)) return _bridgeLines;
+    _bridgeSource = widget.features;
+    _frameWater.clear();
+    _frameEndpoints.clear();
+    _placementKey = null;
+    return _bridgeLines = List.unmodifiable([
+      for (final line in widget.features.lines)
+        if (line.metadata.hasConfirmedBridge && line.points.length >= 2) line,
+    ]);
   }
 
   Future<void> _loadImages() async {
@@ -70,63 +93,71 @@ class _OsmPixelBridgeLayerState extends State<OsmPixelBridgeLayer> {
       MapVisualAssetWarmup.resolveImage(context, asset);
 
   @override
-  Widget build(BuildContext context) => RepaintBoundary(
-    child: IgnorePointer(
-      child: CustomPaint(
-        size: Size.infinite,
-        painter: _BridgePainter(
-          camera: MapCamera.of(context),
-          features: widget.features,
-          images: _images,
+  Widget build(BuildContext context) {
+    final camera = MapCamera.of(context);
+    final geometries = _geometriesFor(camera);
+    if (geometries.isEmpty) return const SizedBox.expand();
+    return RepaintBoundary(
+      child: IgnorePointer(
+        child: CustomPaint(
+          size: Size.infinite,
+          painter: _BridgePainter(
+            offset: _offset,
+            geometries: geometries,
+            images: _images,
+          ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
-class _BridgePainter extends CustomPainter {
-  const _BridgePainter({
-    required this.camera,
-    required this.features,
-    required this.images,
-  });
-
-  final MapCamera camera;
-  final MapFeatureCollection features;
-  final List<ui.Image> images;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final bridges = features.lines
-        .where(
-          (line) =>
-              line.metadata.hasConfirmedBridge &&
-              line.points.length >= 2 &&
-              MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds),
-        )
-        .toList(growable: false);
-    if (bridges.isEmpty) return;
-    final waterPolygons = [
-      for (final area in features.areas)
+  /// Bridge sprites in pan-frame coordinates. Placement depends on which
+  /// bridges and water polygons are in view, exactly as before; their
+  /// projections are reused while the camera only pans.
+  List<PixelBridgeGeometry> _geometriesFor(MapCamera camera) {
+    final bridges = [
+      for (final line in _confirmedBridges())
+        if (MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds))
+          line,
+    ];
+    if (bridges.isEmpty) return const [];
+    final waterAreas = [
+      for (final area in widget.features.areas)
         if (area.kind == MapFeatureKind.water &&
             MapRenderingBudget.areaMayBeVisible(area, camera.visibleBounds))
-          _BridgeWaterArea(
-            polygon: OsmWaterPolygonProjector.project(
-              area,
-              camera.latLngToScreenOffset,
-            ),
-            holes: [
-              for (final hole in area.holes)
-                OsmWaterPolygonProjector.projectRing(
-                  hole,
-                  camera.latLngToScreenOffset,
-                ),
-            ],
-          ),
+          area,
+    ];
+    final frame = _frame;
+    if (frame == null || !frame.accepts(camera)) {
+      _frame = PanProjectionFrame(camera);
+      _frameWater.clear();
+      _frameEndpoints.clear();
+      _placementKey = null;
+    }
+    final offset = _offset = _frame!.offsetFor(camera);
+    final placementKey = Object.hash(
+      Object.hashAll(bridges),
+      Object.hashAll(waterAreas),
+    );
+    if (placementKey == _placementKey) return _geometries;
+    Offset project(LatLng point) =>
+        PanProjectionFrame.project(camera, offset, point);
+    final waterPolygons = [
+      for (final area in waterAreas)
+        _frameWater[area] ??= _BridgeWaterArea(
+          polygon: OsmWaterPolygonProjector.project(area, project),
+          holes: [
+            for (final hole in area.holes)
+              OsmWaterPolygonProjector.projectRing(hole, project),
+          ],
+        ),
     ].where((area) => area.polygon.length >= 3).toList(growable: false);
+    final geometries = <PixelBridgeGeometry>[];
     for (final bridge in bridges) {
-      var start = camera.latLngToScreenOffset(bridge.points.first);
-      var end = camera.latLngToScreenOffset(bridge.points.last);
+      var (start, end) = _frameEndpoints[bridge] ??= (
+        project(bridge.points.first),
+        project(bridge.points.last),
+      );
       final crossingCenter = Offset.lerp(start, end, .5)!;
       final crossingDirection = end - start;
       PixelBridgePlacement? bestPlacement;
@@ -162,13 +193,37 @@ class _BridgePainter extends CustomPainter {
         end: end,
         zoom: camera.zoom,
       );
-      if (geometry == null) continue;
+      if (geometry != null) geometries.add(geometry);
+    }
+    _placementKey = placementKey;
+    return _geometries = List.unmodifiable(geometries);
+  }
+}
+
+class _BridgePainter extends CustomPainter {
+  const _BridgePainter({
+    required this.offset,
+    required this.geometries,
+    required this.images,
+  });
+
+  /// Translation from the geometries' pan frame to the screen.
+  final Offset offset;
+  final List<PixelBridgeGeometry> geometries;
+  final List<ui.Image> images;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
+    for (final geometry in geometries) {
       final bounds = Rect.fromCenter(
         center: geometry.center,
         width: geometry.width,
         height: geometry.height,
       ).inflate(geometry.height);
-      if (!bounds.overlaps(Offset.zero & size)) continue;
+      if (!bounds.overlaps(viewport)) continue;
       canvas.save();
       canvas.translate(geometry.center.dx, geometry.center.dy);
       canvas.rotate(geometry.angle);
@@ -205,6 +260,7 @@ class _BridgePainter extends CustomPainter {
       );
       canvas.restore();
     }
+    canvas.restore();
   }
 
   void _drawImage(Canvas canvas, ui.Image image, Rect target) {
@@ -218,10 +274,8 @@ class _BridgePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_BridgePainter oldDelegate) =>
-      oldDelegate.camera.center != camera.center ||
-      oldDelegate.camera.zoom != camera.zoom ||
-      oldDelegate.camera.rotation != camera.rotation ||
-      oldDelegate.features != features ||
+      oldDelegate.offset != offset ||
+      oldDelegate.geometries != geometries ||
       oldDelegate.images != images;
 }
 
