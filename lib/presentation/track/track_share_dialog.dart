@@ -16,6 +16,7 @@ import '../../app/localization/app_localizations.dart';
 void showTrackShareDialog(BuildContext context, SavedTrack track) {
   var publishing = false;
   var exactTrackConsent = false;
+  var hideEndpoints = false;
   final summary = TrackSummary.fromTrack(track);
   showDialog<void>(
     context: context,
@@ -75,6 +76,24 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
               ),
               const SizedBox(height: 4),
               CheckboxListTile(
+                value: hideEndpoints,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                dense: true,
+                title: Text(
+                  context.l10n.text('share.hideEndpoints'),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                subtitle: Text(
+                  context.l10n.text('share.hideEndpointsBody'),
+                  style: const TextStyle(fontSize: 12),
+                ),
+                onChanged: publishing
+                    ? null
+                    : (value) =>
+                          setDialogState(() => hideEndpoints = value ?? false),
+              ),
+              CheckboxListTile(
                 value: exactTrackConsent,
                 contentPadding: EdgeInsets.zero,
                 controlAffinity: ListTileControlAffinity.leading,
@@ -105,7 +124,7 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
                     try {
                       final result = await context
                           .read<TrackShareService>()
-                          .publish(track);
+                          .publish(track, hideEndpoints: hideEndpoints);
                       if (!context.mounted) return;
                       Navigator.pop(dialogContext);
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -119,9 +138,12 @@ void showTrackShareDialog(BuildContext context, SavedTrack track) {
                       );
                     } catch (e) {
                       if (!context.mounted) return;
+                      final message = e is TrackShareException
+                          ? context.l10n.text(e.messageKey)
+                          : '$e';
                       ScaffoldMessenger.of(
                         context,
-                      ).showSnackBar(SnackBar(content: Text('$e')));
+                      ).showSnackBar(SnackBar(content: Text(message)));
                       setDialogState(() => publishing = false);
                     }
                   },

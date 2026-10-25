@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../gpx/gpx_file_service.dart';
 import '../../location/location_service.dart';
 import '../../app/localization/app_localizations.dart';
 import '../../map_rendering/assets/map_visual_asset_warmup.dart';
@@ -46,6 +47,7 @@ class _RootShellState extends State<RootShell> {
     // prebuild: map GPU targets must remain releasable outside the Map tab.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(MapVisualAssetWarmup.warmup(context));
+      unawaited(GpxFileService.removeLegacyExports());
     });
   }
 

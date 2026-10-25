@@ -163,9 +163,17 @@ class WildBitVoiceService extends ChangeNotifier {
     await _player.setVolume(_volume);
     await _player.seek(Duration.zero);
     await _player.play();
-    await _player.playerStateStream.firstWhere(
-      (s) => s.processingState == ProcessingState.completed,
-    );
+    // play() also returns when playback is paused (a call, audio focus
+    // loss). Waiting for `completed` alone then hung this queue forever and
+    // silently dropped every later announcement of the session.
+    await _player.playerStateStream
+        .firstWhere(
+          (s) => !s.playing || s.processingState == ProcessingState.completed,
+        )
+        .timeout(
+          const Duration(seconds: 30),
+          onTimeout: () => _player.playerState,
+        );
   }
 
   Future<void> _precache(String text) async {

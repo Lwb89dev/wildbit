@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older. Only what Amber recovery on a new device needs:
+     preferences holding the Nostr-wrapped database key, and the database,
+     which is encrypted at rest. Secure-storage entries cannot be decrypted
+     on another device, and the voice model, eSpeak data and caches are
+     re-created locally; including them only exceeded the backup quota. -->
+<full-backup-content>
+    <include domain="sharedpref" path="FlutterSharedPreferences.xml" />
+    <include domain="root" path="app_flutter/wildbit.sqlite" />
+</full-backup-content>

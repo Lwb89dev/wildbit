@@ -1,6 +1,7 @@
 # WildBit
 
-**Version 0.1.3** — map/data reliability, rendering optimizations, and release polish.
+**Version 0.1.4** — privacy and security hardening, a faster pan renderer, and
+reliability fixes.
 
 WildBit is an experimental, privacy-first hiking application built with
 Flutter. Its centrepiece is a pixel-art geographic map generated from
@@ -223,6 +224,7 @@ label collision handling, and conservative POI metadata treatment.
 | Overpass | Viewport data and generic trail search | Public instances are subject to timeouts, rate limits, and outages |
 | Waymarked Trails | Curated hiking route search (Explore) | Public instance, queried directly and respectfully; degrades gracefully if unreachable |
 | Nominatim | City-name search (Explore) | Single user-initiated lookup per search, well within the public instance's rate policy |
+| Open-Meteo | Current weather for the map atmosphere | Sent automatically when the position changes area; the position is rounded to two decimals (about 1 km) and refreshed at most every 30 minutes per area |
 | Nostr relays | Voluntary track publishing | GPS tracks become public only after explicit confirmation; failed publishes queue encrypted on-device for retry |
 | Hugging Face | Optional Kokoro model download | Files are checked for size and SHA-256 before use |
 
@@ -245,7 +247,20 @@ label collision handling, and conservative POI metadata treatment.
   the app is closed with nothing recording.
 - A manual, unencrypted-in-transit backup export is available; the database
   file itself stays encrypted, so sharing it is safe even to an untrusted
-  destination.
+  destination. Export copies (and GPX exports) are staged in the app cache
+  and deleted once the share sheet has taken them.
+- Deleting a track removes its GPS points; SQLite `secure_delete` overwrites
+  the freed pages, so deleted hikes do not survive in exported backups.
+- Android backup is limited to the preferences (including the Nostr-wrapped
+  key used for recovery) and the encrypted database. Secure-storage entries,
+  the voice model and caches are never included.
+- Explore search results are cached in the encrypted database, not in
+  preferences.
+- Release builds write no diagnostics to the system log; native location code
+  never logs coordinates.
+- Amber requests are addressed explicitly to Amber, and a signed track event
+  is verified (author, content, tags, id and signature) before publishing.
+  The share dialog can hide the first and last 200 m of a track.
 - The voice model is optional and inference runs locally after download.
 
 ## Known limitations
@@ -263,6 +278,9 @@ label collision handling, and conservative POI metadata treatment.
   filtering; on real hardware this tends to overstate total ascent.
 - `GeoBounds` (cache-coverage checks) does not yet handle the antimeridian
   correctly; this has no practical effect for the current Italy/Alps focus.
+- Android skips a cloud backup larger than 25 MB. The map cache lives in the
+  same encrypted database as the tracks, so a large offline cache can prevent
+  the backup that Amber recovery relies on.
 
 ## Technical documentation
 

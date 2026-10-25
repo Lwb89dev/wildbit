@@ -14,6 +14,7 @@ import '../../domain/enums/poi_type.dart';
 import '../assets/map_visual_asset_warmup.dart';
 import '../composition/map_geometry_rules.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/projected_depth_order.dart';
 import '../performance/map_rendering_budget.dart';
 
@@ -73,9 +74,12 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   List<_TreePaintItem> _mappedTrees = const [];
   List<_GeneratedTree> _generatedTrees = const [];
   List<_GeneratedRock> _generatedRocks = const [];
+  // Candidates projected into the current pan frame. A drag only changes
+  // [_itemsOffset]; zoom, rotation or a quality tier start a new frame.
   List<_ForegroundPaintItem>? _projectedItems;
-  int? _projectedViewKey;
-  _TreeProjectionCache? _projectionCache;
+  PanProjectionFrame? _frame;
+  double? _frameQuality;
+  Offset _itemsOffset = Offset.zero;
   late int _featureSignature;
   Future<void>? _loading;
 
@@ -89,12 +93,14 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
   @override
   void didUpdateWidget(covariant OsmPixelTreeLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Every camera frame rebuilds this widget with the same collection;
+    // only a new collection can change the geographic signature.
+    if (identical(oldWidget.features, widget.features)) return;
     final signature = _signature(widget.features);
     if (signature == _featureSignature) return;
     _featureSignature = signature;
     _projectedItems = null;
-    _projectedViewKey = null;
-    _projectionCache = null;
+    _frame = null;
     _rebuildCandidates();
     _ensureImages();
   }
@@ -224,11 +230,12 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
     // slices below reuse this immutable list, avoiding duplicate geographic
     // projections and full sorts during every frame.
     final projectedItems = _projectItemsForCamera(camera);
+    final offset = _itemsOffset;
     final pivotBoundary = pivot == null
         ? null
         : ProjectedDepthOrder.firstInFrontIndex(
             projectedItems,
-            camera.latLngToScreenOffset(pivot),
+            camera.latLngToScreenOffset(pivot) - offset,
             (item) => item.foot,
           );
     return LayoutBuilder(
@@ -236,7 +243,13 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
         width: constraints.maxWidth,
         height: constraints.maxHeight,
         child: middleChild == null
-            ? _paintSlice(camera, projectedItems, null, ProjectedDepthSlice.all)
+            ? _paintSlice(
+                camera,
+                offset,
+                projectedItems,
+                null,
+                ProjectedDepthSlice.all,
+              )
             : pivot == null
             // Bit must be mounted before it can publish its first interpolated
             // ground anchor. Until then, keep all objects behind him.
@@ -245,6 +258,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
                 children: [
                   _paintSlice(
                     camera,
+                    offset,
                     projectedItems,
                     null,
                     ProjectedDepthSlice.all,
@@ -257,6 +271,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
                 children: [
                   _paintSlice(
                     camera,
+                    offset,
                     projectedItems,
                     pivotBoundary,
                     ProjectedDepthSlice.behindPivot,
@@ -264,6 +279,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
                   middleChild,
                   _paintSlice(
                     camera,
+                    offset,
                     projectedItems,
                     pivotBoundary,
                     ProjectedDepthSlice.inFrontOfPivot,
@@ -276,6 +292,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
 
   Widget _paintSlice(
     MapCamera camera,
+    Offset offset,
     List<_ForegroundPaintItem> items,
     int? pivotBoundary,
     ProjectedDepthSlice slice,
@@ -284,6 +301,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
       child: CustomPaint(
         painter: _ForegroundObjectPainter(
           camera: camera,
+          offset: offset,
           items: items,
           treeImages: _treeImages,
           rockImage: _rockImage,
@@ -379,62 +397,21 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
 
   List<_ForegroundPaintItem> _projectItemsForCamera(MapCamera camera) {
     final quality = MapRenderingBudget.decorativeQuality;
-    final bounds = camera.visibleBounds;
-    final viewKey = Object.hash(
-      camera.center.latitude,
-      camera.center.longitude,
-      camera.zoom,
-      camera.rotation,
-      bounds.south,
-      bounds.west,
-      bounds.north,
-      bounds.east,
-      _featureSignature,
-      quality,
-    );
-    if (_projectedItems != null && _projectedViewKey == viewKey) {
-      return _projectedItems!;
-    }
-    final cached = _projectionCache;
+    final frame = _frame;
     // Tree and rock anchors are selected before projection and are not
     // viewport-culled. A plain pan therefore preserves their complete order
-    // and only changes every screen coordinate by the same delta. Reusing
-    // that transform avoids hundreds of geographic projections and an
-    // O(n log n) depth sort per pointer tick on a dense forest.
-    if (cached != null && cached.canTranslateTo(camera, quality)) {
-      final anchorScreen = camera.latLngToScreenOffset(cached.anchor);
-      final delta = anchorScreen - cached.anchorScreen;
-      final List<_ForegroundPaintItem> translated = delta == Offset.zero
-          ? cached.items
-          : List<_ForegroundPaintItem>.unmodifiable([
-              for (final item in cached.items) item.shifted(delta),
-            ]);
-      _projectionCache = cached.shifted(
-        camera: camera,
-        quality: quality,
-        anchorScreen: anchorScreen,
-        items: translated,
-      );
-      _projectedItems = translated;
-      _projectedViewKey = viewKey;
-      return translated;
+    // and only translates every screen coordinate by the same delta: keep the
+    // projected, depth-sorted forest and paint it with a canvas translation
+    // instead of re-projecting and re-sorting hundreds of sprites per frame.
+    if (_projectedItems == null ||
+        frame == null ||
+        !frame.accepts(camera) ||
+        _frameQuality != quality) {
+      _frame = PanProjectionFrame(camera);
+      _frameQuality = quality;
+      _projectedItems = List.unmodifiable(_projectItems(camera));
     }
-    final projected = _projectItems(camera);
-    _projectedViewKey = viewKey;
-    _projectedItems = List.unmodifiable(projected);
-    if (projected.isEmpty) {
-      _projectionCache = null;
-    } else {
-      final anchor = projected.first.position;
-      _projectionCache = _TreeProjectionCache(
-        zoom: camera.zoom,
-        rotation: camera.rotation,
-        quality: quality,
-        anchor: anchor,
-        anchorScreen: camera.latLngToScreenOffset(anchor),
-        items: _projectedItems!,
-      );
-    }
+    _itemsOffset = _frame!.offsetFor(camera);
     return _projectedItems!;
   }
 
@@ -653,6 +630,7 @@ class _OsmPixelTreeLayerState extends State<OsmPixelTreeLayer> {
 class _ForegroundObjectPainter extends CustomPainter {
   const _ForegroundObjectPainter({
     required this.camera,
+    required this.offset,
     required this.items,
     required this.treeImages,
     required this.rockImage,
@@ -662,6 +640,9 @@ class _ForegroundObjectPainter extends CustomPainter {
   });
 
   final MapCamera camera;
+
+  /// Translation from the items' pan frame to the screen.
+  final Offset offset;
   final List<_ForegroundPaintItem> items;
   final List<ui.Image> treeImages;
   final ui.Image? rockImage;
@@ -688,20 +669,24 @@ class _ForegroundObjectPainter extends CustomPainter {
           start = boundary;
       }
     }
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     final atlas = spriteAtlas;
     if (atlas != null) {
-      _paintAtlasBatch(canvas, size, start, end, atlas, paint);
+      _paintAtlasBatch(canvas, viewport, start, end, atlas, paint);
+      canvas.restore();
       return;
     }
     for (var index = start; index < end; index++) {
       final item = items[index];
       switch (item.kind) {
         case _ForegroundKind.rock:
-          _paintRock(canvas, size, item.foot, item.seed, paint);
+          _paintRock(canvas, viewport, item.foot, item.seed, paint);
         case _ForegroundKind.tree:
           _paintTree(
             canvas,
-            size,
+            viewport,
             item.foot,
             item.seed,
             paint,
@@ -709,17 +694,17 @@ class _ForegroundObjectPainter extends CustomPainter {
           );
       }
     }
+    canvas.restore();
   }
 
   void _paintAtlasBatch(
     Canvas canvas,
-    Size canvasSize,
+    Rect viewport,
     int start,
     int end,
     ui.Image atlas,
     Paint paint,
   ) {
-    final viewport = Offset.zero & canvasSize;
     final transforms = <ui.RSTransform>[];
     final sourceRects = <Rect>[];
 
@@ -835,7 +820,7 @@ class _ForegroundObjectPainter extends CustomPainter {
 
   void _paintTree(
     Canvas canvas,
-    Size canvasSize,
+    Rect viewport,
     Offset foot,
     int seed,
     Paint paint, {
@@ -850,7 +835,7 @@ class _ForegroundObjectPainter extends CustomPainter {
       32 * scale,
       48 * scale,
     );
-    if (!target.overlaps(Offset.zero & canvasSize)) return;
+    if (!target.overlaps(viewport)) return;
     if (treeImages.isEmpty) {
       final trunk = Paint()..color = const Color(0xFF5B3D2A);
       final crown = Paint()..color = const Color(0xFF3D722F);
@@ -876,7 +861,7 @@ class _ForegroundObjectPainter extends CustomPainter {
 
   void _paintRock(
     Canvas canvas,
-    Size canvasSize,
+    Rect viewport,
     Offset foot,
     int seed,
     Paint imagePaint,
@@ -890,7 +875,7 @@ class _ForegroundObjectPainter extends CustomPainter {
       width,
       height,
     );
-    if (!target.inflate(2).overlaps(Offset.zero & canvasSize)) return;
+    if (!target.inflate(2).overlaps(viewport)) return;
 
     canvas.drawOval(
       Rect.fromCenter(
@@ -942,6 +927,7 @@ class _ForegroundObjectPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ForegroundObjectPainter oldDelegate) =>
+      oldDelegate.offset != offset ||
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
@@ -1020,52 +1006,4 @@ class _ForegroundPaintItem {
   final int seed;
   final double scaleMultiplier;
   final Offset foot;
-
-  _ForegroundPaintItem shifted(Offset delta) => _ForegroundPaintItem._(
-    kind,
-    position,
-    seed,
-    scaleMultiplier,
-    foot + delta,
-  );
-}
-
-/// Camera-space cache for a complete depth-sorted forest candidate set.
-/// Translation is safe only when scale and bearing are unchanged; zoom and
-/// rotation immediately fall back to the exact geographic projection.
-class _TreeProjectionCache {
-  const _TreeProjectionCache({
-    required this.zoom,
-    required this.rotation,
-    required this.quality,
-    required this.anchor,
-    required this.anchorScreen,
-    required this.items,
-  });
-
-  final double zoom;
-  final double rotation;
-  final double quality;
-  final LatLng anchor;
-  final Offset anchorScreen;
-  final List<_ForegroundPaintItem> items;
-
-  bool canTranslateTo(MapCamera camera, double nextQuality) =>
-      zoom == camera.zoom &&
-      rotation == camera.rotation &&
-      quality == nextQuality;
-
-  _TreeProjectionCache shifted({
-    required MapCamera camera,
-    required double quality,
-    required Offset anchorScreen,
-    required List<_ForegroundPaintItem> items,
-  }) => _TreeProjectionCache(
-    zoom: camera.zoom,
-    rotation: camera.rotation,
-    quality: quality,
-    anchor: anchor,
-    anchorScreen: anchorScreen,
-    items: items,
-  );
 }

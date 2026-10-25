@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:wildbit/domain/entities/line_feature.dart';
@@ -30,64 +31,97 @@ void main() {
     expect(OsmLineProjector.seedFor(trail), OsmLineProjector.seedFor(trail));
   });
 
-  test('reuses projected geometry within one camera view', () {
+  MapCamera camera({
+    LatLng center = const LatLng(46.005, 11.01),
+    double zoom = 15,
+    double rotation = 0,
+  }) => MapCamera(
+    crs: const Epsg3857(),
+    center: center,
+    zoom: zoom,
+    rotation: rotation,
+    nonRotatedSize: const Size(400, 800),
+  );
+
+  test('reuses projected geometry while the camera only pans', () {
     final cache = ProjectedLineCache();
-    cache.beginView('view-a');
+    final start = camera(rotation: 30);
+    cache.beginCamera(start);
     final first = cache.project(
       trail,
-      (point) => Offset(point.longitude * 10, point.latitude * -10),
+      start,
       minimumDistancePixels: 2,
       maximumPoints: 64,
     );
+    final panned = camera(center: const LatLng(46.006, 11.012), rotation: 30);
+    final offset = cache.beginCamera(panned);
     final second = cache.project(
       trail,
-      (point) => Offset(point.longitude * 10, point.latitude * -10),
+      panned,
       minimumDistancePixels: 2,
       maximumPoints: 64,
     );
+
     expect(identical(first, second), isTrue);
-    expect(cache.length, 1);
     expect(cache.hits, 1);
     expect(cache.misses, 1);
     expect(cache.hitRate, .5);
+    // Frame coordinates plus the pan offset are the exact screen position.
+    for (final (index, point) in trail.points.indexed) {
+      final expected = panned.latLngToScreenOffset(point);
+      final actual = second.points[index] + offset;
+      expect(actual.dx, closeTo(expected.dx, 1e-6));
+      expect(actual.dy, closeTo(expected.dy, 1e-6));
+    }
   });
 
-  test('invalidates projection when the exact camera view changes', () {
+  test('starts a new projection frame when zoom or rotation changes', () {
     final cache = ProjectedLineCache();
-    cache.beginView('camera:45.0000001:9.0000001:15.5:0');
+    final start = camera();
+    cache.beginCamera(start);
     final first = cache.project(
       trail,
-      (point) => Offset(point.longitude * 10, point.latitude * -10),
+      start,
       minimumDistancePixels: 2,
       maximumPoints: 64,
     );
-    cache.beginView('camera:45.0000002:9.0000001:15.5:0');
-    final second = cache.project(
-      trail,
-      (point) => Offset(point.longitude * 10 + 1, point.latitude * -10),
-      minimumDistancePixels: 2,
-      maximumPoints: 64,
-    );
-
-    expect(identical(first, second), isFalse);
-    expect(second.first.dx, first.first.dx + 1);
+    for (final next in [camera(zoom: 15.5), camera(rotation: 10)]) {
+      final offset = cache.beginCamera(next);
+      final projected = cache.project(
+        trail,
+        next,
+        minimumDistancePixels: 2,
+        maximumPoints: 64,
+      );
+      expect(identical(first, projected), isFalse);
+      expect(offset, Offset.zero);
+      expect(
+        projected.points.first,
+        next.latLngToScreenOffset(trail.points.first),
+      );
+    }
   });
 
   test('releases only transient projections on memory pressure', () {
     final cache = ProjectedLineCache();
-    cache.beginView('camera-a');
-    cache.project(
-      trail,
-      (point) => Offset(point.longitude * 10, point.latitude * -10),
-      minimumDistancePixels: 2,
-      maximumPoints: 64,
-    );
+    final start = camera();
+    cache.beginCamera(start);
+    cache.project(trail, start, minimumDistancePixels: 2, maximumPoints: 64);
 
     cache.clearTransient();
 
     expect(cache.length, 0);
     // Statistics are diagnostic history, not geometry retained by the cache.
     expect(cache.misses, 1);
+  });
+
+  test('splits dash patterns continuously across vertices', () {
+    final segments = ProjectedLine.dashSegments(
+      const [Offset(0, 0), Offset(4, 0), Offset(10, 0)],
+      3,
+      2,
+    );
+    expect(segments, [0, 0, 3, 0, 5, 0, 8, 0]);
   });
 
   test('caps pathological geometry while preserving endpoints', () {

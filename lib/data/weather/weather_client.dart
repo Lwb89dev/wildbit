@@ -30,8 +30,11 @@ class OpenMeteoClient implements WeatherClient {
   Future<WeatherSnapshot> fetchCurrent(LatLng position) async {
     final uri = Uri.parse(_endpoint).replace(
       queryParameters: {
-        'latitude': position.latitude.toStringAsFixed(4),
-        'longitude': position.longitude.toStringAsFixed(4),
+        // A third-party service only needs the weather cell, not the hiker:
+        // two decimals (about 1 km) match the finest forecast grids, where
+        // four decimals disclosed the position to about 11 m.
+        'latitude': position.latitude.toStringAsFixed(2),
+        'longitude': position.longitude.toStringAsFixed(2),
         'current': [
           'temperature_2m',
           'precipitation',

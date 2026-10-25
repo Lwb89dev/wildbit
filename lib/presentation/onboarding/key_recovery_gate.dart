@@ -64,8 +64,21 @@ class _KeyRecoveryGateState extends State<KeyRecoveryGate> {
   }
 
   Future<void> _startFresh() async {
-    final key = await widget.keyManager.resolveKey();
-    if (mounted) widget.onKeyResolved(key);
+    setState(() {
+      _recovering = true;
+      _error = null;
+    });
+    try {
+      // The wrapped key belongs to the database that cannot be opened now;
+      // resolveKey moves that file aside before creating a new key.
+      await widget.keyManager.discardRecoveryData();
+      final key = await widget.keyManager.resolveKey();
+      if (mounted) widget.onKeyResolved(key);
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _recovering = false);
+    }
   }
 
   @override

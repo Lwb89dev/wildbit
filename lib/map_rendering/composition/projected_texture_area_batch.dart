@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart' show LatLng;
 import '../../domain/entities/area_feature.dart';
 import '../assets/map_visual_asset_warmup.dart';
 import 'osm_water_polygon_projector.dart';
+import 'pan_projection_frame.dart';
 
 /// Description of one geographic polygon in a batched texture pass.
 class ProjectedTextureAreaSpec {
@@ -53,17 +54,21 @@ class ProjectedTextureAreaBatch extends StatefulWidget {
 }
 
 class _ProjectedTextureAreaBatchState extends State<ProjectedTextureAreaBatch> {
-  // Translating Path objects has a fixed allocation cost. It only wins once
-  // an OSM land-cover batch is sufficiently complex; small local parks and
-  // the lightweight profile fixture are faster to project directly.
-  static const _translationReuseMinimumVertices = 160;
   final Map<String, ui.Image> _images = {};
   // Replace this map atomically as assets arrive. Its stable identity between
   // image loads lets CustomPaint reject unrelated parent rebuilds (GPS, Bit or
   // UI state changes) instead of repainting all terrain polygons.
   Map<String, ui.Shader> _shaders = const {};
   final Set<String> _loading = {};
-  _TextureProjectionCache? _projectionCache;
+  // Polygons projected into the current pan frame, keyed by OSM feature.
+  // A pan paints them through one canvas translation; areas entering the
+  // viewport are projected on demand.
+  PanProjectionFrame? _frame;
+  final Map<AreaFeature, _FramePolygon?> _framePolygons = {};
+  Offset _offset = Offset.zero;
+  List<ProjectedTextureAreaSpec>? _lastSpecs;
+  Offset? _lastOffset;
+  List<_ProjectedTextureArea> _lastAreas = const [];
 
   @override
   void didChangeDependencies() {
@@ -119,107 +124,53 @@ class _ProjectedTextureAreaBatchState extends State<ProjectedTextureAreaBatch> {
   }
 
   @override
-  Widget build(BuildContext context) => RepaintBoundary(
-    child: CustomPaint(
-      size: Size.infinite,
-      painter: _TextureAreaBatchPainter(
-        camera: widget.camera,
-        areas: _projectAreasForCurrentView(),
-        shaders: widget.textureEnabled ? _shaders : const <String, ui.Shader>{},
+  Widget build(BuildContext context) {
+    final areas = _projectAreasForCurrentView();
+    return RepaintBoundary(
+      child: CustomPaint(
+        size: Size.infinite,
+        painter: _TextureAreaBatchPainter(
+          camera: widget.camera,
+          offset: _offset,
+          areas: areas,
+          shaders: widget.textureEnabled
+              ? _shaders
+              : const <String, ui.Shader>{},
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   List<_ProjectedTextureArea> _projectAreasForCurrentView() {
-    final signature = _areaSignature(widget.areas);
-    final anchor = _anchorFor(widget.areas);
-    final vertexCount = _vertexCount(widget.areas);
-    final cached = _projectionCache;
-    if (cached != null && cached.areaSignature == signature) {
-      if (cached.matches(widget.camera, anchor)) return cached.areas;
-      // A pan at fixed zoom and rotation is a plain screen-space
-      // translation in FlutterMap's projected plane. Reusing the already
-      // clipped paths avoids rebuilding hundreds of polygon vertices while
-      // preserving the exact textured material (so forest/rock areas do not
-      // flash into a flat fallback while the finger is down).
-      if (anchor != null &&
-          vertexCount >= _translationReuseMinimumVertices &&
-          cached.canTranslateTo(widget.camera)) {
-        final nextAnchor = widget.camera.latLngToScreenOffset(anchor);
-        final delta = nextAnchor - cached.anchorScreen;
-        if (delta != Offset.zero) {
-          _projectionCache = cached.shifted(
-            delta: delta,
-            anchorScreen: nextAnchor,
-            camera: widget.camera,
-          );
-        }
-        return _projectionCache!.areas;
-      }
+    final camera = widget.camera;
+    final frame = _frame;
+    // Polygons are keyed by feature and kept across data updates at the same
+    // zoom; bound the cache so a long pan or follow session cannot keep every
+    // polygon it ever passed.
+    if (frame == null ||
+        !frame.accepts(camera) ||
+        _framePolygons.length > 4 * widget.areas.length + 64) {
+      _frame = PanProjectionFrame(camera);
+      _framePolygons.clear();
+      _lastSpecs = null;
     }
-    final projected = _projectAreas(widget.camera);
-    _projectionCache = _TextureProjectionCache(
-      areaSignature: signature,
-      zoom: widget.camera.zoom,
-      rotation: widget.camera.rotation,
-      anchorScreen: anchor == null
-          ? Offset.zero
-          : widget.camera.latLngToScreenOffset(anchor),
-      areas: List.unmodifiable(projected),
-    );
-    return _projectionCache!.areas;
-  }
-
-  int _areaSignature(List<ProjectedTextureAreaSpec> areas) => Object.hashAll([
-    for (final spec in areas)
-      Object.hash(
-        identityHashCode(spec.area),
-        spec.asset,
-        spec.fallbackColor,
-        spec.borderColor,
-        spec.borderWidth,
-      ),
-  ]);
-
-  LatLng? _anchorFor(List<ProjectedTextureAreaSpec> areas) {
-    for (final spec in areas) {
-      if (spec.area.ring.isNotEmpty) return spec.area.ring.first;
+    final offset = _offset = _frame!.offsetFor(camera);
+    // A rebuild without camera motion (GPS, Bit or controls) keeps the list
+    // identity, so CustomPaint can skip repainting every terrain polygon.
+    if (offset == _lastOffset && _sameSpecs(_lastSpecs, widget.areas)) {
+      return _lastAreas;
     }
-    return null;
-  }
-
-  int _vertexCount(List<ProjectedTextureAreaSpec> areas) => areas.fold(
-    0,
-    (count, spec) =>
-        count +
-        spec.area.ring.length +
-        spec.area.holes.fold<int>(0, (sum, hole) => sum + hole.length),
-  );
-
-  List<_ProjectedTextureArea> _projectAreas(MapCamera camera) {
     final projected = <_ProjectedTextureArea>[];
     for (final spec in widget.areas) {
-      final polygon = OsmWaterPolygonProjector.project(
-        spec.area,
-        camera.latLngToScreenOffset,
-      );
-      if (polygon.length < 3) continue;
-      final holes = [
-        for (final hole in spec.area.holes)
-          OsmWaterPolygonProjector.projectRing(
-            hole,
-            camera.latLngToScreenOffset,
-          ),
-      ];
-      final path = Path()..fillType = PathFillType.evenOdd;
-      path.addPolygon(polygon, true);
-      for (final hole in holes) {
-        if (hole.length >= 3) path.addPolygon(hole, true);
-      }
+      final area = spec.area;
+      final polygon = _framePolygons.containsKey(area)
+          ? _framePolygons[area]
+          : _framePolygons[area] = _projectPolygon(area, camera, offset);
+      if (polygon == null) continue;
       projected.add(
         _ProjectedTextureArea(
-          path: path,
-          bounds: path.getBounds(),
+          path: polygon.path,
+          bounds: polygon.bounds,
           asset: spec.asset,
           fallbackColor: spec.fallbackColor,
           borderColor: spec.borderColor,
@@ -227,69 +178,81 @@ class _ProjectedTextureAreaBatchState extends State<ProjectedTextureAreaBatch> {
         ),
       );
     }
-    return projected;
+    _lastSpecs = widget.areas;
+    _lastOffset = offset;
+    return _lastAreas = List.unmodifiable(projected);
+  }
+
+  static bool _sameSpecs(
+    List<ProjectedTextureAreaSpec>? previous,
+    List<ProjectedTextureAreaSpec> next,
+  ) {
+    if (previous == null || previous.length != next.length) return false;
+    for (var index = 0; index < next.length; index++) {
+      final a = previous[index];
+      final b = next[index];
+      if (!identical(a.area, b.area) ||
+          a.asset != b.asset ||
+          a.fallbackColor != b.fallbackColor ||
+          a.borderColor != b.borderColor ||
+          a.borderWidth != b.borderWidth) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static _FramePolygon? _projectPolygon(
+    AreaFeature area,
+    MapCamera camera,
+    Offset offset,
+  ) {
+    Offset project(LatLng point) =>
+        PanProjectionFrame.project(camera, offset, point);
+    final polygon = OsmWaterPolygonProjector.project(area, project);
+    if (polygon.length < 3) return null;
+    final path = Path()..fillType = PathFillType.evenOdd;
+    path.addPolygon(polygon, true);
+    for (final hole in area.holes) {
+      final projectedHole = OsmWaterPolygonProjector.projectRing(hole, project);
+      if (projectedHole.length >= 3) path.addPolygon(projectedHole, true);
+    }
+    return _FramePolygon(path, path.getBounds());
   }
 }
 
-/// Cached projected area paths. Pure pans retain their scale and rotation, so
-/// the whole batch can be shifted from a single stable geographic anchor.
-/// Zooms, rotations and changes to the visible area set still reproject from
-/// source geometry immediately.
-class _TextureProjectionCache {
-  const _TextureProjectionCache({
-    required this.areaSignature,
-    required this.zoom,
-    required this.rotation,
-    required this.anchorScreen,
-    required this.areas,
-  });
+class _FramePolygon {
+  const _FramePolygon(this.path, this.bounds);
 
-  final int areaSignature;
-  final double zoom;
-  final double rotation;
-  final Offset anchorScreen;
-  final List<_ProjectedTextureArea> areas;
-
-  bool matches(MapCamera camera, LatLng? anchor) =>
-      anchor != null &&
-      zoom == camera.zoom &&
-      rotation == camera.rotation &&
-      anchorScreen == camera.latLngToScreenOffset(anchor);
-
-  bool canTranslateTo(MapCamera camera) =>
-      zoom == camera.zoom && rotation == camera.rotation;
-
-  _TextureProjectionCache shifted({
-    required Offset delta,
-    required Offset anchorScreen,
-    required MapCamera camera,
-  }) => _TextureProjectionCache(
-    areaSignature: areaSignature,
-    zoom: camera.zoom,
-    rotation: camera.rotation,
-    anchorScreen: anchorScreen,
-    areas: List.unmodifiable([for (final area in areas) area.shifted(delta)]),
-  );
+  final Path path;
+  final Rect bounds;
 }
 
 class _TextureAreaBatchPainter extends CustomPainter {
   const _TextureAreaBatchPainter({
     required this.camera,
+    required this.offset,
     required this.areas,
     required this.shaders,
   });
 
   final MapCamera camera;
+
+  /// Translation from the polygons' pan frame to the screen.
+  final Offset offset;
   final List<_ProjectedTextureArea> areas;
   final Map<String, ui.Shader> shaders;
 
   @override
   void paint(Canvas canvas, Size size) {
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     for (final spec in areas) {
       final path = spec.path;
       final bounds = spec.bounds;
-      if (bounds.isEmpty || !bounds.overlaps(Offset.zero & size)) continue;
-      final visible = bounds.intersect(Offset.zero & size);
+      if (bounds.isEmpty || !bounds.overlaps(viewport)) continue;
+      final visible = bounds.intersect(viewport);
       if (visible.isEmpty) continue;
       final shader = shaders[spec.asset];
       if (shader == null) {
@@ -325,10 +288,12 @@ class _TextureAreaBatchPainter extends CustomPainter {
         );
       }
     }
+    canvas.restore();
   }
 
   @override
   bool shouldRepaint(_TextureAreaBatchPainter oldDelegate) =>
+      oldDelegate.offset != offset ||
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
@@ -352,13 +317,4 @@ class _ProjectedTextureArea {
   final Color fallbackColor;
   final Color? borderColor;
   final double borderWidth;
-
-  _ProjectedTextureArea shifted(Offset delta) => _ProjectedTextureArea(
-    path: path.shift(delta),
-    bounds: bounds.shift(delta),
-    asset: asset,
-    fallbackColor: fallbackColor,
-    borderColor: borderColor,
-    borderWidth: borderWidth,
-  );
 }

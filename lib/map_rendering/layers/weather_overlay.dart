@@ -1,13 +1,17 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' show LatLng;
 
+import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../../domain/entities/weather_snapshot.dart';
 import '../../services/weather/weather_service.dart';
+import '../composition/pan_projection_frame.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Screen-space weather effects. It is deliberately one painter and one
@@ -58,7 +62,7 @@ class WeatherOverlay extends StatelessWidget {
 /// Only mapped building footprints are shadowed here; trees and rocks already
 /// have grounding shadows in their sprite painter. At lower quality levels
 /// the number of footprints is capped instead of removing map evidence.
-class WeatherShadowLayer extends StatelessWidget {
+class WeatherShadowLayer extends StatefulWidget {
   const WeatherShadowLayer({
     super.key,
     required this.features,
@@ -69,27 +73,93 @@ class WeatherShadowLayer extends StatelessWidget {
   final WeatherService weather;
 
   @override
+  State<WeatherShadowLayer> createState() => _WeatherShadowLayerState();
+}
+
+class _WeatherShadowLayerState extends State<WeatherShadowLayer> {
+  MapFeatureCollection? _source;
+  List<AreaFeature> _buildings = const [];
+  // Footprint outlines projected into the current pan frame.
+  PanProjectionFrame? _frame;
+  final Map<AreaFeature, ui.Path> _framePaths = {};
+
+  List<AreaFeature> _sourceBuildings() {
+    if (identical(_source, widget.features)) return _buildings;
+    _source = widget.features;
+    _framePaths.clear();
+    return _buildings = List.unmodifiable([
+      for (final area in widget.features.areas)
+        if (area.kind == MapFeatureKind.building && area.ring.length >= 3) area,
+    ]);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
     return ListenableBuilder(
-      listenable: weather,
+      listenable: widget.weather,
       builder: (context, _) {
-        final snapshot = weather.snapshot;
+        final snapshot = widget.weather.snapshot;
         if (snapshot == null || !snapshot.isDay || snapshot.directLight < .14) {
           return const SizedBox.expand();
         }
+        final frame = _frame;
+        if (frame == null || !frame.accepts(camera)) {
+          _frame = PanProjectionFrame(camera);
+          _framePaths.clear();
+        }
+        final offset = _frame!.offsetFor(camera);
+        final quality = MapRenderingBudget.decorativeQuality;
+        // Cap the buildings actually in view; the first footprints of the
+        // whole collection used to take the budget even when off-screen.
+        final limit = (70 * quality.clamp(.3, 1.0)).round();
+        final paths = <ui.Path>[];
+        for (final building in _sourceBuildings()) {
+          if (paths.length >= limit) break;
+          if (!MapRenderingBudget.areaMayBeVisible(
+            building,
+            camera.visibleBounds,
+          )) {
+            continue;
+          }
+          paths.add(
+            _framePaths[building] ??= _footprintPath(
+              building.ring,
+              camera,
+              offset,
+            ),
+          );
+        }
+        if (paths.isEmpty) return const SizedBox.expand();
         return IgnorePointer(
           child: CustomPaint(
             painter: WeatherShadowPainter(
-              camera: camera,
-              features: features,
+              offset: offset,
+              footprints: paths,
               snapshot: snapshot,
-              quality: MapRenderingBudget.decorativeQuality,
+              quality: quality,
             ),
           ),
         );
       },
     );
+  }
+
+  static ui.Path _footprintPath(
+    List<LatLng> ring,
+    MapCamera camera,
+    Offset offset,
+  ) {
+    final path = ui.Path();
+    for (var index = 0; index < ring.length; index++) {
+      final point = PanProjectionFrame.project(camera, offset, ring[index]);
+      if (index == 0) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
+    return path..close();
   }
 }
 
@@ -265,43 +335,35 @@ class WeatherOverlayPainter extends CustomPainter {
 
 class WeatherShadowPainter extends CustomPainter {
   const WeatherShadowPainter({
-    required this.camera,
-    required this.features,
+    required this.offset,
+    required this.footprints,
     required this.snapshot,
     required this.quality,
   });
 
-  final MapCamera camera;
-  final MapFeatureCollection features;
+  /// Translation from the footprints' pan frame to the screen.
+  final Offset offset;
+  final List<ui.Path> footprints;
   final WeatherSnapshot snapshot;
   final double quality;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final buildings = features.areas
-        .where((area) => area.kind == MapFeatureKind.building)
-        .take((70 * quality.clamp(.3, 1.0)).round());
-    if (buildings.isEmpty) return;
+    if (footprints.isEmpty) return;
     final shadow = Paint()
       ..color = Colors.black.withValues(alpha: .075 * snapshot.directLight)
       ..isAntiAlias = false;
     final sunAngle = _sunAngle(snapshot.fetchedAt);
-    final offset = Offset(math.cos(sunAngle) * 11, math.sin(sunAngle) * 7 + 4);
-    for (final building in buildings) {
-      if (building.ring.length < 3) continue;
-      final path = ui.Path();
-      for (var index = 0; index < building.ring.length; index++) {
-        final point =
-            camera.latLngToScreenOffset(building.ring[index]) + offset;
-        if (index == 0) {
-          path.moveTo(point.dx, point.dy);
-        } else {
-          path.lineTo(point.dx, point.dy);
-        }
-      }
-      path.close();
-      canvas.drawPath(path, shadow);
+    final sunOffset = Offset(
+      math.cos(sunAngle) * 11,
+      math.sin(sunAngle) * 7 + 4,
+    );
+    canvas.save();
+    canvas.translate(offset.dx + sunOffset.dx, offset.dy + sunOffset.dy);
+    for (final footprint in footprints) {
+      canvas.drawPath(footprint, shadow);
     }
+    canvas.restore();
   }
 
   double _sunAngle(DateTime time) {
@@ -311,10 +373,8 @@ class WeatherShadowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant WeatherShadowPainter oldDelegate) =>
-      oldDelegate.camera.center != camera.center ||
-      oldDelegate.camera.zoom != camera.zoom ||
-      oldDelegate.camera.rotation != camera.rotation ||
-      oldDelegate.features != features ||
+      oldDelegate.offset != offset ||
+      !listEquals(oldDelegate.footprints, footprints) ||
       oldDelegate.snapshot != snapshot ||
       oldDelegate.quality != quality;
 }

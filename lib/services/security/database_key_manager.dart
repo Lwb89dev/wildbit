@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../domain/entities/nostr_identity.dart';
+import '../../storage/database.dart';
 import '../nostr/amber_signer_service.dart';
 
 /// Owns the local database's encryption key.
@@ -18,7 +19,15 @@ import '../nostr/amber_signer_service.dart';
 /// makes exporting the encrypted database file a meaningful backup.
 class DatabaseKeyManager {
   DatabaseKeyManager({FlutterSecureStorage? secureStorage})
-    : _secureStorage = secureStorage ?? const FlutterSecureStorage();
+    : _secureStorage =
+          secureStorage ??
+          // The plugin default wipes *all* entries on any decryption error.
+          // A transient Keystore failure would then destroy the only copy of
+          // the database key and, on the next launch, a new key would make
+          // every recorded hike unreadable. Errors must surface instead.
+          const FlutterSecureStorage(
+            aOptions: AndroidOptions(resetOnError: false),
+          );
 
   static const _cachedKeyStorageKey = 'wildbit.db_key_v1';
   static const _wrappedKeyPrefsKey = 'wildbit.db_key_wrapped_v1';
@@ -30,13 +39,25 @@ class DatabaseKeyManager {
 
   /// Returns the raw hex-encoded database key, generating and caching one
   /// on first run. Safe to call before any Nostr identity is linked.
+  ///
+  /// Only for startup, before the database is opened: when a new key has to
+  /// be generated, a database file left without its key is moved aside.
   Future<String> resolveKey() async {
-    final cached = await _secureStorage.read(key: _cachedKeyStorageKey);
+    final cached = await currentKey;
     if (cached != null) return cached;
 
+    await WildBitDatabaseFile.archiveUnreadable();
     final generated = _generateHexKey();
     await _secureStorage.write(key: _cachedKeyStorageKey, value: generated);
     return generated;
+  }
+
+  /// The key of the database in use, or null if secure storage has none.
+  /// Never generates a key: wrapping a fresh one for recovery would not
+  /// match the database that is already open.
+  Future<String?> get currentKey async {
+    final key = await _secureStorage.read(key: _cachedKeyStorageKey);
+    return key != null && WildBitDatabase.isValidKey(key) ? key : null;
   }
 
   Future<NostrIdentity?> get linkedIdentity async {
@@ -54,7 +75,8 @@ class DatabaseKeyManager {
     NostrIdentity identity,
     AmberSignerService signer,
   ) async {
-    final key = await resolveKey();
+    final key = await currentKey;
+    if (key == null) return false;
     final wrapped = await signer.encryptToSelf(key, identity.pubkeyHex);
     if (wrapped == null) return false;
 
@@ -96,9 +118,20 @@ class DatabaseKeyManager {
     final pubkey = prefs.getString(_linkedPubkeyPrefsKey);
     if (wrapped == null || pubkey == null) return null;
     final recovered = await signer.decryptToSelf(wrapped, pubkey);
-    if (recovered == null) return null;
+    // The plaintext comes from another app and ends up in a PRAGMA: accept
+    // only a key in the exact format this class generates.
+    if (recovered == null || !WildBitDatabase.isValidKey(recovered)) {
+      return null;
+    }
     await _secureStorage.write(key: _cachedKeyStorageKey, value: recovered);
     return recovered;
+  }
+
+  /// Drops a wrapped key that no longer matches the database, after the user
+  /// chose to start over instead of recovering it.
+  Future<void> discardRecoveryData() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_wrappedKeyPrefsKey);
   }
 
   Future<void> unlinkNostrIdentity() async {

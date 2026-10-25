@@ -14,6 +14,7 @@ import '../../domain/enums/poi_type.dart';
 import '../assets/map_visual_asset_warmup.dart';
 import '../composition/map_geometry_rules.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/projected_depth_order.dart';
 import '../performance/map_rendering_budget.dart';
 
@@ -94,6 +95,9 @@ class _OsmPixelForegroundVegetationLayerState
   }
 
   void _refreshCache() {
+    // Called for both depth slices on every camera frame. The collection is
+    // immutable, so only a new identity can change the candidates.
+    if (_cache.isSource(widget.features)) return;
     final signature = _signature(widget.features);
     if (_cache.matches(widget.features, signature)) return;
     _cache._reset(widget.features, signature, _composeCandidates());
@@ -161,6 +165,7 @@ class _OsmPixelForegroundVegetationLayerState
   Widget build(BuildContext context) {
     final camera = MapCamera.of(context);
     final projectedCandidates = _projectForCamera(camera);
+    final offset = _cache._offset;
     Widget paintForPivot(LatLng? pivot) {
       // Before the first GPS fix, retain exactly one complete pass and avoid
       // duplicating every shrub in the foreground slice.
@@ -171,7 +176,7 @@ class _OsmPixelForegroundVegetationLayerState
           ? null
           : ProjectedDepthOrder.firstInFrontIndex(
               projectedCandidates,
-              camera.latLngToScreenOffset(pivot),
+              camera.latLngToScreenOffset(pivot) - offset,
               (candidate) => candidate.foot,
             );
       return IgnorePointer(
@@ -181,6 +186,7 @@ class _OsmPixelForegroundVegetationLayerState
               size: constraints.biggest,
               painter: _VegetationPainter(
                 camera: camera,
+                offset: offset,
                 projectedCandidates: projectedCandidates,
                 images: _images,
                 spriteAtlas: _spriteAtlas,
@@ -204,57 +210,54 @@ class _OsmPixelForegroundVegetationLayerState
 
   List<_ProjectedVegetationPoint> _projectForCamera(MapCamera camera) {
     _refreshCache();
-    final bounds = camera.visibleBounds;
-    final viewKey = Object.hash(
-      _cache._featureSignature,
-      camera.center.latitude,
-      camera.center.longitude,
-      camera.zoom,
-      camera.rotation,
-      bounds.south,
-      bounds.west,
-      bounds.north,
-      bounds.east,
-      MapRenderingBudget.decorativeQuality,
-    );
-    final cached = _cache._projectedCandidates;
-    if (cached != null && _cache._projectedViewKey == viewKey) return cached;
-    // Candidate generation is deterministic and happens only when the OSM
-    // viewport changes.  Keep that same deterministic rank in the cache so
-    // camera motion can take a prefix instead of allocating and sorting the
-    // entire shrub list for every pan/pinch frame.
-    final count = MapRenderingBudget.decorativeLodCount(
-      camera.zoom,
-      overview: 56,
-      close: _cache._candidates.length,
-    );
-    final budgeted = count >= _cache._candidates.length
-        ? _cache._candidates
-        : _cache._candidates.sublist(0, count);
-    final projected =
-        [
-          for (final point in budgeted)
-            _ProjectedVegetationPoint(
-              point: point,
-              foot: camera.latLngToScreenOffset(point.position),
-            ),
-        ]..sort((a, b) {
-          final depth = ProjectedDepthOrder.compare(
-            firstFoot: a.foot,
-            secondFoot: b.foot,
-          );
-          if (depth != 0) return depth;
-          final latitude = a.point.position.latitude.compareTo(
-            b.point.position.latitude,
-          );
-          if (latitude != 0) return latitude;
-          return a.point.position.longitude.compareTo(
-            b.point.position.longitude,
-          );
-        });
-    _cache._projectedViewKey = viewKey;
-    _cache._projectedCandidates = List.unmodifiable(projected);
-    return _cache._projectedCandidates!;
+    final cache = _cache;
+    final quality = MapRenderingBudget.decorativeQuality;
+    final frame = cache._frame;
+    // Shrubs are not viewport-culled before painting, so a plain pan keeps
+    // the same budgeted set and depth order: reuse it by translation.
+    if (cache._projectedCandidates == null ||
+        frame == null ||
+        !frame.accepts(camera) ||
+        cache._frameQuality != quality) {
+      cache._frame = PanProjectionFrame(camera);
+      cache._frameQuality = quality;
+      // Candidate generation is deterministic and happens only when the OSM
+      // viewport changes.  Keep that same deterministic rank in the cache so
+      // camera motion can take a prefix instead of allocating and sorting the
+      // entire shrub list for every pan/pinch frame.
+      final count = MapRenderingBudget.decorativeLodCount(
+        camera.zoom,
+        overview: 56,
+        close: cache._candidates.length,
+      );
+      final budgeted = count >= cache._candidates.length
+          ? cache._candidates
+          : cache._candidates.sublist(0, count);
+      final projected =
+          [
+            for (final point in budgeted)
+              _ProjectedVegetationPoint(
+                point: point,
+                foot: camera.latLngToScreenOffset(point.position),
+              ),
+          ]..sort((a, b) {
+            final depth = ProjectedDepthOrder.compare(
+              firstFoot: a.foot,
+              secondFoot: b.foot,
+            );
+            if (depth != 0) return depth;
+            final latitude = a.point.position.latitude.compareTo(
+              b.point.position.latitude,
+            );
+            if (latitude != 0) return latitude;
+            return a.point.position.longitude.compareTo(
+              b.point.position.longitude,
+            );
+          });
+      cache._projectedCandidates = List.unmodifiable(projected);
+    }
+    cache._offset = cache._frame!.offsetFor(camera);
+    return cache._projectedCandidates!;
   }
 
   List<_VegetationPoint> _composeCandidates() {
@@ -440,8 +443,12 @@ class ForegroundVegetationRenderCache {
   MapFeatureCollection? _source;
   int? _featureSignature;
   List<_VegetationPoint> _candidates = const [];
-  int? _projectedViewKey;
+  PanProjectionFrame? _frame;
+  double? _frameQuality;
+  Offset _offset = Offset.zero;
   List<_ProjectedVegetationPoint>? _projectedCandidates;
+
+  bool isSource(MapFeatureCollection source) => identical(_source, source);
 
   bool matches(MapFeatureCollection source, int signature) =>
       identical(_source, source) && _featureSignature == signature;
@@ -454,7 +461,7 @@ class ForegroundVegetationRenderCache {
     _source = source;
     _featureSignature = signature;
     _candidates = candidates;
-    _projectedViewKey = null;
+    _frame = null;
     _projectedCandidates = null;
   }
 
@@ -462,7 +469,7 @@ class ForegroundVegetationRenderCache {
   /// the potentially larger screen-space projection when Android asks the
   /// process to trim memory, then rebuild it from the same candidates.
   void clearTransient() {
-    _projectedViewKey = null;
+    _frame = null;
     _projectedCandidates = null;
   }
 }
@@ -492,6 +499,7 @@ class _ProjectedVegetationPoint {
 class _VegetationPainter extends CustomPainter {
   const _VegetationPainter({
     required this.camera,
+    required this.offset,
     required this.projectedCandidates,
     required this.images,
     required this.spriteAtlas,
@@ -500,6 +508,9 @@ class _VegetationPainter extends CustomPainter {
   });
 
   final MapCamera camera;
+
+  /// Translation from the candidates' pan frame to the screen.
+  final Offset offset;
   final List<_ProjectedVegetationPoint> projectedCandidates;
   final List<ui.Image> images;
   final ui.Image? spriteAtlas;
@@ -531,9 +542,13 @@ class _VegetationPainter extends CustomPainter {
           start = boundary;
       }
     }
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     final atlas = spriteAtlas;
     if (atlas != null) {
-      _paintAtlasBatch(canvas, size, start, end, atlas, scale, paint);
+      _paintAtlasBatch(canvas, viewport, start, end, atlas, scale, paint);
+      canvas.restore();
       return;
     }
     for (var index = start; index < end; index++) {
@@ -541,12 +556,7 @@ class _VegetationPainter extends CustomPainter {
       final point = projected.point;
       final foot = projected.foot;
       final dimension = 25 * scale * point.scaleMultiplier;
-      if (foot.dx < -dimension ||
-          foot.dy < -dimension ||
-          foot.dx > size.width + dimension ||
-          foot.dy > size.height + dimension) {
-        continue;
-      }
+      if (_outside(foot, viewport, dimension)) continue;
       if (images.isEmpty) {
         canvas.drawCircle(
           foot.translate(0, -dimension * .32),
@@ -575,11 +585,18 @@ class _VegetationPainter extends CustomPainter {
         paint,
       );
     }
+    canvas.restore();
   }
+
+  static bool _outside(Offset foot, Rect viewport, double dimension) =>
+      foot.dx < viewport.left - dimension ||
+      foot.dy < viewport.top - dimension ||
+      foot.dx > viewport.right + dimension ||
+      foot.dy > viewport.bottom + dimension;
 
   void _paintAtlasBatch(
     Canvas canvas,
-    Size size,
+    Rect viewport,
     int start,
     int end,
     ui.Image atlas,
@@ -588,18 +605,12 @@ class _VegetationPainter extends CustomPainter {
   ) {
     final transforms = <ui.RSTransform>[];
     final sourceRects = <Rect>[];
-    final viewport = Offset.zero & size;
     for (var index = start; index < end; index++) {
       final projected = projectedCandidates[index];
       final point = projected.point;
       final foot = projected.foot;
       final dimension = 25 * scale * point.scaleMultiplier;
-      if (foot.dx < -dimension ||
-          foot.dy < -dimension ||
-          foot.dx > size.width + dimension ||
-          foot.dy > size.height + dimension) {
-        continue;
-      }
+      if (_outside(foot, viewport, dimension)) continue;
       final atlasRects = _OsmPixelForegroundVegetationLayerState._atlasRects;
       final variant = point.variant % atlasRects.length;
       final source = atlasRects[variant];
@@ -633,6 +644,7 @@ class _VegetationPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_VegetationPainter oldDelegate) =>
+      oldDelegate.offset != offset ||
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||

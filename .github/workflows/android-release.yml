@@ -9,17 +9,21 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      WILDBIT_RELEASE_STORE_PASSWORD: ${{ secrets.WILDBIT_RELEASE_STORE_PASSWORD }}
-      WILDBIT_RELEASE_KEY_ALIAS: ${{ secrets.WILDBIT_RELEASE_KEY_ALIAS }}
-      WILDBIT_RELEASE_KEY_PASSWORD: ${{ secrets.WILDBIT_RELEASE_KEY_PASSWORD }}
+    # Signing secrets are scoped to the steps that need them. As job-level
+    # environment they were readable by every step, including third-party
+    # actions and the dependency build hooks run by `flutter pub get`.
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # Actions are pinned to the commit their major tag pointed to: a moved
+        # tag cannot inject code into a job that handles signing material.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing pushes from this job; do not leave the token in .git.
+          persist-credentials: false
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           cache: true
@@ -43,13 +47,21 @@ jobs:
         run: flutter test
 
       - name: Release preflight
+        env:
+          WILDBIT_RELEASE_STORE_PASSWORD: ${{ secrets.WILDBIT_RELEASE_STORE_PASSWORD }}
+          WILDBIT_RELEASE_KEY_ALIAS: ${{ secrets.WILDBIT_RELEASE_KEY_ALIAS }}
+          WILDBIT_RELEASE_KEY_PASSWORD: ${{ secrets.WILDBIT_RELEASE_KEY_PASSWORD }}
         run: dart run tool/check_release.dart --strict
 
       - name: Build signed Android App Bundle
+        env:
+          WILDBIT_RELEASE_STORE_PASSWORD: ${{ secrets.WILDBIT_RELEASE_STORE_PASSWORD }}
+          WILDBIT_RELEASE_KEY_ALIAS: ${{ secrets.WILDBIT_RELEASE_KEY_ALIAS }}
+          WILDBIT_RELEASE_KEY_PASSWORD: ${{ secrets.WILDBIT_RELEASE_KEY_PASSWORD }}
         run: flutter build appbundle --release
 
       - name: Upload App Bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wildbit-android-release
           path: build/app/outputs/bundle/release/app-release.aab

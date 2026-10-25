@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' show LatLng;
 
 import '../../domain/entities/area_feature.dart';
 import '../../domain/entities/map_feature_collection.dart';
@@ -12,6 +13,7 @@ import '../../domain/enums/map_feature_kind.dart';
 import '../assets/map_visual_asset_warmup.dart';
 import '../composition/map_geometry_rules.dart';
 import '../composition/osm_water_polygon_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/water_edge_composer.dart';
 import '../performance/map_rendering_budget.dart';
 
@@ -46,6 +48,16 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
   Map<String, ui.Shader> _shaders = const {};
   final Set<String> _loading = {};
   final Map<AreaFeature, WaterEdgeMaterial> _materialCache = {};
+  // Water polygons of the current snapshot, largest first. The previous
+  // per-frame sort recomputed both polygon areas inside every comparison.
+  MapFeatureCollection? _waterSource;
+  List<AreaFeature> _waterLargestFirst = const [];
+  // Polygons projected into the current pan frame. A drag reuses them with a
+  // canvas translation; zoom, rotation or a quality tier start a new frame.
+  PanProjectionFrame? _frame;
+  double? _frameQuality;
+  final Map<AreaFeature, _WaterAreaRender?> _frameRenders = {};
+  Offset _renderOffset = Offset.zero;
   int? _renderViewKey;
   List<_WaterAreaRender>? _cachedRenders;
 
@@ -63,6 +75,7 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
       // the user pans/zooms, but discard it as soon as a new OSM snapshot
       // arrives so a refreshed coastline cannot inherit stale bank material.
       _materialCache.clear();
+      _frameRenders.clear();
       _renderViewKey = null;
       _cachedRenders = null;
     }
@@ -70,11 +83,9 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
   }
 
   void _ensureImages() {
-    if (!widget.features.areas.any(
-      (area) => area.kind == MapFeatureKind.water,
-    )) {
-      return;
-    }
+    // Runs on every camera rebuild: check the cheap state before scanning.
+    if (_images.length == _assets.length) return;
+    if (_waterAreasLargestFirst().isEmpty) return;
     for (final asset in _assets) {
       if (_images.containsKey(asset) || !_loading.add(asset)) continue;
       _loadImage(asset);
@@ -132,6 +143,7 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
     final camera = MapCamera.of(context);
     final renders = _rendersForCamera(camera);
     if (renders.isEmpty) return const SizedBox.expand();
+    final offset = _renderOffset;
     final scale = _scaleForZoom(camera.zoom);
     final showAmbientDetails =
         MapRenderingBudget.ambientDetailEnabled &&
@@ -149,6 +161,7 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
               size: Size.infinite,
               painter: _WaterBasePainter(
                 renders: renders,
+                offset: offset,
                 // Do not trade the static water material for a solid fallback
                 // while the user is panning. Apart from the visible blue
                 // flash this made a moving river expose a different surface
@@ -170,6 +183,7 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
                   size: Size.infinite,
                   painter: _WaterAmbientPainter(
                     renders: renders,
+                    offset: offset,
                     phase: MapRenderingBudget.ambientClock.phase,
                     scale: scale,
                   ),
@@ -183,7 +197,7 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
 
   List<_WaterAreaRender> _rendersForCamera(MapCamera camera) {
     final bounds = camera.visibleBounds;
-    final scale = _scaleForZoom(camera.zoom);
+    final quality = MapRenderingBudget.decorativeQuality;
     final viewKey = Object.hash(
       identityHashCode(widget.features),
       camera.center.latitude,
@@ -194,68 +208,81 @@ class _OsmPixelWaterLayerState extends State<OsmPixelWaterLayer> {
       bounds.west,
       bounds.north,
       bounds.east,
-      scale,
-      MapRenderingBudget.decorativeQuality,
+      quality,
     );
     final cached = _cachedRenders;
     if (cached != null && _renderViewKey == viewKey) return cached;
-    final waterAreas =
-        widget.features.areas
-            .where(
-              (area) =>
-                  area.kind == MapFeatureKind.water &&
-                  MapRenderingBudget.areaMayBeVisible(
-                    area,
-                    camera.visibleBounds,
-                  ),
-            )
-            .toList()
-          ..sort(
-            (a, b) => MapGeometryRules.polygonArea(
-              b.ring,
-            ).compareTo(MapGeometryRules.polygonArea(a.ring)),
-          );
+    final frame = _frame;
+    if (frame == null || !frame.accepts(camera) || _frameQuality != quality) {
+      _frame = PanProjectionFrame(camera);
+      _frameQuality = quality;
+      _frameRenders.clear();
+    }
+    final offset = _renderOffset = _frame!.offsetFor(camera);
+    final scale = _scaleForZoom(camera.zoom);
     final renders = <_WaterAreaRender>[];
-    for (final area in waterAreas) {
-      final polygon = OsmWaterPolygonProjector.project(
-        area,
-        camera.latLngToScreenOffset,
-      );
-      if (polygon.length < 3) continue;
-      final material = _materialFor(area);
-      final seed = OsmWaterPolygonProjector.seedFor(area);
-      final projectedHoles = [
-        for (final hole in area.holes)
-          OsmWaterPolygonProjector.projectRing(
-            hole,
-            camera.latLngToScreenOffset,
-          ),
-      ];
-      final path = Path()..fillType = PathFillType.evenOdd;
-      path.addPolygon(polygon, true);
-      for (final hole in projectedHoles) {
-        if (hole.length >= 3) path.addPolygon(hole, true);
-      }
-      renders.add(
-        _WaterAreaRender(
-          path: path,
-          bounds: path.getBounds(),
-          material: material,
-          seed: seed,
-          edges: _shorePlacements(
-            area: area,
-            outer: polygon,
-            holes: projectedHoles,
-            material: material,
-            seed: seed,
-            scale: scale,
-          ),
-        ),
-      );
+    for (final area in _waterAreasLargestFirst()) {
+      if (!MapRenderingBudget.areaMayBeVisible(area, bounds)) continue;
+      final render = _frameRenders.containsKey(area)
+          ? _frameRenders[area]
+          : _frameRenders[area] = _renderInFrame(area, camera, offset, scale);
+      if (render != null) renders.add(render);
     }
     _renderViewKey = viewKey;
     _cachedRenders = List.unmodifiable(renders);
     return _cachedRenders!;
+  }
+
+  List<AreaFeature> _waterAreasLargestFirst() {
+    if (identical(_waterSource, widget.features)) return _waterLargestFirst;
+    _waterSource = widget.features;
+    final water = [
+      for (final area in widget.features.areas)
+        if (area.kind == MapFeatureKind.water)
+          (area: area, size: MapGeometryRules.polygonArea(area.ring)),
+    ]..sort((a, b) => b.size.compareTo(a.size));
+    return _waterLargestFirst = List.unmodifiable([
+      for (final entry in water) entry.area,
+    ]);
+  }
+
+  /// Projects one water polygon, its holes and shore modules into the
+  /// current pan frame. Returns null for rings that collapse on screen.
+  _WaterAreaRender? _renderInFrame(
+    AreaFeature area,
+    MapCamera camera,
+    Offset offset,
+    double scale,
+  ) {
+    Offset project(LatLng point) =>
+        PanProjectionFrame.project(camera, offset, point);
+    final polygon = OsmWaterPolygonProjector.project(area, project);
+    if (polygon.length < 3) return null;
+    final material = _materialFor(area);
+    final seed = OsmWaterPolygonProjector.seedFor(area);
+    final projectedHoles = [
+      for (final hole in area.holes)
+        OsmWaterPolygonProjector.projectRing(hole, project),
+    ];
+    final path = Path()..fillType = PathFillType.evenOdd;
+    path.addPolygon(polygon, true);
+    for (final hole in projectedHoles) {
+      if (hole.length >= 3) path.addPolygon(hole, true);
+    }
+    return _WaterAreaRender(
+      path: path,
+      bounds: path.getBounds(),
+      material: material,
+      seed: seed,
+      edges: _shorePlacements(
+        area: area,
+        outer: polygon,
+        holes: projectedHoles,
+        material: material,
+        seed: seed,
+        scale: scale,
+      ),
+    );
   }
 
   double _scaleForZoom(double zoom) =>
@@ -395,6 +422,7 @@ class _WaterAreaRender {
 class _WaterBasePainter extends CustomPainter {
   const _WaterBasePainter({
     required this.renders,
+    required this.offset,
     required this.images,
     required this.shaders,
     required this.scale,
@@ -402,6 +430,9 @@ class _WaterBasePainter extends CustomPainter {
   });
 
   final List<_WaterAreaRender> renders;
+
+  /// Translation from the renders' pan frame to the screen.
+  final Offset offset;
   final Map<String, ui.Image> images;
   final Map<String, ui.Shader> shaders;
   final double scale;
@@ -409,13 +440,16 @@ class _WaterBasePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     // All water fills are composed first. Shore modules can then form one
     // clean foreground edge without being covered by a later pond polygon.
     for (final render in renders) {
       final path = render.path;
       final bounds = render.bounds;
-      if (bounds.isEmpty || !bounds.overlaps(Offset.zero & size)) continue;
-      final visible = bounds.intersect(Offset.zero & size);
+      if (bounds.isEmpty || !bounds.overlaps(viewport)) continue;
+      final visible = bounds.intersect(viewport);
       if (visible.isEmpty) continue;
       final asset =
           'assets/map/mock/terrain/water_still_${render.seed.abs() % 3 + 1}.png';
@@ -484,6 +518,7 @@ class _WaterBasePainter extends CustomPainter {
         );
       }
     }
+    canvas.restore();
   }
 
   void _paintContinuousShore(
@@ -576,6 +611,7 @@ class _WaterBasePainter extends CustomPainter {
   @override
   bool shouldRepaint(_WaterBasePainter oldDelegate) =>
       oldDelegate.renders != renders ||
+      oldDelegate.offset != offset ||
       oldDelegate.images != images ||
       oldDelegate.shaders != shaders ||
       oldDelegate.scale != scale ||
@@ -587,33 +623,40 @@ class _WaterBasePainter extends CustomPainter {
 class _WaterAmbientPainter extends CustomPainter {
   const _WaterAmbientPainter({
     required this.renders,
+    required this.offset,
     required this.phase,
     required this.scale,
   });
 
   final List<_WaterAreaRender> renders;
+  final Offset offset;
   final double phase;
   final double scale;
 
   @override
   void paint(Canvas canvas, Size size) {
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     for (final render in renders) {
-      if (!render.bounds.overlaps(Offset.zero & size)) continue;
+      if (!render.bounds.overlaps(viewport)) continue;
       _paintWaterHighlights(
         canvas,
         render.path,
         render.bounds,
         render.seed,
-        size,
+        viewport,
         phase,
         scale,
       );
     }
+    canvas.restore();
   }
 
   @override
   bool shouldRepaint(_WaterAmbientPainter oldDelegate) =>
       oldDelegate.renders != renders ||
+      oldDelegate.offset != offset ||
       oldDelegate.phase != phase ||
       oldDelegate.scale != scale;
 }
@@ -623,11 +666,11 @@ void _paintWaterHighlights(
   Path path,
   Rect bounds,
   int seed,
-  Size canvasSize,
+  Rect viewport,
   double phase,
   double scale,
 ) {
-  final visible = bounds.intersect(Offset.zero & canvasSize);
+  final visible = bounds.intersect(viewport);
   if (visible.isEmpty) return;
   final spacingY = 25 * scale;
   final spacingX = 54 * scale;

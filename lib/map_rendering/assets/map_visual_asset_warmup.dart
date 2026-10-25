@@ -81,7 +81,10 @@ abstract final class MapVisualAssetWarmup {
     listener = ImageStreamListener(
       (image, _) {
         stream.removeListener(listener);
-        completer.complete(image.image);
+        // The stream owns its ImageInfo handle and disposes it when the image
+        // cache evicts the entry (for example on Android memory pressure).
+        // Layers keep painting this image long after, so hold our own handle.
+        completer.complete(image.image.clone());
       },
       onError: (error, stackTrace) {
         stream.removeListener(listener);

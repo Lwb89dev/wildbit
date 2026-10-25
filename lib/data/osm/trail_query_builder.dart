@@ -19,7 +19,9 @@ abstract final class TrailQueryBuilder {
     final radiusMeters = (radiusKm.clamp(1, 100) * 1000).round();
     final around =
         '(around:$radiusMeters,${position.latitude},${position.longitude})';
-    final normalized = query.trim();
+    // Control characters cannot appear in an Overpass string literal; a
+    // pasted newline used to turn the whole search into a syntax error.
+    final normalized = query.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), ' ').trim();
     final matcher = normalized.isEmpty
         ? null
         : _escapeOverpassRegex(normalized);

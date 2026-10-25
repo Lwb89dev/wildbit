@@ -9,6 +9,7 @@ import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../composition/map_geometry_rules.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/projected_depth_order.dart';
 import '../performance/map_rendering_budget.dart';
 
@@ -29,7 +30,11 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer> {
 
   List<_FlowerPoint> _candidates = const [];
   late int _featureSignature;
-  int? _projectedViewKey;
+  // Budgeted flowers projected into the current pan frame; a drag only
+  // changes [_offset].
+  PanProjectionFrame? _frame;
+  double? _frameQuality;
+  Offset _offset = Offset.zero;
   List<_ProjectedFlower>? _projectedFlowers;
 
   @override
@@ -42,11 +47,14 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer> {
   @override
   void didUpdateWidget(covariant OsmPixelFlowerLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Every camera frame rebuilds this widget with the same collection;
+    // only a new collection can change the candidate signature.
+    if (identical(oldWidget.features, widget.features)) return;
     final signature = _signature(widget.features);
     if (signature == _featureSignature) return;
     _featureSignature = signature;
     _candidates = _composeCandidates();
-    _projectedViewKey = null;
+    _frame = null;
     _projectedFlowers = null;
   }
 
@@ -60,7 +68,12 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer> {
         builder: (context, constraints) => RepaintBoundary(
           child: CustomPaint(
             size: constraints.biggest,
-            painter: _FlowerPainter(camera, flowers, constraints.biggest),
+            painter: _FlowerPainter(
+              camera,
+              flowers,
+              constraints.biggest,
+              _offset,
+            ),
           ),
         ),
       ),
@@ -68,53 +81,46 @@ class _OsmPixelFlowerLayerState extends State<OsmPixelFlowerLayer> {
   }
 
   List<_ProjectedFlower> _projectForCamera(MapCamera camera) {
-    final bounds = camera.visibleBounds;
-    final viewKey = Object.hash(
-      _featureSignature,
-      camera.center.latitude,
-      camera.center.longitude,
-      camera.zoom,
-      camera.rotation,
-      bounds.south,
-      bounds.west,
-      bounds.north,
-      bounds.east,
-      MapRenderingBudget.decorativeQuality,
-    );
-    final cached = _projectedFlowers;
-    if (cached != null && _projectedViewKey == viewKey) return cached;
-    // The OSM-dependent rank is immutable for this candidate set.  Ranking
-    // it at compose time avoids an otherwise repeated list copy and sort on
-    // every camera update; LOD can safely use a stable prefix instead.
-    final count = MapRenderingBudget.decorativeLodCount(
-      camera.zoom,
-      overview: 32,
-      close: _candidates.length,
-    );
-    final budgeted = count >= _candidates.length
-        ? _candidates
-        : _candidates.sublist(0, count);
-    // Reuse each camera projection for visibility, depth and paint. Calling
-    // `latLngToScreenOffset` from the sort comparator projected the same
-    // flower O(n log n) times on every camera update.
-    final flowers =
-        <_ProjectedFlower>[
-          for (final flower in budgeted)
-            if (camera.visibleBounds.contains(flower.position))
+    final quality = MapRenderingBudget.decorativeQuality;
+    final frame = _frame;
+    if (_projectedFlowers == null ||
+        frame == null ||
+        !frame.accepts(camera) ||
+        _frameQuality != quality) {
+      _frame = PanProjectionFrame(camera);
+      _frameQuality = quality;
+      // The OSM-dependent rank is immutable for this candidate set.  Ranking
+      // it at compose time avoids an otherwise repeated list copy and sort on
+      // every camera update; LOD can safely use a stable prefix instead.
+      final count = MapRenderingBudget.decorativeLodCount(
+        camera.zoom,
+        overview: 32,
+        close: _candidates.length,
+      );
+      final budgeted = count >= _candidates.length
+          ? _candidates
+          : _candidates.sublist(0, count);
+      // The whole budgeted set is projected and depth-sorted once per pan
+      // frame; the painter skips flowers outside the viewport, so a drag
+      // needs neither a geographic cull nor a new sort.
+      final flowers =
+          <_ProjectedFlower>[
+            for (final flower in budgeted)
               _ProjectedFlower(
                 flower,
                 camera.latLngToScreenOffset(flower.position),
               ),
-        ]..sort(
-          (a, b) => ProjectedDepthOrder.compare(
-            firstFoot: a.foot,
-            secondFoot: b.foot,
-            firstTieBreaker: a.flower.variant,
-            secondTieBreaker: b.flower.variant,
-          ),
-        );
-    _projectedViewKey = viewKey;
-    _projectedFlowers = List.unmodifiable(flowers);
+          ]..sort(
+            (a, b) => ProjectedDepthOrder.compare(
+              firstFoot: a.foot,
+              secondFoot: b.foot,
+              firstTieBreaker: a.flower.variant,
+              secondTieBreaker: b.flower.variant,
+            ),
+          );
+      _projectedFlowers = List.unmodifiable(flowers);
+    }
+    _offset = _frame!.offsetFor(camera);
     return _projectedFlowers!;
   }
 
@@ -250,14 +256,18 @@ class _ProjectedFlower {
 }
 
 class _FlowerPainter extends CustomPainter {
-  const _FlowerPainter(this.camera, this.flowers, this.size);
+  const _FlowerPainter(this.camera, this.flowers, this.size, this.offset);
 
   final MapCamera camera;
   final List<_ProjectedFlower> flowers;
   final Size size;
 
+  /// Translation from the flowers' pan frame to the screen.
+  final Offset offset;
+
   @override
   void paint(Canvas canvas, Size _) {
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
     final scale = MapRenderingBudget.decorativeScale(
       camera.zoom,
       referenceZoom: 15,
@@ -271,13 +281,15 @@ class _FlowerPainter extends CustomPainter {
       Color(0xFFEDE9D5),
       Color(0xFFB58BDB),
     ];
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
     for (final projected in flowers) {
       final flower = projected.flower;
       final point = projected.foot;
-      if (point.dx < -8 ||
-          point.dy < -8 ||
-          point.dx > size.width + 8 ||
-          point.dy > size.height + 8) {
+      if (point.dx < viewport.left - 8 ||
+          point.dy < viewport.top - 8 ||
+          point.dx > viewport.right + 8 ||
+          point.dy > viewport.bottom + 8) {
         continue;
       }
       final stemHeight = 5 * scale;
@@ -306,10 +318,12 @@ class _FlowerPainter extends CustomPainter {
         petal,
       );
     }
+    canvas.restore();
   }
 
   @override
   bool shouldRepaint(_FlowerPainter oldDelegate) =>
+      oldDelegate.offset != offset ||
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||

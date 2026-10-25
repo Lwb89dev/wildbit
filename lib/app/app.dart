@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../location/geolocator_location_service.dart';
 import '../location/location_service.dart';
 import '../presentation/onboarding/onboarding_screen.dart';
 import '../presentation/shared/root_shell.dart';
@@ -59,6 +60,13 @@ class _WildBitAppState extends State<WildBitApp> {
         WildBitLocalizationsDelegate(),
         ...GlobalMaterialLocalizations.delegates,
       ],
+      builder: (context, child) {
+        // The location plugin posts the foreground-service notification
+        // outside the widget tree; give it the active language's text.
+        GeolocatorLocationService.foregroundNotificationText = context.l10n
+            .text('location.foregroundNotification');
+        return child ?? const SizedBox.shrink();
+      },
       home: switch (_onboardingComplete) {
         null => const Scaffold(
           body: Center(child: CircularProgressIndicator()),

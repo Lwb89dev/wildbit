@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 
 import '../../domain/entities/geo_fix.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../performance/map_rendering_budget.dart';
 
 /// Pixel-art overlay for the user's recorded track.
@@ -29,7 +30,13 @@ class PixelRecordedTrackLayer extends StatefulWidget {
 }
 
 class _PixelRecordedTrackLayerState extends State<PixelRecordedTrackLayer> {
-  int? _projectionViewKey;
+  static final _emptyTrack = _ProjectedRecordedTrack.empty();
+
+  // The projected track lives in a pan frame: dragging the map translates
+  // it instead of reprojecting every recorded fix on each frame.
+  PanProjectionFrame? _frame;
+  int? _trackKey;
+  Offset _offset = Offset.zero;
   _ProjectedRecordedTrack? _projectionCache;
 
   @override
@@ -39,7 +46,7 @@ class _PixelRecordedTrackLayerState extends State<PixelRecordedTrackLayer> {
     // recorder. The per-build signature below detects appended fixes; this
     // branch handles replacement by a saved/imported immutable track.
     if (!identical(oldWidget.points, widget.points)) {
-      _projectionViewKey = null;
+      _trackKey = null;
       _projectionCache = null;
     }
   }
@@ -54,6 +61,7 @@ class _PixelRecordedTrackLayerState extends State<PixelRecordedTrackLayer> {
           size: Size.infinite,
           painter: _RecordedTrackPainter(
             camera: camera,
+            offset: _offset,
             track: track,
             color: widget.color,
           ),
@@ -64,56 +72,58 @@ class _PixelRecordedTrackLayerState extends State<PixelRecordedTrackLayer> {
 
   _ProjectedRecordedTrack _projectForCamera(MapCamera camera) {
     final points = widget.points;
-    if (points.length < 2) return const _ProjectedRecordedTrack.empty();
-    final bounds = camera.visibleBounds;
+    if (points.length < 2) return _emptyTrack;
     final first = points.first;
     final last = points.last;
-    final viewKey = Object.hash(
+    final trackKey = Object.hash(
       identityHashCode(points),
       points.length,
       first.timestamp.microsecondsSinceEpoch,
       last.timestamp.microsecondsSinceEpoch,
       last.position.latitude,
       last.position.longitude,
-      camera.center.latitude,
-      camera.center.longitude,
-      camera.zoom,
-      camera.rotation,
-      bounds.south,
-      bounds.west,
-      bounds.north,
-      bounds.east,
       MapRenderingBudget.mapInteracting,
     );
-    final cached = _projectionCache;
-    if (cached != null && _projectionViewKey == viewKey) return cached;
-    final projected = OsmLineProjector.projectSimplifiedPoints(
-      [for (final point in points) point.position],
-      camera.latLngToScreenOffset,
-      minimumDistancePixels:
-          MapRenderingBudget.recordedTrackPointDistancePixels(camera.zoom),
-      maximumPoints: MapRenderingBudget.recordedTrackMaximumPoints(camera.zoom),
-    );
-    final next = _ProjectedRecordedTrack(
-      points: List.unmodifiable(projected),
-      start: camera.latLngToScreenOffset(first.position),
-      current: camera.latLngToScreenOffset(last.position),
-      headingDegrees: last.headingDegrees,
-    );
-    _projectionViewKey = viewKey;
-    _projectionCache = next;
-    return next;
+    final frame = _frame;
+    if (_projectionCache == null ||
+        frame == null ||
+        !frame.accepts(camera) ||
+        _trackKey != trackKey) {
+      _frame = PanProjectionFrame(camera);
+      _trackKey = trackKey;
+      final projected = OsmLineProjector.projectSimplifiedPoints(
+        [for (final point in points) point.position],
+        camera.latLngToScreenOffset,
+        minimumDistancePixels:
+            MapRenderingBudget.recordedTrackPointDistancePixels(camera.zoom),
+        maximumPoints: MapRenderingBudget.recordedTrackMaximumPoints(
+          camera.zoom,
+        ),
+      );
+      _projectionCache = _ProjectedRecordedTrack(
+        points: List.unmodifiable(projected),
+        start: camera.latLngToScreenOffset(first.position),
+        current: camera.latLngToScreenOffset(last.position),
+        headingDegrees: last.headingDegrees,
+      );
+    }
+    _offset = _frame!.offsetFor(camera);
+    return _projectionCache!;
   }
 }
 
 class _RecordedTrackPainter extends CustomPainter {
   const _RecordedTrackPainter({
     required this.camera,
+    required this.offset,
     required this.track,
     required this.color,
   });
 
   final MapCamera camera;
+
+  /// Translation from the track's pan frame to the screen.
+  final Offset offset;
   final _ProjectedRecordedTrack track;
   final Color color;
 
@@ -121,19 +131,26 @@ class _RecordedTrackPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final projected = track.points;
     if (projected.length < 2) return;
-    if (!OsmLineProjector.overlapsViewport(projected, size, margin: 32)) {
+    final viewport = PanProjectionFrame.viewportIn(size, offset).inflate(32);
+    final bounds = track.bounds;
+    if (bounds.right < viewport.left ||
+        bounds.left > viewport.right ||
+        bounds.bottom < viewport.top ||
+        bounds.top > viewport.bottom) {
       return;
     }
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
 
     final scale = ((camera.zoom - 11) / 5).clamp(0.0, 1.0);
     final width = 2.0 + scale * 2.0;
     _stroke(
       canvas,
-      projected,
+      track.path,
       width: width + 2.4,
       color: const Color(0xB52E3625),
     );
-    _stroke(canvas, projected, width: width, color: color);
+    _stroke(canvas, track.path, width: width, color: color);
 
     _marker(
       canvas,
@@ -159,19 +176,15 @@ class _RecordedTrackPainter extends CustomPainter {
           ..isAntiAlias = false,
       );
     }
+    canvas.restore();
   }
 
   void _stroke(
     Canvas canvas,
-    List<Offset> points, {
+    ui.Path path, {
     required double width,
     required Color color,
   }) {
-    if (points.length < 2) return;
-    final path = ui.Path()..moveTo(points.first.dx, points.first.dy);
-    for (final point in points.skip(1)) {
-      path.lineTo(point.dx, point.dy);
-    }
     canvas.drawPath(
       path,
       Paint()
@@ -206,6 +219,7 @@ class _RecordedTrackPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_RecordedTrackPainter oldDelegate) =>
+      oldDelegate.offset != offset ||
       oldDelegate.camera.center != camera.center ||
       oldDelegate.camera.zoom != camera.zoom ||
       oldDelegate.camera.rotation != camera.rotation ||
@@ -214,21 +228,44 @@ class _RecordedTrackPainter extends CustomPainter {
 }
 
 class _ProjectedRecordedTrack {
-  const _ProjectedRecordedTrack({
+  _ProjectedRecordedTrack({
     required this.points,
     required this.start,
     required this.current,
     required this.headingDegrees,
   });
 
-  const _ProjectedRecordedTrack.empty()
+  _ProjectedRecordedTrack.empty()
     : points = const [],
       start = Offset.zero,
       current = Offset.zero,
       headingDegrees = null;
 
+  /// Simplified track in pan-frame coordinates.
   final List<Offset> points;
   final Offset start;
   final Offset current;
   final double? headingDegrees;
+
+  late final Rect bounds = () {
+    var left = points.first.dx;
+    var right = left;
+    var top = points.first.dy;
+    var bottom = top;
+    for (final point in points.skip(1)) {
+      left = math.min(left, point.dx);
+      right = math.max(right, point.dx);
+      top = math.min(top, point.dy);
+      bottom = math.max(bottom, point.dy);
+    }
+    return Rect.fromLTRB(left, top, right, bottom);
+  }();
+
+  late final ui.Path path = () {
+    final path = ui.Path()..moveTo(points.first.dx, points.first.dy);
+    for (final point in points.skip(1)) {
+      path.lineTo(point.dx, point.dy);
+    }
+    return path;
+  }();
 }

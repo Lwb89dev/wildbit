@@ -7,6 +7,7 @@ import '../../domain/entities/map_feature_collection.dart';
 import '../../domain/entities/hiking_route_membership.dart';
 import '../../domain/enums/map_feature_kind.dart';
 import '../composition/osm_line_projector.dart';
+import '../composition/pan_projection_frame.dart';
 import '../composition/route_label_content.dart';
 import '../composition/route_label_layout.dart';
 import '../performance/map_rendering_budget.dart';
@@ -32,7 +33,7 @@ class OsmPixelRouteLabelLayer extends StatelessWidget {
     if (MapRenderingBudget.mapInteracting) return const SizedBox.expand();
     final camera = MapCamera.of(context);
     final cache = projectionCache ?? ProjectedLineCache();
-    cache.beginView(_viewKey(camera));
+    cache.beginCamera(camera);
     return RepaintBoundary(
       child: IgnorePointer(
         child: CustomPaint(
@@ -45,13 +46,6 @@ class OsmPixelRouteLabelLayer extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  String _viewKey(MapCamera camera) {
-    final bounds = camera.visibleBounds;
-    return '${identityHashCode(features)}:${camera.center.latitude}:'
-        '${camera.center.longitude}:${camera.zoom}:${camera.rotation}:'
-        '${bounds.south}:${bounds.west}:${bounds.north}:${bounds.east}';
   }
 }
 
@@ -70,6 +64,10 @@ class _RouteLabelPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final visuals = <String, _RouteLabelVisual>{};
     final candidates = <RouteLabelCandidate>[];
+    // The cache shares the route layer's pan frame; labels are laid out in
+    // screen space, so only the few labelled ways are translated back.
+    final offset = projectionCache.beginCamera(camera);
+    final viewport = PanProjectionFrame.viewportIn(size, offset);
     for (final line in features.lines) {
       if (line.kind != MapFeatureKind.trail ||
           !MapRenderingBudget.lineMayBeVisible(line, camera.visibleBounds)) {
@@ -78,16 +76,17 @@ class _RouteLabelPainter extends CustomPainter {
       final content = RouteLabelContent.forLine(line, camera.zoom);
       if (content == null) continue;
 
-      final points = projectionCache.project(
+      final projected = projectionCache.project(
         line,
-        camera.latLngToScreenOffset,
+        camera,
         minimumDistancePixels: MapRenderingBudget.routePointDistancePixels(
           line,
           camera.zoom,
         ),
         maximumPoints: MapRenderingBudget.routeMaximumPoints(line, camera.zoom),
       );
-      if (!OsmLineProjector.overlapsViewport(points, size)) continue;
+      if (!projected.overlaps(viewport)) continue;
+      final points = [for (final point in projected.points) point + offset];
       final anchor = RouteLabelLayout.anchorForPath(points, size);
       if (anchor == null) continue;
       final painter = TextPainter(
@@ -156,6 +155,10 @@ class _RouteLabelPainter extends CustomPainter {
           ..isAntiAlias = false,
       );
       visual.painter.paint(canvas, placement.rect.topLeft + const Offset(6, 3));
+    }
+    // Paragraphs hold native memory; release them now instead of at GC.
+    for (final visual in visuals.values) {
+      visual.painter.dispose();
     }
   }
 

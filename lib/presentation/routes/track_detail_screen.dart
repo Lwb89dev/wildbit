@@ -27,6 +27,22 @@ class _TrackDetailScreenState extends State<TrackDetailScreen> {
       .read<TrackRepository>()
       .getTrack(widget.trackId);
 
+  Future<void> _export(SavedTrack track) async {
+    try {
+      await _gpxFileService.exportAndShare(
+        track,
+        shareText: context.l10n.param('gpx.shareText', {'name': track.name}),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${context.l10n.text('routes.exportError')}: $error'),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<SavedTrack?>(
@@ -48,7 +64,7 @@ class _TrackDetailScreenState extends State<TrackDetailScreen> {
                 IconButton(
                   tooltip: context.l10n.text('routes.export'),
                   icon: const Icon(Icons.share),
-                  onPressed: () => _gpxFileService.exportAndShare(track),
+                  onPressed: () => _export(track),
                 ),
               ],
             ],

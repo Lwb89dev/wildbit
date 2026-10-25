@@ -356,6 +356,27 @@ class WildBitLocalizations {
     'share.summaryTemplate': '{distanceKm} km · {duration} · pace {pace}',
     'settings.voiceUnavailableInLanguage':
         'Voice guidance isn’t available in {language} yet; English will be used instead.',
+    'startup.storageErrorTitle': 'Secure storage is not available',
+    'startup.storageErrorBody':
+        'WildBit could not read the key that protects your local data. Nothing has been changed or deleted. Try again in a moment; if it keeps failing, restart the device.',
+    'location.foregroundNotification': 'GPS active',
+    'share.hideEndpoints': 'Hide start and finish',
+    'share.hideEndpointsBody':
+        'Points within 200 m of where the track starts and ends are not published. Distance and time stay complete.',
+    'share.tooShortForPrivacy':
+        'This track is too short to hide its start and finish.',
+    'share.needsIdentity': 'Link a Nostr identity first.',
+    'share.signCancelled': 'Signing was cancelled in Amber.',
+    'share.signRejected':
+        'Amber returned an event that does not match this track. Nothing was published.',
+    'backup.shareText': 'Encrypted WildBit backup ({timestamp})',
+    'backup.missing': 'There is no database to export yet.',
+    'gpx.shareText': 'WildBit track: {name}',
+    'gpx.tooLarge': 'The GPX file is larger than the supported 20 MB.',
+    'gpx.noTrack':
+        'The GPX file does not contain a track with at least two points.',
+    'routes.deleteError': 'Could not delete the track',
+    'routes.exportError': 'Could not export the GPX file',
   };
 
   static const _it = <String, String>{
@@ -594,6 +615,27 @@ class WildBitLocalizations {
     'share.summaryTemplate': '{distanceKm} km · {duration} · passo {pace}',
     'settings.voiceUnavailableInLanguage':
         'La guida vocale non è ancora disponibile in {language}; verrà usato l’inglese.',
+    'startup.storageErrorTitle': 'Archivio sicuro non disponibile',
+    'startup.storageErrorBody':
+        'WildBit non è riuscito a leggere la chiave che protegge i tuoi dati locali. Nulla è stato modificato o cancellato. Riprova tra un momento; se l’errore persiste, riavvia il dispositivo.',
+    'location.foregroundNotification': 'GPS attivo',
+    'share.hideEndpoints': 'Nascondi partenza e arrivo',
+    'share.hideEndpointsBody':
+        'I punti entro 200 m dall’inizio e dalla fine della traccia non vengono pubblicati. Distanza e tempo restano completi.',
+    'share.tooShortForPrivacy':
+        'La traccia è troppo corta per nascondere partenza e arrivo.',
+    'share.needsIdentity': 'Collega prima un’identità Nostr.',
+    'share.signCancelled': 'Firma annullata in Amber.',
+    'share.signRejected':
+        'Amber ha restituito un evento diverso da questa traccia. Non è stato pubblicato nulla.',
+    'backup.shareText': 'Backup cifrato di WildBit ({timestamp})',
+    'backup.missing': 'Non c’è ancora un database da esportare.',
+    'gpx.shareText': 'Traccia WildBit: {name}',
+    'gpx.tooLarge':
+        'Il file GPX supera la dimensione massima supportata (20 MB).',
+    'gpx.noTrack': 'Il file GPX non contiene una traccia con almeno due punti.',
+    'routes.deleteError': 'Impossibile eliminare la traccia',
+    'routes.exportError': 'Impossibile esportare il file GPX',
   };
 
   // Short labels are translated for every shipped locale. Longer copy uses
