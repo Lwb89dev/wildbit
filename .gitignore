@@ -46,3 +46,8 @@ app.*.map.json
 
 # Local per-machine tool preferences, not project config.
 .env
+
+# Gradle caches and build output of the vendored plugins: machine-specific
+# and rewritten by every build.
+**/android/.gradle/
+third_party/**/android/build/
